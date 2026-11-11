@@ -36,8 +36,17 @@ try {
   await page.waitForURL('https://app.dr-music.local/index.html');
   await page.getByRole('button', { name: '播放 午后散步', exact: true }).waitFor();
   assert.equal(await page.title(), 'DR Music');
-  assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()), '#c65454');
+  assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()), '#ec4141');
   assert.equal((await page.evaluate(() => window.music.getLibrary())).tracks.length, 3);
+  const searchField = page.locator('.search');
+  const searchBefore = await searchField.evaluate(element => ({ border: getComputedStyle(element).borderColor, height: element.getBoundingClientRect().height }));
+  await page.getByRole('textbox', { name: '搜索本地音乐' }).focus();
+  await page.waitForTimeout(420);
+  const searchFocused = await searchField.evaluate(element => ({ border: getComputedStyle(element).borderColor, shadow: getComputedStyle(element).boxShadow, height: element.getBoundingClientRect().height }));
+  assert.notEqual(searchFocused.border, searchBefore.border);
+  assert.notEqual(searchFocused.shadow, 'none');
+  assert.equal(searchFocused.height, searchBefore.height);
+  await page.getByRole('textbox', { name: '搜索本地音乐' }).blur();
   await page.screenshot({ path: path.join(root, 'library.png') });
   // The actual popover must show on hover and dismiss on keyboard input.
   await page.getByRole('button', { name: '新建歌单', exact: true }).hover();
@@ -68,6 +77,19 @@ try {
   await page.getByRole('button', { name: '午后散步 更多操作', exact: true }).click();
   await page.locator('.song-menu').getByRole('button', { name: '原生测试歌单', exact: true }).click();
   await page.getByRole('button', { name: /原生测试歌单 1/ }).click();
+  await page.locator('.playlist-hero .playlist-cover').waitFor();
+  assert.equal(await page.locator('.playlist-page .library-footer').count(), 0);
+  const playlistRow = page.locator('.track-row:not(.table-head)').first();
+  await playlistRow.hover();
+  await page.waitForTimeout(260);
+  assert.equal(await playlistRow.locator('.row-number-content>span').isVisible(), true);
+  assert.equal(await playlistRow.locator('.track-cover-overlay').evaluate(element => getComputedStyle(element).opacity), '1');
+  await page.screenshot({ path: path.join(root, 'playlist.png') });
+  await playlistRow.click({ button: 'right' });
+  await page.locator('.song-menu').getByRole('button', { name: '复制歌名', exact: true }).waitFor();
+  await page.locator('.song-menu').getByRole('button', { name: '复制歌名和歌手', exact: true }).waitFor();
+  await page.keyboard.press('Escape');
+  await page.locator('.song-menu').waitFor({ state: 'detached' });
   await page.getByRole('button', { name: '播放 午后散步', exact: true }).click();
   await page.getByRole('button', { name: '暂停', exact: true }).waitFor();
   await page.waitForFunction(() => Number(document.querySelector('input[aria-label="播放进度"]').value) > .1);
@@ -88,6 +110,7 @@ try {
     return {
       box: element.getBoundingClientRect().toJSON(),
       transform: getComputedStyle(element).transform,
+      cursor: getComputedStyle(element).cursor,
     };
   });
   const sliderThumbHoverStyle = await page.evaluate(() => {
@@ -98,7 +121,18 @@ try {
   });
   for (const key of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(volumeHover.box[key] - volumeBefore.box[key]) < .5, `volume slider ${key} moved`);
   assert.equal(volumeHover.transform, volumeBefore.transform);
+  assert.equal(volumeHover.cursor, 'pointer');
   assert.deepEqual(sliderThumbHoverStyle, { width: '5px', height: '16px', borderRadius: '999px' });
+  const volumeValue = Number(await volumeSlider.inputValue());
+  const edgeX = volumeHover.box.x + 4 + (volumeHover.box.width - 8) * volumeValue + 2;
+  const edgeY = volumeHover.box.y + volumeHover.box.height - 1;
+  await page.mouse.move(edgeX, edgeY);
+  await page.waitForTimeout(220);
+  const volumeEdge = await volumeSlider.evaluate((element, point) => {
+    const hit = document.elementFromPoint(point.x, point.y);
+    return { hover: element.matches(':hover'), cursor: getComputedStyle(element).cursor, hit: hit === element || element.contains(hit) };
+  }, { x: edgeX, y: edgeY });
+  assert.deepEqual(volumeEdge, { hover: true, cursor: 'pointer', hit: true });
   await page.screenshot({ path: path.join(root, 'volume-slider-hover.png') });
   await page.mouse.move(1, 1);
   const playerEntry = await page.evaluate(() => new Promise((resolve, reject) => {

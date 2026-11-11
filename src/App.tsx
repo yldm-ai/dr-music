@@ -29,7 +29,6 @@ function PressableButton({ whileHover, whileTap, transition, ...props }: MotionB
 
 function NavButton({ selected = false, children, className = '', ...props }: Omit<MotionButtonProps, 'children'> & { selected?: boolean; children: React.ReactNode }) {
   return <PressableButton className={`nav-item ${selected ? 'selected' : ''} ${className}`} {...props}>
-    {selected && <motion.i className="nav-highlight" layoutId="nav-highlight" transition={layoutTransition}/>}
     {children}
   </PressableButton>;
 }
@@ -77,6 +76,7 @@ export function App() {
   const [lyricFile, setLyricFile] = useState<LyricFile>({ text: '', source: '', format: 'lrc' });
   const [lyricLoading, setLyricLoading] = useState(false);
   const [songMenu, setSongMenu] = useState<string>();
+  const [songMenuPoint, setSongMenuPoint] = useState<{ x: number; y: number }>();
   const [playlistDialog, setPlaylistDialog] = useState<{ id?: string; name: string }>();
   const [deletePlaylist, setDeletePlaylist] = useState<Playlist>();
   const [audio] = useState(() => new Audio());
@@ -248,6 +248,7 @@ export function App() {
   };
   const navigate = (next: string) => { setPage(next); setGroup(''); setQuery(''); setNowPlaying(false); };
   const selectedPlaylist = library?.playlists.find(p => page === `playlist:${p.id}`);
+  const playlistCover = selectedPlaylist?.trackIds.map(id => trackById.get(id)).find(track => track?.cover);
   const filtered = useMemo(() => {
     let tracks = library?.tracks || [];
     if (page === 'favorites') tracks = tracks.filter(t => library!.favorites.includes(t.id));
@@ -300,7 +301,12 @@ export function App() {
     <input aria-label="播放进度" type="range" min="0" max={duration || 1} step="0.1" value={Math.min(position, duration || 0)} disabled={!current || !duration} onChange={e => seek(Number(e.target.value))} style={{ '--progress': `${duration ? position / duration * 100 : 0}%` } as React.CSSProperties}/>
     <span>{formatTime(duration)}</span>
   </div>;
-  const renderRows = (tracks: Track[]) => tracks.map((track, index) => <motion.div layout="position" className={`track-row ${currentId === track.id ? 'current' : ''}`} key={track.id} role="row" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, x: -10 }} transition={{ ...layoutTransition, delay: Math.min(index * .018, .12) }} onDoubleClick={() => playTrack(track.id, filtered.map(t => t.id))}>
+  const copySongText = async (text: string) => {
+    setSongMenu(undefined);
+    try { await navigator.clipboard.writeText(text); notify('已复制'); }
+    catch { notify('复制失败，请重试'); }
+  };
+  const renderRows = (tracks: Track[]) => tracks.map((track, index) => <motion.div layout="position" className={`track-row ${currentId === track.id ? 'current' : ''}`} key={track.id} role="row" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, x: -10 }} transition={{ duration: .14, ease: smoothEase }} onDoubleClick={() => playTrack(track.id, filtered.map(t => t.id))} onContextMenu={event => { event.preventDefault(); setSongMenuPoint({ x: event.clientX, y: event.clientY }); setSongMenu(track.id); }}>
     <PressableButton className="row-number" aria-label={`播放 ${track.title}`} onClick={() => playTrack(track.id, filtered.map(t => t.id))}>
       <AnimatePresence mode="sync" initial={false}>
         {currentId === track.id && playing
@@ -308,15 +314,21 @@ export function App() {
           : <motion.span key="number" className="row-number-content" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={quickTextTransition}><span>{String(index + 1).padStart(2, '0')}</span><Play size={15}/></motion.span>}
       </AnimatePresence>
     </PressableButton>
-    <PressableButton className="track-identity" onClick={() => playTrack(track.id, filtered.map(t => t.id))}><Cover track={track}/><span><strong data-tooltip={track.title}>{track.title}</strong><small data-tooltip={track.artist}>{track.artist}</small></span></PressableButton>
+    <PressableButton className="track-identity" onClick={() => playTrack(track.id, filtered.map(t => t.id))}><span className="track-cover-play"><Cover track={track}/><span className="track-cover-overlay" aria-hidden="true"><Play size={22} fill="currentColor"/></span></span><span><strong data-tooltip={track.title}>{track.title}</strong><small data-tooltip={track.artist}>{track.artist}</small></span></PressableButton>
     <span className="album-cell" data-tooltip={track.album}>{track.album}</span><span className="format-label">{track.format}</span>
     <IconButton icon={Heart} label={`${library?.favorites.includes(track.id) ? '取消喜欢' : '喜欢'} ${track.title}`} active={library?.favorites.includes(track.id)} onClick={() => favorite(track.id)}/>
     <span className="track-duration">{formatTime(track.duration)}</span>
     <div className="song-menu-wrap">
-      <IconButton icon={MoreHorizontal} label={`${track.title} 更多操作`} onClick={() => setSongMenu(songMenu === track.id ? undefined : track.id)}/>
+      <IconButton icon={MoreHorizontal} label={`${track.title} 更多操作`} onClick={() => { setSongMenuPoint(undefined); setSongMenu(songMenu === track.id ? undefined : track.id); }}/>
       <AnimatePresence>
         {songMenu === track.id && <motion.button key="dismiss" type="button" className="menu-dismiss" aria-label="关闭歌曲菜单" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={quickTextTransition} onClick={() => setSongMenu(undefined)}/>}
-        {songMenu === track.id && <motion.div key="menu" className="song-menu" initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={layoutTransition}>
+        {songMenu === track.id && <motion.div key="menu" className="song-menu" aria-label={`${track.title} 歌曲菜单`} style={songMenuPoint ? { position: 'fixed', left: Math.max(8, Math.min(songMenuPoint.x, innerWidth - 228)), top: Math.max(8, Math.min(songMenuPoint.y, innerHeight - 328)), right: 'auto' } : undefined} onContextMenu={event => { event.preventDefault(); event.stopPropagation(); }} onDoubleClick={event => event.stopPropagation()} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={quickTextTransition}>
+          <PressableButton onClick={() => void copySongText(track.title)}>复制歌名</PressableButton>
+          <PressableButton onClick={() => void copySongText(`${track.title} - ${track.artist}`)}>复制歌名和歌手</PressableButton>
+          <hr/>
+          <PressableButton onClick={() => { navigate('artists'); setGroup(track.artist); setSongMenu(undefined); }}>查看歌手：{track.artist}</PressableButton>
+          <PressableButton onClick={() => { navigate('albums'); setGroup(track.album); setSongMenu(undefined); }}>查看专辑：{track.album}</PressableButton>
+          <hr/>
           <PressableButton onClick={() => { setQueue(q => { const copy = q.filter(id => id !== track.id); const at = copy.indexOf(currentId || ''); copy.splice(at < 0 ? copy.length : at + 1, 0, track.id); return copy; }); setSongMenu(undefined); notify('已加入下一首播放'); }}><ListPlus size={16}/>下一首播放</PressableButton>
           <PressableButton onClick={() => { void window.music.reveal(track.id).catch(e => notify(String(e))); setSongMenu(undefined); }}><FolderOpen size={16}/>在文件夹中显示</PressableButton>
           {selectedPlaylist && <PressableButton onClick={() => { persist({ playlists: library!.playlists.map(p => p.id === selectedPlaylist.id ? { ...p, trackIds: p.trackIds.filter(id => id !== track.id) } : p) }); setSongMenu(undefined); }}>从当前歌单移除</PressableButton>}
@@ -340,16 +352,16 @@ export function App() {
       {!query && page !== 'favorites' && !selectedPlaylist && <PressableButton className="secondary-button" disabled={busy} onClick={() => void runImport('folder')}><FolderPlus size={17}/>选择音乐文件夹<ArrowUpRight size={15}/></PressableButton>}
     </motion.div>;
     if ((page === 'albums' || page === 'artists') && !group) return <motion.div key={`groups:${collectionKey}`} className="album-grid" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-      {groups.slice(0, limit).map(([name, tracks], index) => <PressableButton
+      {groups.slice(0, limit).map(([name, tracks]) => <PressableButton
         className="album-card"
         key={name}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
-        transition={{ ...layoutTransition, delay: Math.min(index * .025, .2) }}
+        transition={{ duration: .14, ease: smoothEase }}
         onClick={() => setGroup(name)}
       ><Cover track={tracks[0]} className={page === 'artists' ? 'round' : ''}/><strong>{name}</strong><small>{tracks.length} 首歌曲{page === 'albums' ? ` · ${tracks[0].artist}` : ''}</small></PressableButton>)}
     </motion.div>;
-    return <motion.div key={`tracks:${viewKey}`} className="track-table" role="table" aria-label="本地歌曲列表" layout="position" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -5 }} transition={layoutTransition}>
+    return <motion.div key={`tracks:${viewKey}`} className="track-table" role="table" aria-label="本地歌曲列表" initial={{ opacity: .6 }} animate={{ opacity: 1 }} transition={{ duration: .14 }}>
       <motion.div className="track-row table-head" role="row" layout="position"><span>#</span><span>歌曲 / 艺术家</span><span>专辑</span><span>格式</span><span/><span>时长</span><span/></motion.div>
       <AnimatePresence initial={false}>{renderRows(filtered.slice(0, limit))}</AnimatePresence>
     </motion.div>;
@@ -369,7 +381,7 @@ export function App() {
         <div className="sidebar-section playlist-label">我的歌单<IconButton icon={Plus} label="新建歌单" onClick={() => setPlaylistDialog({ name: '' })}/></div>
         <motion.div className="playlist-nav" layout="position">
           <AnimatePresence initial={false}>
-            {library?.playlists.map(p => <NavButton key={p.id} selected={page === `playlist:${p.id}`} layout="position" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => navigate(`playlist:${p.id}`)}><ListMusic size={18}/><span>{p.name}</span><small>{p.trackIds.length}</small></NavButton>)}
+            {library?.playlists.map(p => <NavButton key={p.id} selected={page === `playlist:${p.id}`} layout="position" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => navigate(`playlist:${p.id}`)}><Cover track={p.trackIds.map(id => trackById.get(id)).find(track => track?.cover)} className="sidebar-playlist-cover" enableLayout={false}/><span>{p.name}</span><small>{p.trackIds.length}</small></NavButton>)}
           </AnimatePresence>
           <AnimatePresence>{!library?.playlists.length && <motion.p className="sidebar-hint" initial={{ opacity: 0 }} animate={{ opacity: .6 }} exit={{ opacity: 0 }}>为不同的心情，<br/>留一张自己的歌单。</motion.p>}</AnimatePresence>
         </motion.div>
@@ -378,9 +390,7 @@ export function App() {
 
       <main className="main-content">
         <header className="topbar">
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.div key={viewKey} className="breadcrumb" initial={{ opacity: 0, y: 2 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -2 }} transition={quickTextTransition}>我的音乐 <span>/</span> {selectedPlaylist ? '歌单' : page === 'favorites' ? '我喜欢的' : page === 'albums' ? '专辑' : page === 'artists' ? '艺术家' : '音乐库'}</motion.div>
-          </AnimatePresence>
+          <div className="breadcrumb">我的音乐 <span>/</span> {selectedPlaylist ? '歌单' : page === 'favorites' ? '我喜欢的' : page === 'albums' ? '专辑' : page === 'artists' ? '艺术家' : '音乐库'}</div>
           <motion.label className="search" layout="position">
             <Search size={17}/>
             <input ref={searchRef} placeholder="搜索歌曲、艺术家、专辑" aria-label="搜索本地音乐" value={query} onChange={e => setQuery(e.target.value)}/>
@@ -389,41 +399,40 @@ export function App() {
           <motion.span className="local-badge" animate={{ opacity: [.6, 1, .6] }} transition={{ duration: 3, repeat: Infinity }}><Headphones size={15}/>LOCAL</motion.span>
         </header>
 
-        <div className="page-scroll" onScroll={() => setSongMenu(undefined)}>
-          <motion.section className={`hero ${page === 'favorites' ? 'favorite-hero' : ''}`} layout="position" transition={layoutTransition}>
-            <AnimatePresence mode="wait" initial={false}>
-              <motion.div key={viewKey} className="hero-copy" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={textTransition}>
+        <div className={`page-scroll ${selectedPlaylist ? 'playlist-page' : ''}`} onScroll={() => setSongMenu(undefined)}>
+          <motion.section className={`hero ${selectedPlaylist ? 'playlist-hero' : ''} ${page === 'favorites' ? 'favorite-hero' : ''}`}>
+            {selectedPlaylist && <Cover track={playlistCover} className="playlist-cover" enableLayout={false}/>}
+              <motion.div key={viewKey} className="hero-copy" initial={{ opacity: .65 }} animate={{ opacity: 1 }} transition={{ duration: .14 }}>
                 {group && <PressableButton className="back-link" onClick={() => setGroup('')}><ChevronLeft size={16}/>返回{page === 'artists' ? '艺术家' : '专辑'}</PressableButton>}
-                <div className="eyebrow">{query ? 'FIND YOUR SOUND' : selectedPlaylist ? 'YOUR OWN MIX' : page === 'favorites' ? 'CLOSE TO YOUR HEART' : 'YOUR OFFLINE COLLECTION'}</div>
+                {selectedPlaylist && <div className="eyebrow">歌单</div>}
                 <h1>{heading}</h1>
                 <p>{library?.tracks.length ? `${filtered.length} 首歌曲${totalDuration ? ` · ${Math.round(totalDuration / 60)} 分钟` : ''} · 只属于你的音乐时光` : '从一个文件夹开始，把喜欢的声音留在身边。'}</p>
                 <div className="hero-actions">
                   <PressableButton className="primary-button" disabled={!filtered.length} onClick={() => playTrack(filtered[0].id, filtered.map(t => t.id))}><Play size={16} fill="currentColor"/>播放全部</PressableButton>
-                  <PressableButton className="secondary-button" disabled={busy} onClick={() => void runImport('folder')}><FolderPlus size={17}/>导入文件夹</PressableButton>
+                  {selectedPlaylist ? <PressableButton className="secondary-button" disabled={!filtered.length} onClick={() => { setSettings({ shuffle: true }); playTrack(filtered[Math.floor(Math.random() * filtered.length)].id, filtered.map(t => t.id)); }}><Shuffle size={17}/>随机播放</PressableButton> : <PressableButton className="secondary-button" disabled={busy} onClick={() => void runImport('folder')}><FolderPlus size={17}/>导入文件夹</PressableButton>}
                   <AnimatePresence>{selectedPlaylist && <motion.span className="hero-playlist-actions" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }}><IconButton icon={Pencil} label="重命名歌单" onClick={() => setPlaylistDialog({ id: selectedPlaylist.id, name: selectedPlaylist.name })}/><IconButton icon={Trash2} label="删除歌单" onClick={() => setDeletePlaylist(selectedPlaylist)}/></motion.span>}</AnimatePresence>
                 </div>
               </motion.div>
-            </AnimatePresence>
-            <motion.div className="hero-art" aria-hidden="true" initial={{ opacity: 0, x: 30 }} animate={{ opacity: .85, x: 0 }} transition={{ duration: .5, delay: .06 }}>
+            {!selectedPlaylist && <motion.div className="hero-art" aria-hidden="true" initial={{ opacity: .65 }} animate={{ opacity: .85 }} transition={{ duration: .14 }}>
               <motion.div className="hero-orbit" animate={{ rotate: 360 }} transition={{ duration: 22, repeat: Infinity, ease: 'linear' }}/>
-              <motion.div className="hero-vinyl" animate={{ rotate: [-18, -13, -18] }} transition={{ duration: 9, repeat: Infinity, ease: 'easeInOut' }}><div className="vinyl-label"><AudioLines size={34}/><span>DR / 33 RPM</span></div></motion.div>
-              <span className="hero-caption">GOOD MUSIC.<br/>NO DISTRACTIONS.</span>
-            </motion.div>
+              <motion.div className="hero-vinyl" animate={{ rotate: [-18, -13, -18] }} transition={{ duration: 9, repeat: Infinity, ease: 'easeInOut' }}><div className="vinyl-label"><AudioLines size={34}/></div></motion.div>
+
+            </motion.div>}
           </motion.section>
 
           <AnimatePresence initial={false}>
             {busy && <motion.div className="scan-status" role="status" initial={{ opacity: 0, height: 0, y: -8 }} animate={{ opacity: 1, height: 'auto', y: 0 }} exit={{ opacity: 0, height: 0, y: -8 }} transition={layoutTransition}><RefreshCw className="spin" size={16}/>{progress ? `正在扫描 ${progress.done} / ${progress.total} · ${progress.name}` : '正在选择或查找本地音乐…'}</motion.div>}
           </AnimatePresence>
 
-          <motion.section className="collection" layout="position">
-            <motion.div className="collection-toolbar" layout="position">
+          <motion.section className="collection">
+            <motion.div className="collection-toolbar">
               <div><h2>{query ? `找到 ${filtered.length} 首歌曲` : group || selectedPlaylist ? '歌曲' : page === 'albums' ? '所有专辑' : page === 'artists' ? '所有艺术家' : '全部歌曲'}</h2><AnimatePresence mode="wait" initial={false}><motion.span key={filtered.length} initial={{ opacity: 0, y: 2 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -2 }} transition={quickTextTransition}>{filtered.length.toString().padStart(2, '0')}</motion.span></AnimatePresence></div>
               <div><PressableButton className="text-button" disabled={busy} onClick={() => void runImport('files')}><Plus size={16}/>添加音乐</PressableButton><select aria-label="歌曲排序" value={sort} onChange={e => setSort(e.target.value)}><option value="added">最近添加</option><option value="title">歌曲名称</option><option value="artist">艺术家</option></select></div>
             </motion.div>
-            <AnimatePresence mode="wait" initial={false}>{renderCollection()}</AnimatePresence>
+            {renderCollection()}
             <AnimatePresence>{((page === 'albums' || page === 'artists') && !group ? groups.length : filtered.length) > limit && <motion.div key="load-more" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><PressableButton className="load-more secondary-button" onClick={() => setLimit(n => n + 100)}>加载更多</PressableButton></motion.div>}</AnimatePresence>
           </motion.section>
-          <motion.footer className="library-footer" initial={{ opacity: 0 }} animate={{ opacity: .6 }}><span><span className="tiny-dot"/>音乐在本地，热爱也是。</span><span>DR MUSIC / PERSONAL LIBRARY</span></motion.footer>
+          {!selectedPlaylist && <motion.footer className="library-footer" initial={{ opacity: 0 }} animate={{ opacity: .6 }}><span><span className="tiny-dot"/>音乐在本地，热爱也是。</span></motion.footer>}
         </div>
       </main>
 

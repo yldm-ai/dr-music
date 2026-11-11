@@ -64,9 +64,9 @@
 }
 ::selection{background:#c6545455}
 body,.app-shell,.sidebar,.main-content,.player-bar,.now-playing,.modal,.queue-drawer,.song-menu,.search,.folder-list,.toast{
-  transition:background-color .32s ease,color .28s ease,border-color .32s ease,box-shadow .28s ease;
+  transition:background-color .38s cubic-bezier(.22,1,.36,1),color .32s cubic-bezier(.22,1,.36,1),border-color .38s cubic-bezier(.22,1,.36,1),box-shadow .34s cubic-bezier(.22,1,.36,1);
 }
-button,input,select{transition:background-color .18s ease,color .18s ease,border-color .18s ease,opacity .18s ease,box-shadow .18s ease}
+button,input,select{transition:background-color .24s cubic-bezier(.22,1,.36,1),color .24s cubic-bezier(.22,1,.36,1),border-color .24s cubic-bezier(.22,1,.36,1),opacity .24s cubic-bezier(.22,1,.36,1),box-shadow .24s cubic-bezier(.22,1,.36,1)}
 .brand-icon{color:#fff;box-shadow:0 8px 24px #c6545426}
 .primary-button{color:#fff;background:linear-gradient(135deg,var(--accent-strong),var(--accent));box-shadow:0 8px 24px #c6545424}
 .primary-button:hover{filter:brightness(1.04);box-shadow:0 10px 28px #c6545433}
@@ -94,47 +94,11 @@ button,input,select{transition:background-color .18s ease,color .18s ease,border
 .scan-status{overflow:hidden;transform-origin:top center}
 .song-menu,.queue-drawer,.modal{will-change:transform,opacity}
 
-/* AMLL's active line gets a stronger red aura and a slower light sweep. */
+/* Keep AMLL's own depth blur smooth; the word reveal itself stays sharp. */
 .lyrics-host .dr-lyric-line{
-  transition:filter .28s ease,opacity .28s ease,text-shadow .28s ease;
-}
-.lyrics-host .FmKaba_lyricLine.FmKaba_active{
-  z-index:2;
-  filter:blur(0) drop-shadow(0 0 8px #c654544d) drop-shadow(0 0 24px #c6545424)!important;
-}
-.lyrics-host .FmKaba_lyricLine.FmKaba_active .FmKaba_lyricMainLine{
-  position:relative;
-  text-shadow:0 0 2px #fff,0 0 8px #ef8a8a99,0 0 24px #c6545466;
-  animation:dr-lyric-glow 2.4s ease-in-out infinite;
-}
-.lyrics-host .FmKaba_lyricLine.FmKaba_active .FmKaba_lyricMainLine::after{
-  content:"";
-  position:absolute;
-  left:0;
-  right:0;
-  bottom:-.08em;
-  height:2px;
-  pointer-events:none;
-  background:linear-gradient(90deg,transparent,#ef9292b8 48%,#ffffff66 52%,transparent);
-  background-size:34% 100%;
-  background-repeat:no-repeat;
-  background-position:-45% 0;
-  mix-blend-mode:screen;
-  animation:dr-lyric-flow 2.4s cubic-bezier(.22,.72,.28,1) -.6s infinite;
-}
-@keyframes dr-lyric-flow{
-  0%{background-position:-45% 0;opacity:0}
-  16%{opacity:1}
-  84%{opacity:1}
-  100%{background-position:145% 0;opacity:0}
-}
-@keyframes dr-lyric-glow{
-  0%,100%{text-shadow:0 0 2px #fff,0 0 7px #ef8a8a80,0 0 21px #c6545455}
-  50%{text-shadow:0 0 3px #fff,0 0 11px #ef8a8aa8,0 0 30px #c6545477}
+  transition:filter .42s cubic-bezier(.22,1,.36,1),opacity .32s cubic-bezier(.22,1,.36,1);
 }
 @media(prefers-reduced-motion:reduce){
   body,.app-shell,.sidebar,.main-content,.player-bar,.now-playing,.modal,.queue-drawer,.song-menu,.search,.folder-list,.toast,
   button,input,select,.lyrics-host .dr-lyric-line{transition:none!important}
-  .lyrics-host .FmKaba_lyricLine.FmKaba_active .FmKaba_lyricMainLine{animation:none}
-  .lyrics-host .FmKaba_lyricLine.FmKaba_active .FmKaba_lyricMainLine::after{animation:none;display:none}
 }

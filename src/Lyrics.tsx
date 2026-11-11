@@ -5,6 +5,10 @@ import '@applemusic-like-lyrics/core/style.css';
 import { parseLyrics } from './lib/lyrics';
 import type { LyricFile } from './types';
 
+const smoothEase: [number, number, number, number] = [.22, 1, .36, 1];
+const textTransition = { duration: .36, ease: smoothEase } as const;
+const quickTextTransition = { duration: .24, ease: smoothEase } as const;
+
 export function Lyrics({ file, audio, offset, onSeek }: { file: LyricFile; audio: HTMLAudioElement; offset: number; onSeek: (seconds: number) => void }) {
   const host = useRef<HTMLDivElement>(null);
   const [info, setInfo] = useState('');
@@ -20,7 +24,10 @@ export function Lyrics({ file, audio, offset, onSeek }: { file: LyricFile; audio
     if (!parsed.lines.length) return;
     const player = new LyricPlayer();
     player.setAlignPosition(0.38);
+    player.setWordFadeWidth(.35);
+    player.setEnableScale(true);
     player.setEnableBlur(true);
+    player.setEnableSpring(true);
     host.current.appendChild(player.getElement());
     player.setLyricLines(parsed.lines, Math.max(0, audio.currentTime * 1000 + offset));
     const click = (event: Event) => { const line = parsed.lines[(event as LyricLineMouseEvent).lineIndex]; if (line) seekRef.current(Math.max(0, (line.startTime - offset) / 1000)); };
@@ -57,10 +64,10 @@ export function Lyrics({ file, audio, offset, onSeek }: { file: LyricFile; audio
     return () => { cancelAnimationFrame(frame); audio.removeEventListener('play', sync); audio.removeEventListener('pause', sync); audio.removeEventListener('seeking', seek); player.removeEventListener('line-click', click); player.dispose(); };
   }, [file, audio, offset]);
   return <div className="lyrics-shell">
-    <motion.div className="lyrics-host" ref={host} initial={{ opacity: 0, scale: .985 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: .32, ease: [.22, .72, .28, 1] }}/>
+    <motion.div className="lyrics-host" ref={host} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={textTransition}/>
     <AnimatePresence>
-      {plain && <motion.div key={`${file.source}:${plain.slice(0, 24)}`} className="plain-lyrics" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: .24 }}>{plain}</motion.div>}
-      {info && <motion.span key={info} className="lyric-info" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: .2 }}>{info}</motion.span>}
+      {plain && <motion.div key={`${file.source}:${plain.slice(0, 24)}`} className="plain-lyrics" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={textTransition}>{plain}</motion.div>}
+      {info && <motion.span key={info} className="lyric-info" initial={{ opacity: 0, y: 2 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -2 }} transition={quickTextTransition}>{info}</motion.span>}
     </AnimatePresence>
   </div>;
 }

@@ -86,8 +86,9 @@ try {
   await page.mouse.move(1, 1);
   await page.locator('.amll-lyric-player').waitFor();
   await page.waitForFunction(() => {
-    const active = document.querySelector('.FmKaba_lyricLine.FmKaba_active .FmKaba_lyricMainLine');
-    return active && getComputedStyle(active, '::after').animationName === 'dr-lyric-flow';
+    const player = document.querySelector('.amll-lyric-player');
+    return player && player.querySelectorAll('.FmKaba_lyricLine').length > 0
+      && !!document.querySelector('.FmKaba_lyricLine.FmKaba_active .FmKaba_lyricMainLine');
   });
   await page.locator('.amll-lyric-player').getByText('测试歌词第二句', { exact: false }).first().click({ force: true });
   await page.waitForFunction(() => Number(document.querySelector('.now-left input[aria-label="播放进度"]').value) >= 4);

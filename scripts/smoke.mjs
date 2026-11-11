@@ -36,7 +36,7 @@ try {
   await page.waitForURL('https://app.dr-music.local/index.html');
   await page.getByRole('button', { name: '播放 午后散步', exact: true }).waitFor();
   assert.equal(await page.title(), 'DR Music');
-  assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()), '#ec4141');
+  assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()), '#c65454');
   assert.equal((await page.evaluate(() => window.music.getLibrary())).tracks.length, 3);
   await page.screenshot({ path: path.join(root, 'library.png') });
   // The actual popover must show on hover and dismiss on keyboard input.

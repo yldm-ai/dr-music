@@ -58,7 +58,10 @@ export class Tooltips {
   }
 
   private over(target: EventTarget | null) {
-    const owner = target instanceof Element ? target.closest('[data-tooltip]') : null;
+    const element = target instanceof Element ? target : null;
+    const titled = element?.closest('[title]');
+    if (titled) this.adopt(titled);
+    const owner = element?.closest('[data-tooltip]') ?? null;
     if (owner === this.target) return;
     this.hide();
     if (!owner || owner.matches(':disabled') || owner.getAttribute('aria-expanded') === 'true') return;

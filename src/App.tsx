@@ -604,7 +604,7 @@ export function App() {
 
       <AnimatePresence>
         {playlistDialog && <motion.div key="playlist-backdrop" className="modal-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-          <motion.form className="modal small-modal" role="dialog" aria-label={playlistDialog.id ? '重命名歌单' : '新建歌单'} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 7 }} transition={layoutTransition} onSubmit={savePlaylist}>
+          <motion.form noValidate className="modal small-modal" role="dialog" aria-label={playlistDialog.id ? '重命名歌单' : '新建歌单'} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 7 }} transition={layoutTransition} onSubmit={savePlaylist}>
             <div className="modal-header"><h2>{playlistDialog.id ? '重命名歌单' : '新建歌单'}</h2><IconButton icon={X} label="取消" onClick={() => setPlaylistDialog(undefined)}/></div>
             <label>歌单名称<input autoFocus required maxLength={100} placeholder="给这一刻的心情起个名字" value={playlistDialog.name} onChange={e => setPlaylistDialog({ ...playlistDialog, name: e.target.value })}/></label>
             <div className="dialog-actions"><PressableButton type="button" className="secondary-button" onClick={() => setPlaylistDialog(undefined)}>取消</PressableButton><PressableButton className="primary-button" type="submit" disabled={!playlistDialog.name.trim()}>保存歌单</PressableButton></div>

@@ -72,7 +72,11 @@ try {
   await page.getByRole('button', { name: /我喜欢的/ }).click();
   await page.waitForFunction(() => document.querySelectorAll('.track-table .track-row:not(.table-head)').length === 1);
   await page.getByRole('button', { name: '新建歌单', exact: true }).click();
-  await page.getByRole('textbox', { name: '歌单名称' }).fill('原生测试歌单');
+  assert.equal(await page.locator('form.small-modal').evaluate(form => form.noValidate), true);
+  const playlistName = page.getByRole('textbox', { name: '歌单名称' });
+  await playlistName.press('Enter');
+  assert.equal(await page.getByRole('dialog', { name: '新建歌单' }).isVisible(), true);
+  await playlistName.fill('原生测试歌单');
   await page.getByRole('button', { name: '保存歌单', exact: true }).click();
   await page.getByRole('button', { name: '午后散步 更多操作', exact: true }).click();
   await page.locator('.song-menu').getByRole('button', { name: '原生测试歌单', exact: true }).click();

@@ -252,7 +252,7 @@ export function App() {
     <PressableButton className="row-number" aria-label={`播放 ${track.title}`} whileTap={{ scale: .88 }} onClick={() => playTrack(track.id, filtered.map(t => t.id))}>
       <AnimatePresence mode="popLayout" initial={false}>
         {currentId === track.id && playing
-          ? <motion.span key="playing" initial={{ opacity: 0, scale: .84 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: .84 }} transition={quickTextTransition}><AudioLines size={17}/></motion.span>
+          ? <motion.span key="playing" className="centered-motion-icon" initial={{ opacity: 0, scale: .84 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: .84 }} transition={quickTextTransition}><AudioLines size={17}/></motion.span>
           : <motion.span key="number" className="row-number-content" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={quickTextTransition}><span>{String(index + 1).padStart(2, '0')}</span><Play size={15}/></motion.span>}
       </AnimatePresence>
     </PressableButton>
@@ -437,7 +437,7 @@ export function App() {
           <div className="queue-list">
             <AnimatePresence initial={false}>
               {queue.map((id, i) => { const track = library?.tracks.find(t => t.id === id); return track && <motion.div key={`${id}-${i}`} layout className={`queue-item ${id === currentId ? 'current' : ''}`} initial={{ opacity: 0, x: 9 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 12 }} transition={{ ...layoutTransition, delay: Math.min(i * .015, .1) }}>
-                <PressableButton onClick={() => playTrack(id)}><Cover track={track}/><span><strong>{track.title}</strong><small>{track.artist}</small></span>{id === currentId && <motion.span initial={{ scale: .82 }} animate={{ scale: 1 }} transition={quickTextTransition}><AudioLines size={17}/></motion.span>}</PressableButton>
+                <PressableButton onClick={() => playTrack(id)}><Cover track={track}/><span><strong>{track.title}</strong><small>{track.artist}</small></span>{id === currentId && <motion.span className="centered-motion-icon" initial={{ scale: .82 }} animate={{ scale: 1 }} transition={quickTextTransition}><AudioLines size={17}/></motion.span>}</PressableButton>
                 <IconButton icon={X} label={`从队列移除 ${track.title}`} onClick={() => setQueue(q => q.filter(x => x !== id))}/>
               </motion.div>; })}
             </AnimatePresence>

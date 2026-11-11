@@ -16,9 +16,10 @@ public:
     HWND handle() const { return hwnd_; }
     RECT content_bounds() const;
     void set_style(bool direct2d);
-    void set_appearance(bool dark, bool dimmed, const std::wstring &title);
+    void set_appearance(bool dark, bool dimmed);
     void post(std::function<void()> action);
     std::function<void()> on_resize, on_close;
+    std::function<void(const std::wstring &, RECT)> on_caption_tooltip;
     bool direct2d() const { return direct2d_; }
 private:
     static LRESULT CALLBACK procedure(HWND, UINT, WPARAM, LPARAM);
@@ -32,11 +33,13 @@ private:
     int caption_height() const;
     int caption_hit(POINT) const;
     void hover(int hit, bool nonclient);
+    void caption_tip(int hit);
+    RECT caption_button(int hit) const;
     HWND hwnd_ = nullptr;
     HWND caption_ = nullptr;
     bool direct2d_ = true, dark_ = true, dimmed_ = false;
-    int hot_ = HTNOWHERE, pressed_ = HTNOWHERE;
-    std::wstring title_ = L"DR Music";
+    int hot_ = HTNOWHERE, pressed_ = HTNOWHERE, tip_ = HTNOWHERE;
+    const std::wstring title_ = L"DR Music";
     Microsoft::WRL::ComPtr<ID2D1Factory> factory_;
     Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> target_;
     Microsoft::WRL::ComPtr<IDWriteFactory> write_;

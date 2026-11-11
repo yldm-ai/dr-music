@@ -27,11 +27,28 @@ export function Lyrics({ file, audio, offset, onSeek }: { file: LyricFile; audio
     const sync = () => audio.paused ? player.pause() : player.resume();
     const seek = () => player.setCurrentTime(Math.max(0, audio.currentTime * 1000 + offset), true);
     audio.addEventListener('play', sync); audio.addEventListener('pause', sync); audio.addEventListener('seeking', seek); sync();
+    const blurCache = new WeakMap<HTMLElement, string>();
+    const softenBlur = () => {
+      // haruhikage uses AMLL with full-screen, larger lyrics. Keep its depth
+      // effect subtle in our smaller lyric pane, without changing AMLL timing
+      // or relying on its private blur resolver / generated CSS class names.
+      const maxBlur = Math.min(1.5, player.baseFontSize * 0.045);
+      for (const group of player.currentLyricGroups) {
+        const element = group.getElement();
+        const radius = Math.min(maxBlur, Math.max(0, group.blur) * 0.35).toFixed(2);
+        if (!blurCache.has(element)) element.classList.add('dr-lyric-line');
+        if (blurCache.get(element) !== radius) {
+          element.style.setProperty('--dr-lyric-blur', `${radius}px`);
+          blurCache.set(element, radius);
+        }
+      }
+    };
     let frame = 0, previous = performance.now();
     const tick = (now: number) => {
       if (!document.hidden) {
         player.setCurrentTime(Math.max(0, audio.currentTime * 1000 + offset));
         player.update(Math.min(50, now - previous));
+        softenBlur();
       }
       previous = now; frame = requestAnimationFrame(tick);
     };

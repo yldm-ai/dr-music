@@ -3,7 +3,7 @@
 #include <windowsx.h>
 #include <algorithm>
 namespace dr {
-namespace { constexpr UINT dispatch = WM_APP + 1; bool button(int hit) { return hit == HTMINBUTTON || hit == HTMAXBUTTON || hit == HTCLOSE; } }
+namespace { constexpr UINT dispatch = WM_APP + 1; constexpr UINT_PTR caption_tip_timer = 43; bool button(int hit) { return hit == HTMINBUTTON || hit == HTMAXBUTTON || hit == HTCLOSE; } }
 int Window::scale(int dip) const { return MulDiv(dip, GetDpiForWindow(hwnd_), 96); }
 int Window::caption_height() const {
     RECT frame{}; const auto dpi = GetDpiForWindow(hwnd_);
@@ -24,7 +24,7 @@ bool Window::create(HINSTANCE instance, bool direct2d, bool dark) {
     POINT pointer{}; GetCursorPos(&pointer); MONITORINFO monitor{sizeof(monitor)};
     if (!GetMonitorInfoW(MonitorFromPoint(pointer, MONITOR_DEFAULTTOPRIMARY), &monitor)) SystemParametersInfoW(SPI_GETWORKAREA, 0, &monitor.rcWork, 0);
     const auto r = monitor.rcWork;
-    const int width = std::min<int>(1320, r.right - r.left), height = std::min<int>(890, r.bottom - r.top);
+    const int width = std::min<int>(1520, r.right - r.left), height = std::min<int>(1248, r.bottom - r.top);
     hwnd_ = CreateWindowExW(0, wc.lpszClassName, title_.c_str(), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         r.left + (r.right - r.left - width) / 2, r.top + (r.bottom - r.top - height) / 2,
         width, height, nullptr, nullptr, instance, this);
@@ -34,12 +34,13 @@ bool Window::create(HINSTANCE instance, bool direct2d, bool dark) {
     caption_ = CreateWindowExW(WS_EX_NOACTIVATE, caption_class.lpszClassName, L"", WS_CHILD,
         0, 0, 0, 0, hwnd_, nullptr, instance, this);
     if (!caption_) { DestroyWindow(hwnd_); return false; }
-    apply_frame(); set_appearance(dark, false, title_);
+    apply_frame(); set_appearance(dark, false);
     layout_caption();
     ShowWindow(hwnd_, SW_SHOW); UpdateWindow(hwnd_); return true;
 }
 RECT Window::content_bounds() const { RECT r{}; GetClientRect(hwnd_, &r); if (direct2d_) r.top = std::min(r.bottom, static_cast<LONG>(caption_height())); return r; }
 void Window::layout_caption() {
+    caption_tip(HTNOWHERE);
     if (!caption_) return;
     RECT client{}; GetClientRect(hwnd_, &client);
     SetWindowPos(caption_, nullptr, 0, 0, client.right, caption_height(), SWP_NOACTIVATE | SWP_NOZORDER);
@@ -53,11 +54,13 @@ void Window::apply_frame() {
 }
 void Window::set_style(bool direct2d) {
     if (direct2d_ == direct2d) return;
+    caption_tip(HTNOWHERE);
     direct2d_ = direct2d; hot_ = pressed_ = HTNOWHERE; target_.Reset(); apply_frame();
     layout_caption(); if (on_resize) on_resize(); redraw();
 }
-void Window::set_appearance(bool dark, bool dimmed, const std::wstring &title) {
-    dark_ = dark; dimmed_ = dimmed; title_ = title;
+void Window::set_appearance(bool dark, bool dimmed) {
+    caption_tip(HTNOWHERE);
+    dark_ = dark; dimmed_ = dimmed;
     BOOL value = dark_; DwmSetWindowAttribute(hwnd_, 20, &value, sizeof(value));
     SetWindowTextW(hwnd_, title_.c_str()); redraw();
 }
@@ -76,7 +79,21 @@ int Window::caption_hit(POINT p) const {
 }
 void Window::hover(int hit, bool nonclient) {
     if (hot_ != hit) { hot_ = hit; redraw(); }
+    if (pressed_ == HTNOWHERE && !dimmed_) caption_tip(hit);
     TRACKMOUSEEVENT track{sizeof(track), static_cast<DWORD>(TME_LEAVE | (nonclient ? TME_NONCLIENT : 0)), hwnd_, 0}; TrackMouseEvent(&track);
+}
+RECT Window::caption_button(int hit) const {
+    RECT r{}; GetClientRect(hwnd_, &r);
+    const int width = scale(46), slot = hit == HTCLOSE ? 1 : hit == HTMAXBUTTON ? 2 : 3;
+    return {r.right - width * slot, 0, r.right - width * (slot - 1), caption_height()};
+}
+void Window::caption_tip(int hit) {
+    // Same delayed native-caption -> web tooltip handoff as DR Dict / DR Reader.
+    const auto next = button(hit) && direct2d_ && !dimmed_ ? hit : HTNOWHERE;
+    if (tip_ == next) return;
+    tip_ = next; KillTimer(hwnd_, caption_tip_timer);
+    if (on_caption_tooltip) on_caption_tooltip(L"", RECT{});
+    if (tip_ != HTNOWHERE) SetTimer(hwnd_, caption_tip_timer, 500, nullptr);
 }
 void Window::paint(HWND surface) {
     PAINTSTRUCT ps{}; BeginPaint(surface, &ps); RECT rc{}; GetClientRect(surface, &rc);
@@ -94,7 +111,7 @@ void Window::paint(HWND surface) {
                     if (SUCCEEDED(fonts->FindFamilyName(candidate, &index, &exists)) && exists) { family = candidate; break; }
                 }
             }
-            write_->CreateTextFormat(family, nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12, L"zh-CN", &text_);
+            write_->CreateTextFormat(family, nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 13, L"zh-CN", &text_);
             if (text_) { text_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER); text_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP); }
         }
         if (factory_ && !target_) factory_->CreateHwndRenderTarget(D2D1::RenderTargetProperties(), D2D1::HwndRenderTargetProperties(surface, D2D1::SizeU(rc.right, rc.bottom)), &target_);
@@ -172,9 +189,20 @@ LRESULT Window::message(UINT m, WPARAM w, LPARAM l) {
         GetMonitorInfoW(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST), &monitor);
         info->ptMinTrackSize = {std::min<LONG>(scale(960), monitor.rcWork.right - monitor.rcWork.left), std::min<LONG>(scale(660), monitor.rcWork.bottom - monitor.rcWork.top)}; return 0;
     }
-    case WM_ACTIVATE: redraw(); break;
+    case WM_ACTIVATE:
+        if (LOWORD(w) == WA_INACTIVE) caption_tip(HTNOWHERE);
+        redraw(); break;
+    case WM_MOVE: caption_tip(HTNOWHERE); break;
+    case WM_TIMER:
+        if (w == caption_tip_timer) {
+            KillTimer(hwnd_, caption_tip_timer);
+            if (direct2d_ && !dimmed_ && tip_ != HTNOWHERE && pressed_ == HTNOWHERE && on_caption_tooltip)
+                on_caption_tooltip(tip_ == HTMINBUTTON ? L"最小化" : tip_ == HTCLOSE ? L"关闭" : IsZoomed(hwnd_) ? L"向下还原" : L"最大化", caption_button(tip_));
+            return 0;
+        }
+        break;
     case WM_CLOSE: if (on_close) { on_close(); return 0; } break;
-    case WM_DESTROY: PostQuitMessage(0); return 0;
+    case WM_DESTROY: KillTimer(hwnd_, caption_tip_timer); PostQuitMessage(0); return 0;
     }
     if (direct2d_) switch (m) {
     case WM_NCHITTEST: {
@@ -191,16 +219,17 @@ LRESULT Window::message(UINT m, WPARAM w, LPARAM l) {
             POINT p{}; GetCursorPos(&p); ScreenToClient(hwnd_, &p);
             const auto hit = caption_hit(p);
             if (hot_ != hit) { hot_ = hit; redraw(); }
+            caption_tip(hit);
             // Do not re-arm TrackMouseEvent from a leave notification. When
             // the pointer is over the WebView child, re-arming immediately
             // queues another leave, starving WM_PAINT after maximization.
         }
         return 0;
     case WM_NCLBUTTONDOWN:
-        if (w == HTMAXBUTTON) { hot_ = pressed_ = HTMAXBUTTON; SetCapture(hwnd_); return 0; } break;
+        if (w == HTMAXBUTTON) { caption_tip(HTNOWHERE); hot_ = pressed_ = HTMAXBUTTON; SetCapture(hwnd_); return 0; } break;
     case WM_LBUTTONDOWN: {
         POINT p{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; auto hit = caption_hit(p);
-        if (button(hit)) { hot_ = pressed_ = hit; SetCapture(hwnd_); redraw(); return 0; } break;
+        if (button(hit)) { caption_tip(HTNOWHERE); hot_ = pressed_ = hit; SetCapture(hwnd_); redraw(); return 0; } break;
     }
     case WM_MOUSEMOVE: { POINT p{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; hover(caption_hit(p), false); break; }
     case WM_LBUTTONUP:

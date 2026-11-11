@@ -46,7 +46,7 @@ void Application::receive(const Json &request) {
     const auto id = request["id"]; const auto method = request["method"].get<std::string>(); const auto params = request.value("params", Json::object());
     try {
         if (method == "window:appearance") {
-            window_.set_appearance(params.value("theme", "dark") == "dark", params.value("dimmed", false), wide(params.value("title", "DR Music").substr(0, 1000)));
+            window_.set_appearance(params.value("theme", "dark") == "dark", params.value("dimmed", false));
             reply(id, nullptr); return;
         }
         if (method == "library:import" || method == "library:rescan") {
@@ -105,6 +105,11 @@ int Application::run(HINSTANCE instance) {
     if (!shell_.empty()) { s["titleBar"] = shell_; library_.update({{"settings", {{"titleBar", shell_}}}}); }
     if (!window_.create(instance, s.value("titleBar", "direct2d") == "direct2d", s.value("theme", "dark") == "dark")) throw std::runtime_error("无法创建 DR Music 窗口");
     window_.on_resize = [this] { webview_.resize(window_.content_bounds()); };
+    window_.on_caption_tooltip = [this](const std::wstring &text, RECT button) {
+        if (closing_) return;
+        const double scale = 96.0 / GetDpiForWindow(window_.handle());
+        webview_.send({{"event", "caption-tooltip"}, {"data", {{"text", utf8(text)}, {"left", button.left * scale}, {"width", (button.right - button.left) * scale}}}});
+    };
     window_.on_close = [this] { closing_ = true; worker_.request_stop(); ready_.notify_all(); DestroyWindow(window_.handle()); };
     webview_.on_message = [this](const Json &message) { receive(message); };
     webview_.on_resource = [this](const std::wstring &uri, const std::string &range, const std::string &method) { return serve_media(library_, uri, range, method); };

@@ -9,8 +9,12 @@ const host = (window as unknown as { chrome?: { webview?: WebViewHost } }).chrom
 let sequence = 0;
 const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: number }>();
 const progressListeners = new Set<(progress: Progress) => void>();
+type CaptionTooltip = { text: string; left: number; width: number };
+const captionListeners = new Set<(tip: CaptionTooltip) => void>();
+export function onCaptionTooltip(listener: (tip: CaptionTooltip) => void) { captionListeners.add(listener); return () => { captionListeners.delete(listener); }; }
 host?.addEventListener('message', ({ data }) => {
   if (data?.event === 'library:progress') { for (const listener of progressListeners) listener(data.data); return; }
+  if (data?.event === 'caption-tooltip') { for (const listener of captionListeners) listener(data.data); return; }
   const request = pending.get(data?.id);
   if (!request) return;
   clearTimeout(request.timer); pending.delete(data.id);
@@ -38,6 +42,6 @@ window.music = Object.freeze({
   reveal: (id: string) => call('track:reveal', { id }),
   openData: () => call('app:data'),
   notices: () => call('app:notices'),
-  appearance: (data: { theme: string; dimmed: boolean; title: string }) => call('window:appearance', data),
+  appearance: (data: { theme: string; dimmed: boolean }) => call('window:appearance', data),
   onProgress: (listener: (progress: Progress) => void) => { progressListeners.add(listener); return () => { progressListeners.delete(listener); }; },
 }) as Window['music'];

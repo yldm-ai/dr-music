@@ -22,7 +22,7 @@ declare global {
       reveal(id: string): Promise<void>;
       openData(): Promise<void>;
       notices(): Promise<string>;
-      appearance(data: { theme: string; dimmed: boolean; title: string }): Promise<void>;
+      appearance(data: { theme: string; dimmed: boolean }): Promise<void>;
       onProgress(callback: (p: Progress) => void): () => void;
     };
   }

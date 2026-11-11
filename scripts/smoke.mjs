@@ -35,8 +35,29 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   await page.waitForURL('https://app.dr-music.local/index.html');
   await page.getByRole('button', { name: '播放 午后散步', exact: true }).waitFor();
+  assert.equal(await page.title(), 'DR Music');
   assert.equal((await page.evaluate(() => window.music.getLibrary())).tracks.length, 3);
   await page.screenshot({ path: path.join(root, 'library.png') });
+  // The actual popover must show on hover and dismiss on keyboard input.
+  await page.getByRole('button', { name: '新建歌单', exact: true }).hover();
+  await page.getByRole('tooltip').filter({ hasText: '新建歌单' }).waitFor();
+  await page.waitForFunction(() => getComputedStyle(document.getElementById('dr-hover-tip')).opacity === '1');
+  await page.screenshot({ path: path.join(root, 'tooltip.png') });
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.getElementById('dr-hover-tip').matches(':popover-open'));
+  // Third-party/dynamic title attributes use the same drawn tip, including
+  // changes while hovered and removal of a hovered element.
+  await page.evaluate(() => {
+    const button = document.createElement('button'); button.id = 'tooltip-probe'; button.title = '动态提示'; button.textContent = '提示检查';
+    button.style.cssText = 'position:fixed;right:8px;bottom:140px;z-index:80;padding:8px;background:#333'; document.body.append(button);
+  });
+  await page.locator('#tooltip-probe').hover();
+  await page.getByRole('tooltip').filter({ hasText: '动态提示' }).waitFor();
+  await page.locator('#tooltip-probe').evaluate(button => { button.title = '更新后的提示'; });
+  await page.getByRole('tooltip').filter({ hasText: '更新后的提示' }).waitFor();
+  assert.equal(await page.locator('#tooltip-probe').getAttribute('title'), null);
+  await page.locator('#tooltip-probe').evaluate(button => button.remove());
+  await page.waitForFunction(() => !document.getElementById('dr-hover-tip').matches(':popover-open'));
   await page.getByRole('button', { name: '喜欢 午后散步', exact: true }).click();
   await page.getByRole('button', { name: /我喜欢的/ }).click();
   assert.equal(await page.locator('.track-table .track-row:not(.table-head)').count(), 1);
@@ -56,6 +77,10 @@ try {
   });
   assert.equal(check.status, 206); assert.equal(check.size, 56); assert.match(check.range, /^bytes 44-99\//);
   await page.getByRole('button', { name: '打开歌词播放页', exact: true }).click();
+  await page.getByRole('button', { name: '收起播放页', exact: true }).hover();
+  await page.getByRole('tooltip').filter({ hasText: '收起播放页' }).waitFor();
+  assert.equal(await page.getByRole('tooltip').getAttribute('data-theme'), 'dark');
+  await page.mouse.move(1, 1);
   await page.locator('.amll-lyric-player').waitFor();
   await page.locator('.amll-lyric-player').getByText('测试歌词第二句', { exact: false }).first().click({ force: true });
   await page.waitForFunction(() => Number(document.querySelector('.now-left input[aria-label="播放进度"]').value) >= 4);
@@ -72,6 +97,9 @@ try {
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: /设置与关于/ }).click();
   await page.getByRole('combobox', { name: '应用主题', exact: true }).selectOption('light');
+  await page.locator('.folder-list span').first().hover();
+  await page.getByRole('tooltip').filter({ hasText: 'songs' }).waitFor();
+  assert.equal(await page.getByRole('tooltip').getAttribute('data-theme'), 'light');
   await page.getByRole('combobox', { name: '原生标题栏', exact: true }).selectOption('system');
   await page.waitForFunction(async () => (await window.music.getLibrary()).settings.titleBar === 'system');
   await page.screenshot({ path: path.join(root, 'system-caption-settings.png') });
@@ -94,6 +122,7 @@ try {
   assert.equal(library.tracks.length, 3); assert.equal(library.settings.titleBar, 'direct2d'); assert.equal(library.settings.theme, 'light');
   const saved = JSON.parse(await readFile(path.join(root, 'data', 'library.json'), 'utf8'));
   assert.equal(saved.favorites.length, 1); assert.equal(saved.playlists[0].trackIds.length, 1); assert.deepEqual(errors, []);
+  assert.equal(await page.locator('[title]').count(), 0);
   console.log('PASS: real C++/WebView2 host, native scan and bridge, audio playback and Range stream, favorites/playlists, AMLL LRC click seeking, TTML rendering, rescan, theme/titlebar switching and persistence, native command validation and network isolation.');
   console.log(`Screenshots: ${root}`);
 } catch (error) {

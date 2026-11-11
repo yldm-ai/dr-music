@@ -71,7 +71,13 @@ void caption_test() {
     CHECK(hit(bounds.right - width * 3 / 2, bounds.top / 2) == HTMAXBUTTON); CHECK(hit(bounds.right - width / 2, bounds.top / 2) == HTCLIENT);
     SendMessageW(hwnd, WM_SYSCOMMAND, SC_MAXIMIZE, 0); CHECK(IsZoomed(hwnd)); SendMessageW(hwnd, WM_SYSCOMMAND, SC_RESTORE, 0); CHECK(!IsZoomed(hwnd));
     window.set_style(false); CHECK(window.content_bounds().top == 0); window.set_style(true); CHECK(window.content_bounds().top > 0);
-    window.set_appearance(false, false, L"DR Music Test"); wchar_t title[100]{}; GetWindowTextW(hwnd, title, 100); CHECK(std::wstring(title) == L"DR Music Test"); DestroyWindow(hwnd);
+    std::wstring tip; RECT anchor{};
+    window.on_caption_tooltip = [&](const std::wstring &text, RECT rect) { tip = text; anchor = rect; };
+    SendMessageW(hwnd, WM_NCMOUSEMOVE, HTMAXBUTTON, 0);
+    SendMessageW(hwnd, WM_TIMER, 43, 0);
+    CHECK(tip == L"最大化"); CHECK(anchor.right - anchor.left == width);
+    window.set_appearance(false, true); CHECK(tip.empty());
+    window.set_appearance(false, false); wchar_t title[100]{}; GetWindowTextW(hwnd, title, 100); CHECK(std::wstring(title) == L"DR Music"); DestroyWindow(hwnd);
 }
 // Re-arming a leave notification outside a window previously created an
 // endless posted-message loop that starved WM_PAINT after maximizing.

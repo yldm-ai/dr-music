@@ -14,11 +14,13 @@ DR Music 是 suxiaofan 的个人本地音乐播放器。当前宿主为独立实
 
 本项目保留原项目的侧栏、音乐库、底部播放器及正在播放页面的产品结构思路。`src/lib/lyrics.ts` 移植其 SpreadWords 分词与字词时间分配思路，并注明来源。原项目关于 Spotify 独立性、账号、内部接口和风险的声明完整保存在原始 README 中；这些内容描述原始 MySpotify。本项目不包含对应在线链路。
 
-## DR Dict（原生架构参考）
+## DR Dict / DR Reader（原生架构参考）
 
-本机同级 `../dr-dict`：`ui/src/window.cpp`、`ui/include/dr/window.h`、`app/src/webview.cpp`、`web/bridge.ts`、`app/CMakeLists.txt` 与 `scripts/build.ps1`。
+本机同级 `../dr-dict`：`ui/src/window.cpp`、`ui/include/dr/window.h`、`app/src/webview.cpp`、`web/bridge.ts`、`web/tooltip.ts`、`app/CMakeLists.txt` 与 `scripts/build.ps1`。
 
-参考其原生窗口与 WebView2 分离、D2D 标题栏、非客户区命中测试、DPI 处理、虚拟主机映射、JSON 消息桥和 CMake 构建模式。本项目实现位于 `native/`、`src/bridge.ts` 与 `scripts/build.ps1`，不依赖词典引擎或原目录。
+本机同级 `../dr-reader`：`app/src/application.cpp` 与 `web/{app.ts,tooltip.ts}`。
+
+参考其原生窗口与 WebView2 分离、D2D 标题栏、非客户区命中测试、DPI 处理、虚拟主机映射、JSON 消息桥、标题栏按钮到网页顶层提示的事件桥和 CMake 构建模式。本项目实现位于 `native/`、`src/{bridge.ts,tooltips.ts}` 与 `scripts/build.ps1`，不依赖参考目录中的词典、阅读器引擎或运行时资源。
 
 ## Apple Music-like Lyrics（AMLL）
 

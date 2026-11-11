@@ -90,16 +90,21 @@ try {
     return player && player.querySelectorAll('.FmKaba_lyricLine').length > 0
       && !!document.querySelector('.FmKaba_lyricLine.FmKaba_active .FmKaba_lyricMainLine');
   });
-  assert.equal(await page.evaluate(() => {
-    const centered = selector => {
-      const element = document.querySelector(selector); if (!element) return false;
-      const [x, y] = getComputedStyle(element).transformOrigin.split(/\s+/);
-      const resolve = (value, size) => value.endsWith('%') ? Number.parseFloat(value) / 100 * size : Number.parseFloat(value);
-      return Math.abs(resolve(x, element.offsetWidth) - element.offsetWidth / 2) < .5
-        && Math.abs(resolve(y, element.offsetHeight) - element.offsetHeight / 2) < .5;
-    };
-    return centered('.FmKaba_lyricLine') && centered('.icon-button-glyph') && centered('button');
-  }), true);
+  await page.locator('.now-playing .icon-button').first().hover();
+  for (const delay of [40, 100, 220]) {
+    await page.waitForTimeout(delay);
+    assert.equal(await page.evaluate(() => {
+      const unscaled = element => {
+        const transform = getComputedStyle(element).transform;
+        if (transform === 'none') return true;
+        const matrix = new DOMMatrixReadOnly(transform);
+        return Math.abs(Math.hypot(matrix.a, matrix.b) - 1) < .002
+          && Math.abs(Math.hypot(matrix.c, matrix.d) - 1) < .002;
+      };
+      return [...document.querySelectorAll('button,.FmKaba_lyricLine,.icon-button-glyph,.transport-state-icon,.empty-icon,.brand-icon')].every(unscaled);
+    }), true);
+  }
+  await page.mouse.move(1, 1);
   await page.locator('.amll-lyric-player').getByText('测试歌词第二句', { exact: false }).first().click({ force: true });
   await page.waitForFunction(() => Number(document.querySelector('.now-left input[aria-label="播放进度"]').value) >= 4);
   const toast = page.getByRole('button', { name: '关闭提示', exact: true }); if (await toast.count()) await toast.click();

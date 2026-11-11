@@ -25,7 +25,7 @@ export function Lyrics({ file, audio, offset, onSeek }: { file: LyricFile; audio
     const player = new LyricPlayer();
     player.setAlignPosition(0.38);
     player.setWordFadeWidth(.35);
-    player.setEnableScale(true);
+    player.setEnableScale(false);
     player.setEnableBlur(true);
     player.setEnableSpring(true);
     host.current.appendChild(player.getElement());

@@ -15,18 +15,26 @@ public:
     bool create(HINSTANCE instance, bool direct2d, bool dark);
     HWND handle() const { return hwnd_; }
     RECT content_bounds() const;
-    void set_style(bool direct2d);
+    void set_style(bool direct2d, bool webview = false);
     void set_appearance(bool dark, bool dimmed);
+    void set_caption_layout(RECT caption, RECT minimize, RECT maximize, RECT close);
     void post(std::function<void()> action);
     std::function<void()> on_resize, on_close;
     std::function<void(const std::wstring &, RECT)> on_caption_tooltip;
+    std::function<void(const std::wstring &)> on_caption_event;
+    std::function<void(UINT, WPARAM, LPARAM)> on_mouse;
+    std::function<bool()> on_cursor;
+    std::function<void()> on_focus;
+    std::function<void()> on_move;
     bool direct2d() const { return direct2d_; }
+    bool web_caption() const { return web_caption_; }
 private:
     static LRESULT CALLBACK procedure(HWND, UINT, WPARAM, LPARAM);
     static LRESULT CALLBACK caption_procedure(HWND, UINT, WPARAM, LPARAM);
     LRESULT message(UINT, WPARAM, LPARAM);
     void paint(HWND surface);
     void layout_caption();
+    void clear_web_hover();
     void redraw();
     void apply_frame();
     int scale(int dip) const;
@@ -37,7 +45,9 @@ private:
     RECT caption_button(int hit) const;
     HWND hwnd_ = nullptr;
     HWND caption_ = nullptr;
-    bool direct2d_ = true, dark_ = true, dimmed_ = false;
+    bool direct2d_ = true, web_caption_ = false, dark_ = true, dimmed_ = false;
+    bool caption_layout_ready_ = false, caption_hot_ = false, caption_pressed_ = false, web_mouse_inside_ = false;
+    RECT caption_rect_{}, minimize_rect_{}, maximize_rect_{}, close_rect_{};
     int hot_ = HTNOWHERE, pressed_ = HTNOWHERE, tip_ = HTNOWHERE;
     const std::wstring title_ = L"DR Music";
     Microsoft::WRL::ComPtr<ID2D1Factory> factory_;

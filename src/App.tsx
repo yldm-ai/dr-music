@@ -6,6 +6,8 @@ import type { Library, Track, Settings, LyricFile, Progress, Playlist } from './
 import { formatTime, nextTrack } from './lib/queue';
 import { virtualRange } from './lib/virtual';
 import { Lyrics } from './Lyrics';
+import { Select } from './Select';
+import { onCaptionButton, onWindowState } from './bridge';
 
 const media = (track: Track, kind = 'audio') => `https://media.dr-music.local/${kind}/${track.id}`;
 const smoothEase: [number, number, number, number] = [.22, 1, .36, 1];
@@ -69,6 +71,32 @@ export function App() {
   const [queueImagesReady, setQueueImagesReady] = useState(false);
   const [queueViewport, setQueueViewport] = useState({ scrollTop: 0, height: 0 });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState('appearance');
+  const [maximized, setMaximized] = useState(false);
+  const [captionHot, setCaptionHot] = useState(false);
+  const [captionActive, setCaptionActive] = useState(false);
+  useEffect(() => onWindowState(setMaximized), []);
+  useEffect(() => onCaptionButton(event => {
+    if (event === 'enter') setCaptionHot(true);
+    else if (event === 'leave') { setCaptionHot(false); setCaptionActive(false); }
+    else if (event === 'down') setCaptionActive(true);
+    else if (event === 'up') setCaptionActive(false);
+  }), []);
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const dialog = document.querySelector<HTMLElement>('.settings-modal');
+    const frame = requestAnimationFrame(() => dialog?.querySelector<HTMLButtonElement>('[role=tab][aria-selected=true]')?.focus());
+    const trap = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab' || document.querySelector('.select-popover')) return;
+      const elements = Array.from(dialog?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),[tabindex="0"]') || []).filter(element => element.getClientRects().length > 0 && !element.closest('[hidden]'));
+      const first = elements[0], last = elements[elements.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    };
+    document.addEventListener('keydown', trap);
+    return () => { cancelAnimationFrame(frame); document.removeEventListener('keydown', trap); previous?.focus({ preventScroll: true }); };
+  }, [settingsOpen]);
   const [noticeText, setNoticeText] = useState('');
   const [toast, setToast] = useState('');
   const [busy, setBusy] = useState(false);
@@ -132,6 +160,36 @@ export function App() {
   const current = currentId ? trackById.get(currentId) : undefined;
   const queueWindow = useMemo(() => virtualRange(queue.length, QUEUE_ROW_HEIGHT, queueViewport.scrollTop, queueViewport.height, QUEUE_OVERSCAN), [queue.length, queueViewport]);
   const settings = library?.settings;
+  useEffect(() => { if (settings?.titleBar !== 'webview2') { setCaptionHot(false); setCaptionActive(false); } }, [settings?.titleBar]);
+  useEffect(() => {
+    if (settings?.titleBar !== 'webview2' || !window.music) return;
+    let frame = 0;
+    const report = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const caption = document.querySelector<HTMLElement>('.web-caption');
+        const buttons = caption?.querySelectorAll<HTMLButtonElement>('button');
+        if (!caption || buttons?.length !== 3) return;
+        const rect = (element: Element) => {
+          const r = element.getBoundingClientRect();
+          return { x: r.x, y: r.y, width: r.width, height: r.height };
+        };
+        void window.music.captionLayout({
+          caption: rect(caption), minimize: rect(buttons[0]), maximize: rect(buttons[1]), close: rect(buttons[2]),
+          dpr: window.devicePixelRatio,
+        }).catch(() => {});
+      });
+    };
+    report();
+    window.addEventListener('resize', report);
+    const observer = new ResizeObserver(report);
+    const caption = document.querySelector<HTMLElement>('.web-caption');
+    if (caption) {
+      observer.observe(caption);
+      for (const button of caption.querySelectorAll<HTMLButtonElement>('button')) observer.observe(button);
+    }
+    return () => { cancelAnimationFrame(frame); window.removeEventListener('resize', report); observer.disconnect(); };
+  }, [settings?.titleBar, maximized]);
   useEffect(() => {
     if (!settings) return;
     void window.music.appearance({
@@ -368,7 +426,15 @@ export function App() {
   };
 
   return <MotionConfig reducedMotion="user" transition={layoutTransition}>
-    <motion.div className="app-shell" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: .42, ease: smoothEase }}>
+    <motion.div className={`app-shell ${settings?.titleBar === 'webview2' ? 'web-caption-mode' : ''}`} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: .42, ease: smoothEase }}>
+      {settings?.titleBar === 'webview2' && <header className={`web-caption ${nowPlaying ? 'immersive' : ''}`}>
+        <span>DR Music</span>
+        <div>
+          <button aria-label="最小化窗口" data-tooltip="最小化" onClick={() => void window.music.windowCommand('minimize').catch(error => notify(String(error)))}><svg viewBox="0 0 12 12"><path d="M1 6h10"/></svg></button>
+          <button className={`${captionHot ? 'hot' : ''} ${captionActive ? 'active' : ''}`} aria-label="最大化或还原窗口" data-tooltip={maximized ? '向下还原' : '最大化'} onClick={() => void window.music.windowCommand('maximize').catch(error => notify(String(error)))}><svg viewBox="0 0 12 12">{maximized ? <><path d="M4 1h7v7"/><rect x="1" y="4" width="7" height="7"/></> : <rect x="1.5" y="1.5" width="9" height="9"/>}</svg></button>
+          <button aria-label="关闭窗口" data-tooltip="关闭" onClick={() => void window.music.windowCommand('close').catch(error => notify(String(error)))}><svg viewBox="0 0 12 12"><path d="m1 1 10 10M1 11 11 1"/></svg></button>
+        </div>
+      </header>}
       <aside className="sidebar">
         <PressableButton className="brand" onClick={() => navigate('songs')}>
           <span className="brand-icon"><AudioLines size={25}/></span>
@@ -427,7 +493,7 @@ export function App() {
           <motion.section className="collection">
             <motion.div className="collection-toolbar">
               <div><h2>{query ? `找到 ${filtered.length} 首歌曲` : group || selectedPlaylist ? '歌曲' : page === 'albums' ? '所有专辑' : page === 'artists' ? '所有艺术家' : '全部歌曲'}</h2><AnimatePresence mode="wait" initial={false}><motion.span key={filtered.length} initial={{ opacity: 0, y: 2 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -2 }} transition={quickTextTransition}>{filtered.length.toString().padStart(2, '0')}</motion.span></AnimatePresence></div>
-              <div><PressableButton className="text-button" disabled={busy} onClick={() => void runImport('files')}><Plus size={16}/>添加音乐</PressableButton><select aria-label="歌曲排序" value={sort} onChange={e => setSort(e.target.value)}><option value="added">最近添加</option><option value="title">歌曲名称</option><option value="artist">艺术家</option></select></div>
+              <div><PressableButton className="text-button" disabled={busy} onClick={() => void runImport('files')}><Plus size={16}/>添加音乐</PressableButton><Select label="歌曲排序" value={sort} onChange={setSort} options={[{ value: 'added', label: '最近添加' }, { value: 'title', label: '歌曲名称' }, { value: 'artist', label: '艺术家' }]}/></div>
             </motion.div>
             {renderCollection()}
             <AnimatePresence>{((page === 'albums' || page === 'artists') && !group ? groups.length : filtered.length) > limit && <motion.div key="load-more" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><PressableButton className="load-more secondary-button" onClick={() => setLimit(n => n + 100)}>加载更多</PressableButton></motion.div>}</AnimatePresence>
@@ -510,18 +576,19 @@ export function App() {
         {settingsOpen && <motion.div key="settings-backdrop" className="modal-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setSettingsOpen(false)}>
           <motion.section className="modal settings-modal" role="dialog" aria-modal="true" aria-label="设置与关于" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }} transition={layoutTransition} onClick={e => e.stopPropagation()}>
             <div className="modal-header"><h2>设置与关于</h2><IconButton icon={X} label="关闭设置" onClick={() => setSettingsOpen(false)}/></div>
+            <div className="settings-tabs" role="tablist" aria-label="设置分类">{[{ id: 'appearance', label: '外观', icon: Settings2 }, { id: 'library', label: '音乐库', icon: LibraryIcon }, { id: 'playback', label: '播放与快捷键', icon: Headphones }, { id: 'about', label: '关于', icon: Music2 }].map(({ id, label, icon: Icon }) => <button key={id} role="tab" aria-selected={settingsTab === id} tabIndex={settingsTab === id ? 0 : -1} onClick={() => setSettingsTab(id)} onKeyDown={event => { const buttons = Array.from(event.currentTarget.parentElement!.querySelectorAll<HTMLButtonElement>('[role=tab]')); const index = buttons.indexOf(event.currentTarget); if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const target = buttons[event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length]; target.click(); target.focus(); } }}><Icon size={16}/>{label}</button>)}</div>
             <div className="settings-body">
-              <div className="settings-brand"><motion.span className="brand-icon" animate={{ rotate: [0, -3, 3, 0] }} transition={{ duration: 5, repeat: Infinity, repeatDelay: 2 }}><AudioLines size={30}/></motion.span><div><h3>DR Music <small>0.2.0</small></h3><p>你的音乐，你的节奏。完全本地的个人音乐播放器。</p></div></div>
-              <h4>外观</h4>
-              <div className="settings-row"><span>应用主题</span><select aria-label="应用主题" value={settings?.theme || 'dark'} onChange={e => setSettings({ theme: e.target.value as Settings['theme'] })}><option value="dark">深色 · 夜间唱片店</option><option value="light">浅色 · 午后音乐室</option></select></div>
-              <div className="settings-row"><span>原生标题栏</span><select aria-label="原生标题栏" value={settings?.titleBar || 'direct2d'} onChange={e => setSettings({ titleBar: e.target.value as Settings['titleBar'] })}><option value="direct2d">Direct2D 自绘</option><option value="system">Windows 系统标题栏</option></select></div>
-              <h4>本地音乐库</h4><p className="settings-hint">文件夹扫描包含子目录。重新扫描会更新标签和新增歌曲；失效文件可手动移出音乐库。移除操作不会删除磁盘音乐。</p>
+              <div className="settings-brand"><span className="brand-icon"><AudioLines size={25}/></span><div><h3>DR Music <small>0.2.0</small></h3><p>你的音乐，你的节奏。完全本地的个人音乐播放器。</p></div></div>
+              <section role="tabpanel" aria-label="外观" hidden={settingsTab !== 'appearance'}><h4>外观</h4><p className="settings-hint">选择适合你的配色和窗口风格。</p>
+              <div className="settings-row"><span>应用主题</span><Select label="应用主题" value={settings?.theme || 'dark'} onChange={value => setSettings({ theme: value as Settings['theme'] })} options={[{ value: 'dark', label: '深色 · 夜间唱片店' }, { value: 'light', label: '浅色 · 午后音乐室' }]}/></div>
+              <div className="settings-row"><span>原生标题栏</span><Select label="原生标题栏" value={settings?.titleBar || 'direct2d'} onChange={value => setSettings({ titleBar: value as Settings['titleBar'] })} options={[{ value: 'direct2d', label: 'Direct2D 自绘' }, { value: 'webview2', label: 'WebView2 沉浸式' }, { value: 'system', label: 'Windows 系统标题栏' }]}/></div>
+              </section><section role="tabpanel" aria-label="音乐库" hidden={settingsTab !== 'library'}><h4>本地音乐库</h4><p className="settings-hint">文件夹扫描包含子目录。重新扫描会更新标签和新增歌曲；失效文件可手动移出音乐库。移除操作不会删除磁盘音乐。</p>
               <div className="folder-list"><AnimatePresence initial={false}>{library?.folders.map(folder => <motion.div key={folder} layout="position" initial={{ opacity: 0, x: -4 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 4 }} transition={textTransition}><FolderOpen size={16}/><span data-tooltip={folder}>{folder}</span></motion.div>)}{!library?.folders.length && <motion.p key="empty-folders" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>还没有导入音乐文件夹</motion.p>}</AnimatePresence></div>
               <div className="settings-actions"><PressableButton className="secondary-button" disabled={busy} onClick={() => void runImport('folder')}><FolderPlus size={16}/>添加文件夹</PressableButton><PressableButton className="secondary-button" disabled={busy || !library?.folders.length} onClick={() => void runImport('rescan')}><RefreshCw size={16}/>重新扫描</PressableButton><PressableButton className="text-button" onClick={() => void window.music.openData().catch(e => notify(String(e)))}>打开数据目录</PressableButton></div>
-              <h4>键盘与播放</h4><div className="shortcut-list"><span>播放 / 暂停 <kbd>Space</kbd></span><span>上一首 / 下一首 <kbd>Ctrl ← / →</kbd></span><span>打开 / 收起播放页 <kbd>Ctrl L</kbd></span><span>喜欢当前歌曲 <kbd>Ctrl D</kbd></span><span>搜索音乐 <kbd>Ctrl F</kbd></span><span>关闭面板 <kbd>Esc</kbd></span></div>
-              <h4>来源与开源声明</h4><p className="settings-hint">本项目由 suxiaofan 定制，基于 MySpotify 的产品布局与歌词分词逻辑重构。原作者及开源声明保留。歌词使用 Apple Music-like Lyrics 渲染。应用遵循 AGPL-3.0-only。</p>
+              </section><section role="tabpanel" aria-label="播放与快捷键" hidden={settingsTab !== 'playback'}><h4>键盘与播放</h4><div className="shortcut-list"><span>播放 / 暂停 <kbd>Space</kbd></span><span>上一首 / 下一首 <kbd>Ctrl ← / →</kbd></span><span>打开 / 收起播放页 <kbd>Ctrl L</kbd></span><span>喜欢当前歌曲 <kbd>Ctrl D</kbd></span><span>搜索音乐 <kbd>Ctrl F</kbd></span><span>关闭面板 <kbd>Esc</kbd></span></div>
+              </section><section role="tabpanel" aria-label="关于" hidden={settingsTab !== 'about'}><h4>来源与开源声明</h4><p className="settings-hint">本项目由 suxiaofan 定制，基于 MySpotify 的产品布局与歌词分词逻辑重构。原作者及开源声明保留。歌词使用 Apple Music-like Lyrics 渲染。应用遵循 AGPL-3.0-only。</p>
               <PressableButton className="secondary-button" onClick={() => void window.music.notices().then(setNoticeText).catch(e => notify(String(e)))}>查看原项目及第三方声明</PressableButton>
-              <p className="privacy-note"><Check size={15}/>没有账号、在线搜索、遥测或自动更新。音频、歌词与音乐库都在你的电脑里。</p>
+              <p className="privacy-note"><Check size={15}/>没有账号、在线搜索、遥测或自动更新。音频、歌词与音乐库都在你的电脑里。</p></section>
             </div>
           </motion.section>
         </motion.div>}

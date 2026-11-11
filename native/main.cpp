@@ -18,7 +18,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
                 if (arg == L"--data-dir" && i + 1 < argc) data = dr::fs::absolute(argv[++i]);
                 else if (arg == L"--import" && i + 1 < argc) imports.emplace_back(argv[++i]);
                 else if (arg == L"--debug-port" && i + 1 < argc) { port = static_cast<unsigned>(std::stoul(argv[++i])); if (port < 1024 || port > 65535) throw std::runtime_error("无效的调试端口"); }
-                else if (arg == L"--shell" && i + 1 < argc) { shell = dr::utf8(argv[++i]); if (shell != "direct2d" && shell != "system") throw std::runtime_error("--shell 仅支持 direct2d 或 system"); }
+                else if (arg == L"--shell" && i + 1 < argc) { shell = dr::utf8(argv[++i]); if (shell != "direct2d" && shell != "system" && shell != "webview2") throw std::runtime_error("--shell 仅支持 direct2d、webview2 或 system"); }
                 else throw std::runtime_error("未知或不完整的命令行参数");
             }
         } catch (...) { LocalFree(argv); throw; }

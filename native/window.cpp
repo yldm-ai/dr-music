@@ -46,16 +46,49 @@ void Window::layout_caption() {
     SetWindowPos(caption_, nullptr, 0, 0, client.right, caption_height(), SWP_NOACTIVATE | SWP_NOZORDER);
     ShowWindow(caption_, direct2d_ ? SW_SHOWNA : SW_HIDE); redraw();
 }
+void Window::clear_web_hover() {
+    if (web_mouse_inside_) {
+        web_mouse_inside_ = false;
+        if (on_mouse) on_mouse(WM_MOUSELEAVE, 0, 0);
+    }
+    if (caption_hot_ || caption_pressed_) {
+        caption_hot_ = caption_pressed_ = false;
+        caption_tip(HTNOWHERE);
+        if (on_caption_event) on_caption_event(L"leave");
+    }
+}
+void Window::set_caption_layout(RECT caption, RECT minimize, RECT maximize, RECT close) {
+    RECT client{}; GetClientRect(hwnd_, &client);
+    // WebView2 rounds its CSS viewport to the nearest device pixel, so the
+    // page's right/bottom edge can be one pixel past the host's client rect.
+    constexpr LONG tolerance = 2;
+    auto valid = [&](RECT r) {
+        return r.left >= -tolerance && r.top >= -tolerance && r.right > r.left && r.bottom > r.top &&
+            r.right <= client.right + tolerance && r.bottom <= client.bottom + tolerance;
+    };
+    if (!valid(caption) || !valid(minimize) || !valid(maximize) || !valid(close)) return;
+    auto clamp = [&](RECT r) {
+        r.left = std::clamp<LONG>(r.left, 0, client.right);
+        r.top = std::clamp<LONG>(r.top, 0, client.bottom);
+        r.right = std::clamp<LONG>(r.right, r.left + 1, client.right);
+        r.bottom = std::clamp<LONG>(r.bottom, r.top + 1, client.bottom);
+        return r;
+    };
+    caption_rect_ = clamp(caption); minimize_rect_ = clamp(minimize); maximize_rect_ = clamp(maximize); close_rect_ = clamp(close);
+    caption_layout_ready_ = true;
+}
 void Window::redraw() { if (caption_) InvalidateRect(caption_, nullptr, FALSE); InvalidateRect(hwnd_, nullptr, FALSE); }
 void Window::apply_frame() {
     const DWORD corners = 2; DwmSetWindowAttribute(hwnd_, 33, &corners, sizeof(corners));
     MARGINS margins{}; DwmExtendFrameIntoClientArea(hwnd_, &margins);
     SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
 }
-void Window::set_style(bool direct2d) {
-    if (direct2d_ == direct2d) return;
+void Window::set_style(bool direct2d, bool webview) {
+    if (direct2d_ == direct2d && web_caption_ == webview) return;
     caption_tip(HTNOWHERE);
-    direct2d_ = direct2d; hot_ = pressed_ = HTNOWHERE; target_.Reset(); apply_frame();
+    clear_web_hover();
+    caption_layout_ready_ = false;
+    direct2d_ = direct2d; web_caption_ = webview; hot_ = pressed_ = HTNOWHERE; target_.Reset(); apply_frame();
     layout_caption(); if (on_resize) on_resize(); redraw();
 }
 void Window::set_appearance(bool dark, bool dimmed) {
@@ -70,7 +103,23 @@ void Window::post(std::function<void()> action) {
 }
 int Window::caption_hit(POINT p) const {
     RECT r{}; GetClientRect(hwnd_, &r);
-    if (p.y < 0 || p.y >= caption_height() || p.x < 0 || p.x >= r.right) return HTCLIENT;
+    if (p.x < 0 || p.y < 0 || p.x >= r.right || p.y >= r.bottom) return HTCLIENT;
+    if (web_caption_) {
+        auto inside = [&](const RECT &rect) { return p.x >= rect.left && p.x < rect.right && p.y >= rect.top && p.y < rect.bottom; };
+        if (caption_layout_ready_) {
+            if (inside(maximize_rect_)) return HTMAXBUTTON;
+            if (inside(minimize_rect_) || inside(close_rect_)) return HTCLIENT;
+            if (p.y >= caption_rect_.top && p.y < caption_rect_.bottom) return HTCAPTION;
+            return HTCLIENT;
+        }
+        const int width = scale(46), height = scale(36);
+        if (p.y >= height) return HTCLIENT;
+        if (p.x >= r.right - width) return HTCLIENT;
+        if (p.x >= r.right - width * 2) return HTMAXBUTTON;
+        if (p.x >= r.right - width * 3) return HTCLIENT;
+        return HTCAPTION;
+    }
+    if (p.y >= caption_height()) return HTCLIENT;
     auto width = scale(46);
     if (p.x >= r.right - width) return HTCLOSE;
     if (p.x >= r.right - width * 2) return HTMAXBUTTON;
@@ -84,12 +133,18 @@ void Window::hover(int hit, bool nonclient) {
 }
 RECT Window::caption_button(int hit) const {
     RECT r{}; GetClientRect(hwnd_, &r);
+    if (web_caption_ && caption_layout_ready_) {
+        if (hit == HTMAXBUTTON) return maximize_rect_;
+        if (hit == HTMINBUTTON) return minimize_rect_;
+        if (hit == HTCLOSE) return close_rect_;
+    }
     const int width = scale(46), slot = hit == HTCLOSE ? 1 : hit == HTMAXBUTTON ? 2 : 3;
-    return {r.right - width * slot, 0, r.right - width * (slot - 1), caption_height()};
+    const int height = web_caption_ ? scale(36) : caption_height();
+    return {r.right - width * slot, 0, r.right - width * (slot - 1), height};
 }
 void Window::caption_tip(int hit) {
     // Same delayed native-caption -> web tooltip handoff as DR Dict / DR Reader.
-    const auto next = button(hit) && direct2d_ && !dimmed_ ? hit : HTNOWHERE;
+    const auto next = button(hit) && (direct2d_ || web_caption_) && !dimmed_ ? hit : HTNOWHERE;
     if (tip_ == next) return;
     tip_ = next; KillTimer(hwnd_, caption_tip_timer);
     if (on_caption_tooltip) on_caption_tooltip(L"", RECT{});
@@ -167,7 +222,7 @@ LRESULT Window::message(UINT m, WPARAM w, LPARAM l) {
     }
     switch (m) {
     case WM_NCCALCSIZE:
-        if (w && direct2d_) {
+        if (w && (direct2d_ || web_caption_)) {
             auto p = reinterpret_cast<NCCALCSIZE_PARAMS *>(l); const auto top = p->rgrc[0].top;
             auto result = DefWindowProcW(hwnd_, m, w, l); const auto dpi = GetDpiForWindow(hwnd_);
             p->rgrc[0].top = top + (IsZoomed(hwnd_) ? GetSystemMetricsForDpi(SM_CYFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi) : 0); return result;
@@ -179,9 +234,11 @@ LRESULT Window::message(UINT m, WPARAM w, LPARAM l) {
     }
     case WM_ERASEBKGND: return 1;
     case WM_SIZE:
+        if (w == SIZE_MINIMIZED) clear_web_hover();
+        caption_layout_ready_ = false;
         layout_caption(); if (on_resize) on_resize(); redraw(); return 0;
     case WM_DPICHANGED: {
-        auto r = reinterpret_cast<RECT *>(l); target_.Reset();
+        auto r = reinterpret_cast<RECT *>(l); target_.Reset(); caption_layout_ready_ = false;
         SetWindowPos(hwnd_, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER); layout_caption(); if (on_resize) on_resize(); return 0;
     }
     case WM_GETMINMAXINFO: {
@@ -190,13 +247,23 @@ LRESULT Window::message(UINT m, WPARAM w, LPARAM l) {
         info->ptMinTrackSize = {std::min<LONG>(scale(960), monitor.rcWork.right - monitor.rcWork.left), std::min<LONG>(scale(660), monitor.rcWork.bottom - monitor.rcWork.top)}; return 0;
     }
     case WM_ACTIVATE:
-        if (LOWORD(w) == WA_INACTIVE) caption_tip(HTNOWHERE);
+        if (LOWORD(w) == WA_INACTIVE) { clear_web_hover(); caption_tip(HTNOWHERE); }
+        else if (on_focus) on_focus();
         redraw(); break;
-    case WM_MOVE: caption_tip(HTNOWHERE); break;
+    case WM_SETFOCUS:
+        if (on_focus) on_focus();
+        break;
+    case WM_SETCURSOR:
+        if (LOWORD(l) == HTCLIENT && on_cursor && on_cursor()) return TRUE;
+        break;
+    case WM_MOVE:
+        caption_tip(HTNOWHERE);
+        if (on_move) on_move();
+        break;
     case WM_TIMER:
         if (w == caption_tip_timer) {
             KillTimer(hwnd_, caption_tip_timer);
-            if (direct2d_ && !dimmed_ && tip_ != HTNOWHERE && pressed_ == HTNOWHERE && on_caption_tooltip)
+            if ((direct2d_ || web_caption_) && !dimmed_ && tip_ != HTNOWHERE && pressed_ == HTNOWHERE && on_caption_tooltip)
                 on_caption_tooltip(tip_ == HTMINBUTTON ? L"最小化" : tip_ == HTCLOSE ? L"关闭" : IsZoomed(hwnd_) ? L"向下还原" : L"最大化", caption_button(tip_));
             return 0;
         }
@@ -214,7 +281,6 @@ LRESULT Window::message(UINT m, WPARAM w, LPARAM l) {
     case WM_NCMOUSEMOVE:
         hover(static_cast<int>(w), true); if (w != HTMAXBUTTON) return 0; break;
     case WM_NCMOUSELEAVE:
-    case WM_MOUSELEAVE:
         if (pressed_ == HTNOWHERE) {
             POINT p{}; GetCursorPos(&p); ScreenToClient(hwnd_, &p);
             const auto hit = caption_hit(p);
@@ -224,6 +290,15 @@ LRESULT Window::message(UINT m, WPARAM w, LPARAM l) {
             // the pointer is over the WebView child, re-arming immediately
             // queues another leave, starving WM_PAINT after maximization.
         }
+        return 0;
+    case WM_MOUSELEAVE:
+        if (pressed_ == HTNOWHERE) {
+            POINT p{}; GetCursorPos(&p); ScreenToClient(hwnd_, &p);
+            const auto hit = caption_hit(p);
+            if (hot_ != hit) { hot_ = hit; redraw(); }
+            caption_tip(hit);
+        }
+        if (on_mouse) on_mouse(m, w, l);
         return 0;
     case WM_NCLBUTTONDOWN:
         if (w == HTMAXBUTTON) { caption_tip(HTNOWHERE); hot_ = pressed_ = HTMAXBUTTON; SetCapture(hwnd_); return 0; } break;
@@ -240,6 +315,118 @@ LRESULT Window::message(UINT m, WPARAM w, LPARAM l) {
         }
         break;
     case WM_CAPTURECHANGED: pressed_ = HTNOWHERE; redraw(); break;
+    }
+    if (web_caption_) switch (m) {
+    case WM_NCHITTEST: {
+        const auto native = DefWindowProcW(hwnd_, m, w, l); if (native != HTCLIENT) return native;
+        POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; ScreenToClient(hwnd_, &point);
+        if (!IsZoomed(hwnd_) && point.y < scale(6)) return HTTOP;
+        return caption_hit(point);
+    }
+    case WM_NCMOUSEMOVE: {
+        if (web_mouse_inside_) {
+            web_mouse_inside_ = false;
+            if (on_mouse) on_mouse(WM_MOUSELEAVE, 0, 0);
+        }
+        POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; ScreenToClient(hwnd_, &point);
+        const bool hot = caption_hit(point) == HTMAXBUTTON;
+        if (caption_hot_ != hot) {
+            caption_hot_ = hot;
+            caption_tip(hot ? HTMAXBUTTON : HTNOWHERE);
+            if (on_caption_event) on_caption_event(hot ? L"enter" : L"leave");
+        }
+        if (hot) {
+            TRACKMOUSEEVENT track{sizeof(track), TME_NONCLIENT | TME_LEAVE, hwnd_, 0};
+            TrackMouseEvent(&track);
+            return 0;
+        }
+        break;
+    }
+    case WM_NCMOUSELEAVE:
+        if (caption_pressed_) break;
+        if (caption_hot_) {
+            caption_hot_ = false;
+            caption_tip(HTNOWHERE);
+            if (on_caption_event) on_caption_event(L"leave");
+        }
+        return 0;
+    case WM_NCLBUTTONDOWN: {
+        POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; ScreenToClient(hwnd_, &point);
+        if (caption_hit(point) == HTMAXBUTTON) {
+            caption_hot_ = caption_pressed_ = true;
+            caption_tip(HTNOWHERE);
+            if (on_caption_event) on_caption_event(L"down");
+            return 0;
+        }
+        break;
+    }
+    case WM_NCLBUTTONUP: {
+        POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; ScreenToClient(hwnd_, &point);
+        if (caption_pressed_) {
+            caption_pressed_ = false;
+            if (on_caption_event) on_caption_event(L"up");
+            if (caption_hit(point) == HTMAXBUTTON)
+                PostMessageW(hwnd_, WM_SYSCOMMAND, IsZoomed(hwnd_) ? SC_RESTORE : SC_MAXIMIZE, 0);
+            return 0;
+        }
+        break;
+    }
+    case WM_CAPTURECHANGED:
+        if (caption_pressed_) {
+            caption_pressed_ = false;
+            if (on_caption_event) on_caption_event(L"up");
+        }
+        break;
+    case WM_LBUTTONDOWN:
+        if (on_focus) on_focus();
+        [[fallthrough]];
+    case WM_MOUSEMOVE:
+    case WM_LBUTTONUP:
+    case WM_LBUTTONDBLCLK:
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONUP:
+    case WM_RBUTTONDBLCLK:
+    case WM_MBUTTONDOWN:
+    case WM_MBUTTONUP:
+    case WM_MBUTTONDBLCLK:
+    case WM_XBUTTONDOWN:
+    case WM_XBUTTONUP:
+    case WM_XBUTTONDBLCLK:
+    case WM_MOUSEWHEEL:
+    case WM_MOUSEHWHEEL:
+        if (on_mouse) { web_mouse_inside_ = true; on_mouse(m, w, l); return 0; }
+        break;
+    case WM_MOUSELEAVE:
+        web_mouse_inside_ = false;
+        if (on_mouse) on_mouse(m, w, l);
+        if (!caption_hot_) caption_tip(HTNOWHERE);
+        return 0;
+    }
+    if (on_mouse) switch (m) {
+    case WM_MOUSELEAVE:
+        web_mouse_inside_ = false;
+        on_mouse(m, w, l); return 0;
+    case WM_MOUSEMOVE:
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_LBUTTONDBLCLK:
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONUP:
+    case WM_RBUTTONDBLCLK:
+    case WM_MBUTTONDOWN:
+    case WM_MBUTTONUP:
+    case WM_MBUTTONDBLCLK:
+    case WM_XBUTTONDOWN:
+    case WM_XBUTTONUP:
+    case WM_XBUTTONDBLCLK:
+    case WM_MOUSEWHEEL:
+    case WM_MOUSEHWHEEL: {
+        POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+        if (m == WM_MOUSEWHEEL || m == WM_MOUSEHWHEEL) ScreenToClient(hwnd_, &point);
+        const int top = direct2d_ ? caption_height() : web_caption_ ? (caption_layout_ready_ ? caption_rect_.bottom : scale(36)) : 0;
+        if (point.y >= top) { web_mouse_inside_ = true; on_mouse(m, w, l); return 0; }
+        break;
+    }
     }
     return DefWindowProcW(hwnd_, m, w, l);
 }

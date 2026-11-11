@@ -1,4 +1,5 @@
 #include "application.h"
+#include <cmath>
 #include <shobjidl.h>
 #include <shlobj.h>
 #include <shellapi.h>
@@ -45,6 +46,30 @@ void Application::receive(const Json &request) {
     if (closing_ || !request.is_object() || !request.contains("id") || !request["id"].is_number_unsigned() || !request.contains("method") || !request["method"].is_string()) return;
     const auto id = request["id"]; const auto method = request["method"].get<std::string>(); const auto params = request.value("params", Json::object());
     try {
+        if (method == "window:caption-layout") {
+            if (library_.snapshot()["settings"].value("titleBar", "direct2d") != "webview2") throw std::runtime_error("当前标题栏不支持此操作");
+            const auto dpr = params.value("dpr", 1.0);
+            if (!std::isfinite(dpr) || dpr < 0.5 || dpr > 4.0) throw std::runtime_error("无效的标题栏缩放");
+            auto rect = [&](const char *name) {
+                const auto &value = params.at(name);
+                const auto x = value.at("x").get<double>(), y = value.at("y").get<double>();
+                const auto width = value.at("width").get<double>(), height = value.at("height").get<double>();
+                if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(width) || !std::isfinite(height) || width <= 0 || height <= 0) throw std::runtime_error("无效的标题栏区域");
+                return RECT{static_cast<LONG>(std::lround(x * dpr)), static_cast<LONG>(std::lround(y * dpr)),
+                    static_cast<LONG>(std::lround((x + width) * dpr)), static_cast<LONG>(std::lround((y + height) * dpr))};
+            };
+            window_.set_caption_layout(rect("caption"), rect("minimize"), rect("maximize"), rect("close"));
+            reply(id, nullptr); return;
+        }
+        if (method == "window:command") {
+            const auto command = params.at("command").get<std::string>();
+            if (library_.snapshot()["settings"].value("titleBar", "direct2d") != "webview2") throw std::runtime_error("当前标题栏不支持此操作");
+            if (command == "minimize") PostMessageW(window_.handle(), WM_SYSCOMMAND, SC_MINIMIZE, 0);
+            else if (command == "maximize") PostMessageW(window_.handle(), WM_SYSCOMMAND, IsZoomed(window_.handle()) ? SC_RESTORE : SC_MAXIMIZE, 0);
+            else if (command == "close") PostMessageW(window_.handle(), WM_CLOSE, 0, 0);
+            else throw std::runtime_error("无效的窗口操作");
+            reply(id, nullptr); return;
+        }
         if (method == "window:appearance") {
             window_.set_appearance(params.value("theme", "dark") == "dark", params.value("dimmed", false));
             reply(id, nullptr); return;
@@ -90,7 +115,7 @@ void Application::receive(const Json &request) {
                 if (method == "library:get") reply(id, library_.snapshot());
                 else if (method == "library:update") {
                     auto updated = library_.update(params);
-                    if (params.contains("settings") && params["settings"].contains("titleBar")) window_.post([this, s = updated["settings"]] { if (!closing_) window_.set_style(s.value("titleBar", "direct2d") == "direct2d"); });
+                    if (params.contains("settings") && params["settings"].contains("titleBar")) window_.post([this, s = updated["settings"]] { if (!closing_) window_.set_style(s.value("titleBar", "direct2d") == "direct2d", s.value("titleBar", "direct2d") == "webview2"); });
                     reply(id, updated);
                 } else if (method == "library:remove") reply(id, library_.remove(params.at("id").get<std::string>()));
                 else if (method == "lyrics:get") reply(id, library_.lyrics(params.at("id").get<std::string>()));
@@ -104,12 +129,18 @@ int Application::run(HINSTANCE instance) {
     auto s = library_.snapshot()["settings"];
     if (!shell_.empty()) { s["titleBar"] = shell_; library_.update({{"settings", {{"titleBar", shell_}}}}); }
     if (!window_.create(instance, s.value("titleBar", "direct2d") == "direct2d", s.value("theme", "dark") == "dark")) throw std::runtime_error("无法创建 DR Music 窗口");
-    window_.on_resize = [this] { webview_.resize(window_.content_bounds()); };
+    window_.set_style(s.value("titleBar", "direct2d") == "direct2d", s.value("titleBar", "direct2d") == "webview2");
+    window_.on_resize = [this] { webview_.resize(window_.content_bounds()); webview_.send({{"event", "window-state"}, {"data", {{"maximized", IsZoomed(window_.handle()) != FALSE}}}}); };
     window_.on_caption_tooltip = [this](const std::wstring &text, RECT button) {
         if (closing_) return;
         const double scale = 96.0 / GetDpiForWindow(window_.handle());
         webview_.send({{"event", "caption-tooltip"}, {"data", {{"text", utf8(text)}, {"left", button.left * scale}, {"width", (button.right - button.left) * scale}}}});
     };
+    window_.on_caption_event = [this](const std::wstring &event) { if (!closing_) webview_.send({{"event", "caption-button"}, {"data", {{"event", utf8(event)}}}}); };
+    window_.on_mouse = [this](UINT message, WPARAM w, LPARAM l) { webview_.mouse(message, w, l); };
+    window_.on_cursor = [this] { return webview_.cursor(); };
+    window_.on_focus = [this] { webview_.focus(); };
+    window_.on_move = [this] { webview_.notify_move(); };
     window_.on_close = [this] { closing_ = true; worker_.request_stop(); ready_.notify_all(); DestroyWindow(window_.handle()); };
     webview_.on_message = [this](const Json &message) { receive(message); };
     webview_.on_resource = [this](const std::wstring &uri, const std::string &range, const std::string &method) { return serve_media(library_, uri, range, method); };

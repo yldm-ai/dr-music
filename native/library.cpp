@@ -149,7 +149,7 @@ Json Library::update(const Json &patch) {
         if (s.contains("volume") && s["volume"].is_number()) target["volume"] = std::clamp(s["volume"].get<double>(), 0.0, 1.0);
         if (s.contains("lyricOffset") && s["lyricOffset"].is_number()) target["lyricOffset"] = std::clamp(s["lyricOffset"].get<double>(), -30000.0, 30000.0);
         if (s.contains("shuffle") && s["shuffle"].is_boolean()) target["shuffle"] = s["shuffle"];
-        for (const auto &[key, choices] : std::map<std::string, std::set<std::string>>{{"repeat", {"off", "all", "one"}}, {"theme", {"dark", "light"}}, {"titleBar", {"direct2d", "system"}}})
+        for (const auto &[key, choices] : std::map<std::string, std::set<std::string>>{{"repeat", {"off", "all", "one"}}, {"theme", {"dark", "light"}}, {"titleBar", {"direct2d", "system", "webview2"}}})
             if (s.contains(key) && s[key].is_string() && choices.contains(s[key].get<std::string>())) target[key] = s[key];
     }
     write_atomic(directory_ / L"library.json", next.dump(2)); state_ = std::move(next); return state_;

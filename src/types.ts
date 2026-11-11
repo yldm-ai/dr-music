@@ -4,7 +4,7 @@ export interface Track {
   sampleRate?: number; bitrate?: number; size?: number;
 }
 export interface Playlist { id: string; name: string; trackIds: string[] }
-export interface Settings { volume: number; repeat: 'off' | 'all' | 'one'; shuffle: boolean; lyricOffset: number; theme: 'dark' | 'light'; titleBar: 'direct2d' | 'system' }
+export interface Settings { volume: number; repeat: 'off' | 'all' | 'one'; shuffle: boolean; lyricOffset: number; theme: 'dark' | 'light'; titleBar: 'direct2d' | 'system' | 'webview2' }
 export interface Library { version: number; tracks: Track[]; folders: string[]; favorites: string[]; playlists: Playlist[]; settings: Settings; notice?: string }
 export interface LyricFile { text: string; format: string; source: string }
 export interface ImportResult { library: Library; imported: number; warnings: string[] }
@@ -22,8 +22,12 @@ declare global {
       reveal(id: string): Promise<void>;
       openData(): Promise<void>;
       notices(): Promise<string>;
+      captionLayout(data: { caption: CaptionRect; minimize: CaptionRect; maximize: CaptionRect; close: CaptionRect; dpr: number }): Promise<void>;
+      windowCommand(command: 'minimize' | 'maximize' | 'close'): Promise<void>;
       appearance(data: { theme: string; dimmed: boolean }): Promise<void>;
       onProgress(callback: (p: Progress) => void): () => void;
     };
   }
 }
+
+export interface CaptionRect { x: number; y: number; width: number; height: number }

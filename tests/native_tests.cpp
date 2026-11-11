@@ -42,6 +42,8 @@ void library_test(const dr::fs::path &root) {
     CHECK(library.lyrics(id)["text"] == "[00:01.00]本地歌词");
     library.update({{"favorites", {id, id, "unknown"}}, {"playlists", {{{"id", "mix"}, {"name", "Mix"}, {"trackIds", {id}}}}}, {"settings", {{"volume", 20}, {"theme", "light"}, {"titleBar", "system"}}}});
     dr::Library fresh(root / L"data"); fresh.load(); auto saved = fresh.snapshot(); CHECK(saved["favorites"].size() == 1); CHECK(saved["settings"]["volume"] == 1); CHECK(saved["settings"]["titleBar"] == "system");
+    fresh.update({{"settings", {{"titleBar", "webview2"}}}});
+    dr::Library web_settings(root / L"data"); web_settings.load(); CHECK(web_settings.snapshot()["settings"]["titleBar"] == "webview2");
     CHECK(throws([&] { fresh.update({{"playlists", {{{"id", "x"}, {"name", ""}, {"trackIds", {id}}}}}}); }));
     fresh.import_paths({audio}); CHECK(fresh.snapshot()["tracks"].size() == 1);
     auto resource = dr::serve_media(fresh, L"https://media.dr-music.local/audio/" + dr::wide(id), "bytes=44-99", "GET");
@@ -70,7 +72,9 @@ void caption_test() {
     const auto width = MulDiv(46, GetDpiForWindow(hwnd), 96); CHECK(hit(80, bounds.top / 2) == HTCAPTION);
     CHECK(hit(bounds.right - width * 3 / 2, bounds.top / 2) == HTMAXBUTTON); CHECK(hit(bounds.right - width / 2, bounds.top / 2) == HTCLIENT);
     SendMessageW(hwnd, WM_SYSCOMMAND, SC_MAXIMIZE, 0); CHECK(IsZoomed(hwnd)); SendMessageW(hwnd, WM_SYSCOMMAND, SC_RESTORE, 0); CHECK(!IsZoomed(hwnd));
-    window.set_style(false); CHECK(window.content_bounds().top == 0); window.set_style(true); CHECK(window.content_bounds().top > 0);
+    window.set_style(false); CHECK(window.content_bounds().top == 0);
+    window.set_style(false, true); CHECK(window.content_bounds().top == 0);
+    window.set_style(true); CHECK(window.content_bounds().top > 0);
     std::wstring tip; RECT anchor{};
     window.on_caption_tooltip = [&](const std::wstring &text, RECT rect) { tip = text; anchor = rect; };
     SendMessageW(hwnd, WM_NCMOUSEMOVE, HTMAXBUTTON, 0);
@@ -94,12 +98,58 @@ void caption_leave_test() {
     CHECK(notifications < 8);
     DestroyWindow(hwnd);
 }
+// The composition WebView2 leaves hit testing to the host. The page reports
+// the caption rectangles, and the host turns the maximize button into a real
+// non-client HTMAXBUTTON so Windows 11 Snap Layouts works without an overlay.
+void webview_caption_test() {
+    dr::Window window; CHECK(window.create(GetModuleHandleW(nullptr), false, true));
+    window.set_style(false, true); auto hwnd = window.handle();
+    CHECK(window.content_bounds().top == 0);
+    CHECK(FindWindowExW(hwnd, nullptr, L"DRMusic.CaptionHitTest", nullptr) == nullptr);
+    RECT client{}; GetClientRect(hwnd, &client);
+    const int dpi = GetDpiForWindow(hwnd), width = MulDiv(46, dpi, 96), height = MulDiv(36, dpi, 96);
+    RECT close{client.right - width, 0, client.right, height};
+    RECT maximize{client.right - width * 2, 0, client.right - width, height};
+    RECT minimize{client.right - width * 3, 0, client.right - width * 2, height};
+    window.set_caption_layout({0, 0, client.right, height}, minimize, maximize, close);
+    auto hit = [&](int x, int y) { POINT p{x, y}; ClientToScreen(hwnd, &p); return SendMessageW(hwnd, WM_NCHITTEST, 0, MAKELPARAM(p.x, p.y)); };
+    CHECK(hit(minimize.left + width / 2, height / 2) == HTCLIENT);
+    CHECK(hit(maximize.left + width / 2, height / 2) == HTMAXBUTTON);
+    CHECK(hit(close.left + width / 2, height / 2) == HTCLIENT);
+    CHECK(hit(80, height / 2) == HTCAPTION);
+    CHECK(hit(80, height + 20) == HTCLIENT);
+    // WebView2 can round its viewport one device pixel past the client rect.
+    window.set_caption_layout({0, 0, client.right, height}, minimize, maximize, {close.left, 0, client.right + 1, height});
+    CHECK(hit(close.left + width / 2, height / 2) == HTCLIENT);
+    // A resize invalidates the old page rectangles until the next report.
+    SendMessageW(hwnd, WM_SIZE, SIZE_RESTORED, MAKELPARAM(client.right, client.bottom));
+    CHECK(hit(maximize.left + width / 2, height / 2) == HTMAXBUTTON);
+    std::vector<std::wstring> events;
+    window.on_caption_event = [&](const std::wstring &event) { events.push_back(event); };
+    std::wstring tip; RECT anchor{};
+    window.on_caption_tooltip = [&](const std::wstring &text, RECT button) { tip = text; anchor = button; };
+    POINT center{maximize.left + width / 2, height / 2}; ClientToScreen(hwnd, &center);
+    SendMessageW(hwnd, WM_NCMOUSEMOVE, HTMAXBUTTON, MAKELPARAM(center.x, center.y));
+    CHECK(!events.empty() && events.back() == L"enter");
+    SendMessageW(hwnd, WM_TIMER, 43, 0);
+    CHECK(tip == L"最大化"); CHECK(anchor.right - anchor.left == width);
+    SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTMAXBUTTON, MAKELPARAM(center.x, center.y));
+    CHECK(events.back() == L"down");
+    SendMessageW(hwnd, WM_NCLBUTTONUP, HTMAXBUTTON, MAKELPARAM(center.x, center.y));
+    CHECK(events.back() == L"up");
+    MSG message{};
+    while (PeekMessageW(&message, hwnd, WM_SYSCOMMAND, WM_SYSCOMMAND, PM_REMOVE)) DispatchMessageW(&message);
+    CHECK(IsZoomed(hwnd));
+    SendMessageW(hwnd, WM_SYSCOMMAND, SC_RESTORE, 0); CHECK(!IsZoomed(hwnd));
+    SendMessageW(hwnd, WM_NCMOUSELEAVE, 0, 0); CHECK(events.back() == L"leave");
+    DestroyWindow(hwnd);
+}
 }
 int main() {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     auto root = dr::fs::temp_directory_path() / ("dr-music-native-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(dr::timestamp()));
     dr::fs::create_directories(root); int code = 0;
-    try { media_test(root); library_test(root); recovery_test(root); caption_test(); caption_leave_test(); std::cout << "PASS: native metadata/library/persistence/lyrics, bounded media streaming, ranges, D2D caption hit tests, leave-message regression and system caption switching\n"; }
+    try { media_test(root); library_test(root); recovery_test(root); caption_test(); caption_leave_test(); webview_caption_test(); std::cout << "PASS: native metadata/library/persistence/lyrics, bounded media streaming, ranges, D2D caption hit tests, leave-message regression, WebView2 caption hit testing and switching\n"; }
     catch (const std::exception &e) { std::cerr << e.what() << '\n'; code = 1; }
     dr::fs::remove_all(root); CoUninitialize(); return code;
 }

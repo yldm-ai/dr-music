@@ -66,8 +66,11 @@
 body,.app-shell,.sidebar,.main-content,.player-bar,.now-playing,.modal,.queue-drawer,.song-menu,.search,.folder-list,.toast{
   transition:background-color .38s cubic-bezier(.22,1,.36,1),color .32s cubic-bezier(.22,1,.36,1),border-color .38s cubic-bezier(.22,1,.36,1),box-shadow .34s cubic-bezier(.22,1,.36,1);
 }
-button,input,select{transition:background-color .24s cubic-bezier(.22,1,.36,1),color .24s cubic-bezier(.22,1,.36,1),border-color .24s cubic-bezier(.22,1,.36,1),opacity .24s cubic-bezier(.22,1,.36,1),box-shadow .24s cubic-bezier(.22,1,.36,1)}
+button,input,select{transition:background-color .24s cubic-bezier(.22,1,.36,1),color .24s cubic-bezier(.22,1,.36,1),border-color .24s cubic-bezier(.22,1,.36,1),opacity .24s cubic-bezier(.22,1,.36,1),box-shadow .24s cubic-bezier(.22,1,.36,1),filter .24s cubic-bezier(.22,1,.36,1)}
 .brand-icon{color:#fff;box-shadow:0 8px 24px #c6545426}
+.brand:hover,.back-link:hover,.player-title:hover,.track-identity:hover,.album-card:hover{color:var(--accent)}
+.brand-icon{transition:background-color .24s cubic-bezier(.22,1,.36,1),color .24s cubic-bezier(.22,1,.36,1),box-shadow .24s cubic-bezier(.22,1,.36,1)}
+.album-card:hover .cover{transform:none}
 .primary-button{color:#fff;background:linear-gradient(135deg,var(--accent-strong),var(--accent));box-shadow:0 8px 24px #c6545424}
 .primary-button:hover{filter:brightness(1.04);box-shadow:0 10px 28px #c6545433}
 .hero{background:linear-gradient(110deg,#c6545412,#c7a5a604 55%,#c654541c)}
@@ -94,6 +97,7 @@ button,input,select{transition:background-color .24s cubic-bezier(.22,1,.36,1),c
 .hero-playlist-actions{display:inline-flex;align-items:center;gap:4px}
 .lyric-content{display:flex;flex:1;min-height:0;min-width:0}
 .play-button:hover{transform:none;filter:brightness(1.05)}
+.play-button,.transport-state-icon{transform-origin:center center}
 .scan-status{overflow:hidden;transform-origin:top center}
 .song-menu,.queue-drawer,.modal{will-change:transform,opacity}
 

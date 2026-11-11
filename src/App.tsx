@@ -11,20 +11,21 @@ const smoothEase: [number, number, number, number] = [.22, 1, .36, 1];
 const textTransition: Transition = { duration: .36, ease: smoothEase };
 const quickTextTransition: Transition = { duration: .24, ease: smoothEase };
 const pressTransition: Transition = { duration: .2, ease: smoothEase };
+const playTransition = { type: 'spring', stiffness: 340, damping: 32, mass: .78 } as const;
 const layoutTransition = { type: 'spring', stiffness: 250, damping: 30, mass: .9 } as const;
 type MotionButtonProps = React.ComponentProps<typeof motion.button>;
 
 function PressableButton({ whileHover, whileTap, transition, ...props }: MotionButtonProps) {
   return <motion.button
-    whileHover={whileHover ?? { opacity: .96 }}
-    whileTap={whileTap ?? { opacity: .76 }}
+    whileHover={whileHover}
+    whileTap={whileTap}
     transition={transition ?? pressTransition}
     {...props}
   />;
 }
 
 function NavButton({ selected = false, children, className = '', ...props }: Omit<MotionButtonProps, 'children'> & { selected?: boolean; children: React.ReactNode }) {
-  return <PressableButton className={`nav-item ${selected ? 'selected' : ''} ${className}`} animate={{ x: selected ? 2 : 0 }} {...props}>
+  return <PressableButton className={`nav-item ${selected ? 'selected' : ''} ${className}`} {...props}>
     {selected && <motion.i className="nav-highlight" layoutId="nav-highlight" transition={layoutTransition}/>}
     {children}
   </PressableButton>;
@@ -233,11 +234,11 @@ export function App() {
   const renderTransport = () => <div className="transport">
     <IconButton icon={Shuffle} label="随机播放" active={settings?.shuffle} onClick={() => setSettings({ shuffle: !settings?.shuffle })}/>
     <IconButton icon={SkipBack} label="上一首" disabled={!current} onClick={() => advance(-1)}/>
-    <PressableButton className="play-button" aria-label={playing ? '暂停' : '播放'} disabled={!library?.tracks.length} whileHover={{ opacity: .92 }} whileTap={{ opacity: .72 }} onClick={togglePlay}>
+    <PressableButton className="play-button" aria-label={playing ? '暂停' : '播放'} disabled={!library?.tracks.length} whileHover={{ scale: 1.08 }} whileTap={{ scale: .9 }} transition={playTransition} onClick={togglePlay}>
       <AnimatePresence mode="sync" initial={false}>
         {playing
-          ? <motion.span key="pause" className="transport-state-icon" initial={{ opacity: 0, rotate: -7 }} animate={{ opacity: 1, rotate: 0 }} exit={{ opacity: 0, rotate: 7 }} transition={{ duration: .24, ease: smoothEase }}><Pause size={21} fill="currentColor"/></motion.span>
-          : <motion.span key="play" className="transport-state-icon" initial={{ opacity: 0, rotate: 7 }} animate={{ opacity: 1, rotate: 0 }} exit={{ opacity: 0, rotate: -7 }} transition={{ duration: .24, ease: smoothEase }}><Play size={21} fill="currentColor"/></motion.span>}
+          ? <motion.span key="pause" className="transport-state-icon" initial={{ opacity: 0, scale: .82, rotate: -7 }} animate={{ opacity: 1, scale: 1, rotate: 0 }} exit={{ opacity: 0, scale: .82, rotate: 7 }} transition={playTransition}><Pause size={21} fill="currentColor"/></motion.span>
+          : <motion.span key="play" className="transport-state-icon" initial={{ opacity: 0, scale: .82, rotate: 7 }} animate={{ opacity: 1, scale: 1, rotate: 0 }} exit={{ opacity: 0, scale: .82, rotate: -7 }} transition={playTransition}><Play size={21} fill="currentColor"/></motion.span>}
       </AnimatePresence>
     </PressableButton>
     <IconButton icon={SkipForward} label="下一首" disabled={!current} onClick={() => advance(1)}/>
@@ -249,7 +250,7 @@ export function App() {
     <motion.span key={formatTime(duration)} initial={{ opacity: .55 }} animate={{ opacity: 1 }} transition={quickTextTransition}>{formatTime(duration)}</motion.span>
   </div>;
   const renderRows = (tracks: Track[]) => tracks.map((track, index) => <motion.div layout="position" className={`track-row ${currentId === track.id ? 'current' : ''}`} key={track.id} role="row" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, x: -10 }} transition={{ ...layoutTransition, delay: Math.min(index * .018, .12) }} onDoubleClick={() => playTrack(track.id, filtered.map(t => t.id))}>
-    <PressableButton className="row-number" aria-label={`播放 ${track.title}`} whileTap={{ opacity: .65 }} onClick={() => playTrack(track.id, filtered.map(t => t.id))}>
+    <PressableButton className="row-number" aria-label={`播放 ${track.title}`} onClick={() => playTrack(track.id, filtered.map(t => t.id))}>
       <AnimatePresence mode="sync" initial={false}>
         {currentId === track.id && playing
           ? <motion.span key="playing" className="centered-motion-icon" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={quickTextTransition}><AudioLines size={17}/></motion.span>
@@ -291,10 +292,8 @@ export function App() {
       {groups.slice(0, limit).map(([name, tracks], index) => <PressableButton
         className="album-card"
         key={name}
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        whileHover={{ y: -3 }}
-        whileTap={{ opacity: .7 }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
         transition={{ ...layoutTransition, delay: Math.min(index * .025, .2) }}
         onClick={() => setGroup(name)}
       ><Cover track={tracks[0]} className={page === 'artists' ? 'round' : ''}/><strong>{name}</strong><small>{tracks.length} 首歌曲{page === 'albums' ? ` · ${tracks[0].artist}` : ''}</small></PressableButton>)}
@@ -308,18 +307,18 @@ export function App() {
   return <MotionConfig reducedMotion="user" transition={layoutTransition}>
     <motion.div className="app-shell" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: .42, ease: smoothEase }}>
       <aside className="sidebar">
-        <PressableButton className="brand" whileHover={{ opacity: .96 }} whileTap={{ opacity: .78 }} onClick={() => navigate('songs')}>
-          <motion.span className="brand-icon" whileHover={{ rotate: -5 }} transition={pressTransition}><AudioLines size={25}/></motion.span>
+        <PressableButton className="brand" onClick={() => navigate('songs')}>
+          <span className="brand-icon"><AudioLines size={25}/></span>
           <span>DR Music<small>音乐，随心而动。</small></span>
         </PressableButton>
         <div className="sidebar-section">我的音乐</div>
         {([{ id: 'songs', icon: LibraryIcon, label: '音乐库', count: library?.tracks.length }, { id: 'favorites', icon: Heart, label: '我喜欢的', count: library?.favorites.length }, { id: 'albums', icon: Disc3, label: '专辑' }, { id: 'artists', icon: Mic2, label: '艺术家' }] as { id: string; icon: LucideIcon; label: string; count?: number }[]).map(({ id, icon: Icon, label, count }) =>
-          <NavButton key={id} selected={page === id} onClick={() => navigate(id)}><Icon size={19}/><span>{label}</span>{count !== undefined && <motion.small key={count} initial={{ opacity: 0, y: 2 }} animate={{ opacity: 1, y: 0 }} transition={quickTextTransition}>{count}</motion.small>}</NavButton>
+          <NavButton key={id} selected={page === id} onClick={() => navigate(id)}><Icon size={19}/><span>{label}</span>{count !== undefined && <motion.small key={count} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={quickTextTransition}>{count}</motion.small>}</NavButton>
         )}
         <div className="sidebar-section playlist-label">我的歌单<IconButton icon={Plus} label="新建歌单" onClick={() => setPlaylistDialog({ name: '' })}/></div>
         <motion.div className="playlist-nav" layout="position">
           <AnimatePresence initial={false}>
-            {library?.playlists.map(p => <NavButton key={p.id} selected={page === `playlist:${p.id}`} layout="position" initial={{ opacity: 0, x: -7 }} animate={{ opacity: 1, x: page === `playlist:${p.id}` ? 2 : 0 }} exit={{ opacity: 0, x: -7 }} onClick={() => navigate(`playlist:${p.id}`)}><ListMusic size={18}/><span>{p.name}</span><small>{p.trackIds.length}</small></NavButton>)}
+            {library?.playlists.map(p => <NavButton key={p.id} selected={page === `playlist:${p.id}`} layout="position" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => navigate(`playlist:${p.id}`)}><ListMusic size={18}/><span>{p.name}</span><small>{p.trackIds.length}</small></NavButton>)}
           </AnimatePresence>
           <AnimatePresence>{!library?.playlists.length && <motion.p className="sidebar-hint" initial={{ opacity: 0 }} animate={{ opacity: .6 }} exit={{ opacity: 0 }}>为不同的心情，<br/>留一张自己的歌单。</motion.p>}</AnimatePresence>
         </motion.div>
@@ -343,13 +342,13 @@ export function App() {
           <motion.section className={`hero ${page === 'favorites' ? 'favorite-hero' : ''}`} layout="position" transition={layoutTransition}>
             <AnimatePresence mode="wait" initial={false}>
               <motion.div key={viewKey} className="hero-copy" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={textTransition}>
-                {group && <PressableButton className="back-link" whileTap={{ x: -3 }} onClick={() => setGroup('')}><ChevronLeft size={16}/>返回{page === 'artists' ? '艺术家' : '专辑'}</PressableButton>}
+                {group && <PressableButton className="back-link" onClick={() => setGroup('')}><ChevronLeft size={16}/>返回{page === 'artists' ? '艺术家' : '专辑'}</PressableButton>}
                 <div className="eyebrow">{query ? 'FIND YOUR SOUND' : selectedPlaylist ? 'YOUR OWN MIX' : page === 'favorites' ? 'CLOSE TO YOUR HEART' : 'YOUR OFFLINE COLLECTION'}</div>
                 <h1>{heading}</h1>
                 <p>{library?.tracks.length ? `${filtered.length} 首歌曲${totalDuration ? ` · ${Math.round(totalDuration / 60)} 分钟` : ''} · 只属于你的音乐时光` : '从一个文件夹开始，把喜欢的声音留在身边。'}</p>
                 <div className="hero-actions">
-                  <PressableButton className="primary-button" disabled={!filtered.length} whileHover={{ y: -1 }} whileTap={{ opacity: .72 }} onClick={() => playTrack(filtered[0].id, filtered.map(t => t.id))}><Play size={16} fill="currentColor"/>播放全部</PressableButton>
-                  <PressableButton className="secondary-button" disabled={busy} whileHover={{ y: -1 }} whileTap={{ opacity: .72 }} onClick={() => void runImport('folder')}><FolderPlus size={17}/>导入文件夹</PressableButton>
+                  <PressableButton className="primary-button" disabled={!filtered.length} onClick={() => playTrack(filtered[0].id, filtered.map(t => t.id))}><Play size={16} fill="currentColor"/>播放全部</PressableButton>
+                  <PressableButton className="secondary-button" disabled={busy} onClick={() => void runImport('folder')}><FolderPlus size={17}/>导入文件夹</PressableButton>
                   <AnimatePresence>{selectedPlaylist && <motion.span className="hero-playlist-actions" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }}><IconButton icon={Pencil} label="重命名歌单" onClick={() => setPlaylistDialog({ id: selectedPlaylist.id, name: selectedPlaylist.name })}/><IconButton icon={Trash2} label="删除歌单" onClick={() => setDeletePlaylist(selectedPlaylist)}/></motion.span>}</AnimatePresence>
                 </div>
               </motion.div>
@@ -371,7 +370,7 @@ export function App() {
               <div><PressableButton className="text-button" disabled={busy} onClick={() => void runImport('files')}><Plus size={16}/>添加音乐</PressableButton><select aria-label="歌曲排序" value={sort} onChange={e => setSort(e.target.value)}><option value="added">最近添加</option><option value="title">歌曲名称</option><option value="artist">艺术家</option></select></div>
             </motion.div>
             <AnimatePresence mode="wait" initial={false}>{renderCollection()}</AnimatePresence>
-            <AnimatePresence>{((page === 'albums' || page === 'artists') && !group ? groups.length : filtered.length) > limit && <motion.div key="load-more" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }}><PressableButton className="load-more secondary-button" onClick={() => setLimit(n => n + 100)}>加载更多</PressableButton></motion.div>}</AnimatePresence>
+            <AnimatePresence>{((page === 'albums' || page === 'artists') && !group ? groups.length : filtered.length) > limit && <motion.div key="load-more" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><PressableButton className="load-more secondary-button" onClick={() => setLimit(n => n + 100)}>加载更多</PressableButton></motion.div>}</AnimatePresence>
           </motion.section>
           <motion.footer className="library-footer" initial={{ opacity: 0 }} animate={{ opacity: .6 }}><span><span className="tiny-dot"/>音乐在本地，热爱也是。</span><span>DR MUSIC / PERSONAL LIBRARY</span></motion.footer>
         </div>
@@ -436,7 +435,7 @@ export function App() {
           <div className="drawer-heading"><div><h2>播放队列</h2><motion.p key={queue.length} initial={{ opacity: 0, y: 2 }} animate={{ opacity: 1, y: 0 }} transition={quickTextTransition}>{queue.length} 首本地音乐</motion.p></div><IconButton icon={X} label="关闭播放队列" onClick={() => setQueueOpen(false)}/></div>
           <div className="queue-list">
             <AnimatePresence initial={false}>
-              {queue.map((id, i) => { const track = library?.tracks.find(t => t.id === id); return track && <motion.div key={`${id}-${i}`} layout="position" className={`queue-item ${id === currentId ? 'current' : ''}`} initial={{ opacity: 0, x: 9 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 12 }} transition={{ ...layoutTransition, delay: Math.min(i * .015, .1) }}>
+              {queue.map((id, i) => { const track = library?.tracks.find(t => t.id === id); return track && <motion.div key={`${id}-${i}`} layout="position" className={`queue-item ${id === currentId ? 'current' : ''}`} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ ...layoutTransition, delay: Math.min(i * .015, .1) }}>
                 <PressableButton onClick={() => playTrack(id)}><Cover track={track}/><span><strong>{track.title}</strong><small>{track.artist}</small></span>{id === currentId && <motion.span className="centered-motion-icon" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={quickTextTransition}><AudioLines size={17}/></motion.span>}</PressableButton>
                 <IconButton icon={X} label={`从队列移除 ${track.title}`} onClick={() => setQueue(q => q.filter(x => x !== id))}/>
               </motion.div>; })}

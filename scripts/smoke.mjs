@@ -101,10 +101,47 @@ try {
         return Math.abs(Math.hypot(matrix.a, matrix.b) - 1) < .002
           && Math.abs(Math.hypot(matrix.c, matrix.d) - 1) < .002;
       };
-      return [...document.querySelectorAll('button,.FmKaba_lyricLine,.icon-button-glyph,.transport-state-icon,.empty-icon,.brand-icon')].every(unscaled);
+      return [...document.querySelectorAll('button:not(.play-button),.FmKaba_lyricLine,.icon-button-glyph,.empty-icon,.brand-icon')].every(unscaled);
     }), true);
   }
   await page.mouse.move(1, 1);
+  const textButton = page.locator('.now-playing .lyric-toolbar .text-button').first();
+  const textButtonBefore = await textButton.evaluate(element => ({
+    box: element.getBoundingClientRect().toJSON(),
+    color: getComputedStyle(element).color,
+    opacity: getComputedStyle(element).opacity,
+    transform: getComputedStyle(element).transform,
+  }));
+  await textButton.hover();
+  await page.waitForTimeout(280);
+  const textButtonAfter = await textButton.evaluate(element => ({
+    box: element.getBoundingClientRect().toJSON(),
+    color: getComputedStyle(element).color,
+    opacity: getComputedStyle(element).opacity,
+    transform: getComputedStyle(element).transform,
+  }));
+  for (const key of ['x', 'y', 'width', 'height']) {
+    assert.ok(Math.abs(textButtonAfter.box[key] - textButtonBefore.box[key]) < .5, `text button ${key} moved`);
+  }
+  assert.equal(textButtonAfter.transform, 'none');
+  assert.equal(textButtonAfter.opacity, textButtonBefore.opacity);
+  assert.notEqual(textButtonAfter.color, textButtonBefore.color);
+
+  const playButton = page.locator('.now-playing .play-button');
+  await playButton.hover();
+  await page.waitForTimeout(180);
+  assert.equal(await playButton.evaluate(element => {
+    const matrix = new DOMMatrixReadOnly(getComputedStyle(element).transform);
+    return matrix.a > 1.02 && matrix.d > 1.02;
+  }), true);
+  await page.mouse.move(1, 1);
+  await page.waitForTimeout(480);
+  assert.equal(await playButton.evaluate(element => {
+    const transform = getComputedStyle(element).transform;
+    if (transform === 'none') return true;
+    const matrix = new DOMMatrixReadOnly(transform);
+    return Math.abs(matrix.a - 1) < .002 && Math.abs(matrix.d - 1) < .002;
+  }), true);
   await page.locator('.amll-lyric-player').getByText('测试歌词第二句', { exact: false }).first().click({ force: true });
   await page.waitForFunction(() => Number(document.querySelector('.now-left input[aria-label="播放进度"]').value) >= 4);
   const toast = page.getByRole('button', { name: '关闭提示', exact: true }); if (await toast.count()) await toast.click();

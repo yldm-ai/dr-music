@@ -36,6 +36,7 @@ try {
   await page.waitForURL('https://app.dr-music.local/index.html');
   await page.getByRole('button', { name: '播放 午后散步', exact: true }).waitFor();
   assert.equal(await page.title(), 'DR Music');
+  assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()), '#ec4141');
   assert.equal((await page.evaluate(() => window.music.getLibrary())).tracks.length, 3);
   await page.screenshot({ path: path.join(root, 'library.png') });
   // The actual popover must show on hover and dismiss on keyboard input.
@@ -60,7 +61,7 @@ try {
   await page.waitForFunction(() => !document.getElementById('dr-hover-tip').matches(':popover-open'));
   await page.getByRole('button', { name: '喜欢 午后散步', exact: true }).click();
   await page.getByRole('button', { name: /我喜欢的/ }).click();
-  assert.equal(await page.locator('.track-table .track-row:not(.table-head)').count(), 1);
+  await page.waitForFunction(() => document.querySelectorAll('.track-table .track-row:not(.table-head)').length === 1);
   await page.getByRole('button', { name: '新建歌单', exact: true }).click();
   await page.getByRole('textbox', { name: '歌单名称' }).fill('原生测试歌单');
   await page.getByRole('button', { name: '保存歌单', exact: true }).click();
@@ -77,11 +78,17 @@ try {
   });
   assert.equal(check.status, 206); assert.equal(check.size, 56); assert.match(check.range, /^bytes 44-99\//);
   await page.getByRole('button', { name: '打开歌词播放页', exact: true }).click();
+  await page.locator('.now-playing').waitFor();
+  await page.waitForTimeout(400);
   await page.getByRole('button', { name: '收起播放页', exact: true }).hover();
   await page.getByRole('tooltip').filter({ hasText: '收起播放页' }).waitFor();
   assert.equal(await page.getByRole('tooltip').getAttribute('data-theme'), 'dark');
   await page.mouse.move(1, 1);
   await page.locator('.amll-lyric-player').waitFor();
+  await page.waitForFunction(() => {
+    const active = document.querySelector('.FmKaba_lyricLine.FmKaba_active .FmKaba_lyricMainLine');
+    return active && getComputedStyle(active, '::after').animationName === 'dr-lyric-flow';
+  });
   await page.locator('.amll-lyric-player').getByText('测试歌词第二句', { exact: false }).first().click({ force: true });
   await page.waitForFunction(() => Number(document.querySelector('.now-left input[aria-label="播放进度"]').value) >= 4);
   const toast = page.getByRole('button', { name: '关闭提示', exact: true }); if (await toast.count()) await toast.click();

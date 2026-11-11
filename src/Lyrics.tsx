@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import { LyricPlayer, LyricLineMouseEvent } from '@applemusic-like-lyrics/core';
 import '@applemusic-like-lyrics/core/style.css';
 import { parseLyrics } from './lib/lyrics';
@@ -55,5 +56,11 @@ export function Lyrics({ file, audio, offset, onSeek }: { file: LyricFile; audio
     frame = requestAnimationFrame(tick);
     return () => { cancelAnimationFrame(frame); audio.removeEventListener('play', sync); audio.removeEventListener('pause', sync); audio.removeEventListener('seeking', seek); player.removeEventListener('line-click', click); player.dispose(); };
   }, [file, audio, offset]);
-  return <div className="lyrics-shell"><div className="lyrics-host" ref={host}/>{plain && <div className="plain-lyrics">{plain}</div>}{info && <span className="lyric-info">{info}</span>}</div>;
+  return <div className="lyrics-shell">
+    <motion.div className="lyrics-host" ref={host} initial={{ opacity: 0, scale: .985 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: .32, ease: [.22, .72, .28, 1] }}/>
+    <AnimatePresence>
+      {plain && <motion.div key={`${file.source}:${plain.slice(0, 24)}`} className="plain-lyrics" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: .24 }}>{plain}</motion.div>}
+      {info && <motion.span key={info} className="lyric-info" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: .2 }}>{info}</motion.span>}
+    </AnimatePresence>
+  </div>;
 }

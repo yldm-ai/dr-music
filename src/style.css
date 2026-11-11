@@ -49,3 +49,92 @@
   .now-left .transport{margin-top:18px}
   .audio-quality{margin-top:12px}
 }
+
+/* NetEase-inspired accent and animated UI-state layer. */
+:root{
+  --accent:#ec4141;
+  --accent-soft:#ec41411f;
+  --accent-strong:#ff5a5f;
+  --danger:#ff6868;
+}
+:root[data-theme=light]{
+  --accent:#c20c0c;
+  --accent-soft:#c20c0c14;
+  --accent-strong:#ec4141;
+}
+::selection{background:#ec414155}
+body,.app-shell,.sidebar,.main-content,.player-bar,.now-playing,.modal,.queue-drawer,.song-menu,.search,.folder-list,.toast{
+  transition:background-color .32s ease,color .28s ease,border-color .32s ease,box-shadow .28s ease;
+}
+button,input,select{transition:background-color .18s ease,color .18s ease,border-color .18s ease,opacity .18s ease,box-shadow .18s ease}
+.brand-icon{color:#fff;box-shadow:0 8px 24px #ec41412e}
+.primary-button{color:#fff;background:linear-gradient(135deg,var(--accent-strong),var(--accent));box-shadow:0 8px 24px #ec414129}
+.primary-button:hover{filter:brightness(1.05);box-shadow:0 10px 28px #ec41413d}
+.hero{background:linear-gradient(110deg,#ec414112,#c7a5a604 55%,#ec414121)}
+.hero-orbit{border-color:#ec414133}
+.vinyl-label{background:#e74747;color:#fff;border-color:#b51d25}
+.empty-icon{border-color:#ec41412b}
+.danger{color:var(--danger)!important}
+.now-playing{--accent:var(--accent-strong);--accent-soft:#ec414126}
+.nav-item{position:relative;isolation:isolate;overflow:hidden}
+.nav-item.selected{background:transparent}
+.nav-highlight{position:absolute;inset:0;z-index:0;border-radius:inherit;background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
+.nav-item>:not(.nav-highlight){position:relative;z-index:1}
+.icon-button-glyph,.transport-state-icon{display:grid;place-items:center}
+.cover>img,.cover-fallback{grid-area:1/1;width:100%;height:100%}
+.cover-fallback{position:relative;display:grid;place-items:center}
+.row-number>.row-number-content{display:grid;place-items:center}
+.row-number .row-number-content>svg{display:none}
+.track-row:hover .row-number .row-number-content>span{display:none}
+.track-row:hover .row-number .row-number-content>svg{display:block}
+.player-track-current{display:flex;align-items:center;gap:13px;min-width:0;flex:1}
+.hero-playlist-actions{display:inline-flex;align-items:center;gap:4px}
+.lyric-content{display:flex;flex:1;min-height:0;min-width:0}
+.play-button:hover{transform:none}
+.scan-status{overflow:hidden;transform-origin:top center}
+.song-menu,.queue-drawer,.modal{will-change:transform,opacity}
+
+/* AMLL's active line gets a stronger red aura and a slower light sweep. */
+.lyrics-host .dr-lyric-line{
+  transition:filter .28s ease,opacity .28s ease,text-shadow .28s ease;
+}
+.lyrics-host .FmKaba_lyricLine.FmKaba_active{
+  z-index:2;
+  filter:blur(0) drop-shadow(0 0 9px #ec414166) drop-shadow(0 0 26px #ec41412e)!important;
+}
+.lyrics-host .FmKaba_lyricLine.FmKaba_active .FmKaba_lyricMainLine{
+  position:relative;
+  text-shadow:0 0 2px #fff,0 0 9px #ff5a5fb8,0 0 28px #ec414180;
+  animation:dr-lyric-glow 2.4s ease-in-out infinite;
+}
+.lyrics-host .FmKaba_lyricLine.FmKaba_active .FmKaba_lyricMainLine::after{
+  content:"";
+  position:absolute;
+  left:0;
+  right:0;
+  bottom:-.08em;
+  height:2px;
+  pointer-events:none;
+  background:linear-gradient(90deg,transparent,#ff7777d9 48%,#ffffff80 52%,transparent);
+  background-size:34% 100%;
+  background-repeat:no-repeat;
+  background-position:-45% 0;
+  mix-blend-mode:screen;
+  animation:dr-lyric-flow 2.4s cubic-bezier(.22,.72,.28,1) -.6s infinite;
+}
+@keyframes dr-lyric-flow{
+  0%{background-position:-45% 0;opacity:0}
+  16%{opacity:1}
+  84%{opacity:1}
+  100%{background-position:145% 0;opacity:0}
+}
+@keyframes dr-lyric-glow{
+  0%,100%{text-shadow:0 0 2px #fff,0 0 8px #ff5a5f99,0 0 24px #ec414166}
+  50%{text-shadow:0 0 3px #fff,0 0 13px #ff5a5fcc,0 0 34px #ec414199}
+}
+@media(prefers-reduced-motion:reduce){
+  body,.app-shell,.sidebar,.main-content,.player-bar,.now-playing,.modal,.queue-drawer,.song-menu,.search,.folder-list,.toast,
+  button,input,select,.lyrics-host .dr-lyric-line{transition:none!important}
+  .lyrics-host .FmKaba_lyricLine.FmKaba_active .FmKaba_lyricMainLine{animation:none}
+  .lyrics-host .FmKaba_lyricLine.FmKaba_active .FmKaba_lyricMainLine::after{animation:none;display:none}
+}

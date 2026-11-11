@@ -42,7 +42,7 @@ DR Music 是 suxiaofan 的个人本地音乐播放器。当前宿主为独立实
 
 ## 网页及构建依赖
 
-React / React DOM（MIT）、Lucide（ISC）和其他打包依赖的版本由 `package-lock.json` 锁定。原许可与版权文字由 `scripts/licenses.mjs` 收集至 `licenses/DEPENDENCY_LICENSES.txt`。Vite、TypeScript、Node.js 与 Playwright 仅用于构建或测试，不随应用作为后端运行。
+React / React DOM（MIT）、Motion / Framer Motion 14.12.0（MIT）、Lucide（ISC）和其他打包依赖的版本由 `package-lock.json` 锁定。Motion 用于页面、列表、播放状态、菜单和弹窗的 React 动画。原许可与版权文字由 `scripts/licenses.mjs` 收集至 `licenses/DEPENDENCY_LICENSES.txt`。Vite、TypeScript、Node.js 与 Playwright 仅用于构建或测试，不随应用作为后端运行。
 
 ## 修改与分发
 

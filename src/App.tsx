@@ -31,13 +31,13 @@ function NavButton({ selected = false, children, className = '', ...props }: Omi
   </PressableButton>;
 }
 
-function Cover({ track, className = '' }: { track?: Track; className?: string }) {
+function Cover({ track, className = '', enableLayout = true, loadImage = true }: { track?: Track; className?: string; enableLayout?: boolean; loadImage?: boolean }) {
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [track?.id, track?.cover]);
-  return <motion.div layout="position" initial={false} className={`cover ${className}`} style={{ '--cover-hue': String(parseInt(track?.id.slice(0, 3) || '320', 16) % 360) } as React.CSSProperties}>
+  return <motion.div layout={enableLayout ? 'position' : false} initial={false} className={`cover ${className}`} style={{ '--cover-hue': String(parseInt(track?.id.slice(0, 3) || '320', 16) % 360) } as React.CSSProperties}>
     <AnimatePresence mode="sync" initial={false}>
-      {track?.cover && !failed
-        ? <motion.img key={`${track.id}:cover`} src={media(track, 'cover')} alt={`${track.album} 封面`} initial={{ opacity: 0, scale: 1.08 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: .96 }} transition={{ duration: .24 }} onError={() => setFailed(true)}/>
+      {track?.cover && !failed && loadImage
+        ? <motion.img key={`${track.id}:cover`} src={media(track, 'cover')} alt={`${track.album} 封面`} loading="lazy" decoding="async" initial={{ opacity: 0, scale: 1.08 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: .96 }} transition={{ duration: .24 }} onError={() => setFailed(true)}/>
         : <motion.span key={`${track?.id || 'empty'}:fallback`} className="cover-fallback" initial={{ opacity: 0, rotate: -8 }} animate={{ opacity: 1, rotate: 0 }} exit={{ opacity: 0, rotate: 8 }} transition={{ duration: .22 }}><span className="record"><i/></span><Music2 className="cover-note"/></motion.span>}
     </AnimatePresence>
   </motion.div>;
@@ -63,6 +63,8 @@ export function App() {
   const [duration, setDuration] = useState(0);
   const [nowPlaying, setNowPlaying] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
+  const [queueContentReady, setQueueContentReady] = useState(false);
+  const [queueImagesReady, setQueueImagesReady] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [noticeText, setNoticeText] = useState('');
   const [toast, setToast] = useState('');
@@ -88,6 +90,15 @@ export function App() {
   useEffect(() => { document.documentElement.dataset.theme = library?.settings.theme || 'dark'; }, [library?.settings.theme]);
   useEffect(() => { audio.volume = library?.settings.volume ?? 0.7; }, [audio, library?.settings.volume]);
   useEffect(() => { setLimit(100); setSongMenu(undefined); }, [query, page, group]);
+  useEffect(() => {
+    if (!queueOpen) return;
+    const contentTimer = window.setTimeout(() => setQueueContentReady(true), 120);
+    const imageTimer = window.setTimeout(() => setQueueImagesReady(true), 320);
+    return () => {
+      window.clearTimeout(contentTimer);
+      window.clearTimeout(imageTimer);
+    };
+  }, [queueOpen]);
 
   const current = library?.tracks.find(t => t.id === currentId);
   const settings = library?.settings;
@@ -194,6 +205,14 @@ export function App() {
     const id = currentId; const token = ++lyricRequest.current;
     try { const file = await window.music.attachLyrics(id); if (file && stateRef.current.currentId === id && token === lyricRequest.current) { setLyricFile(file); notify(`已载入 ${file.source}`); } }
     catch (error) { notify(String(error)); }
+  };
+  const toggleQueue = () => {
+    if (queueOpen) setQueueOpen(false);
+    else {
+      setQueueContentReady(false);
+      setQueueImagesReady(false);
+      setQueueOpen(true);
+    }
   };
   const navigate = (next: string) => { setPage(next); setGroup(''); setQuery(''); setNowPlaying(false); };
   const selectedPlaylist = library?.playlists.find(p => page === `playlist:${p.id}`);
@@ -391,15 +410,15 @@ export function App() {
           <IconButton icon={settings?.volume === 0 ? VolumeX : Volume2} label="静音 / 恢复音量" onClick={() => setSettings({ volume: settings?.volume ? 0 : 0.7 })}/>
           <motion.input aria-label="音量" type="range" min="0" max="1" step="0.01" value={settings?.volume ?? 0.7} whileHover={{ scaleY: 1.7 }} whileTap={{ scaleY: 2.1 }} onChange={e => setSettings({ volume: Number(e.target.value) })}/>
           <span className="tool-divider"/>
-          <IconButton icon={ListMusic} label="播放队列" active={queueOpen} onClick={() => setQueueOpen(v => !v)}/>
+          <IconButton icon={ListMusic} label="播放队列" active={queueOpen} onClick={toggleQueue}/>
           <IconButton icon={Maximize2} label="打开歌词播放页" disabled={!current} onClick={() => setNowPlaying(true)}/>
         </div>
       </motion.footer>
 
       <AnimatePresence>
-        {nowPlaying && current && <motion.section className="now-playing" aria-label="正在播放" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .42, ease: smoothEase }}>
+        {nowPlaying && current && <motion.section key="now-playing" className="now-playing" aria-label="正在播放" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }} transition={{ duration: .42, ease: smoothEase }}>
           <div className="now-bg"><AnimatePresence mode="popLayout" initial={false}>{current.cover && <motion.img key={current.id} src={media(current, 'cover')} alt="" initial={{ opacity: 0, scale: 1.05 }} animate={{ opacity: .7, scale: 1 }} exit={{ opacity: 0, scale: .98 }} transition={{ duration: .58, ease: smoothEase }}/>}</AnimatePresence></div>
-          <header><IconButton icon={ChevronDown} label="收起播放页" onClick={() => setNowPlaying(false)}/><IconButton icon={ListMusic} label="播放队列" onClick={() => setQueueOpen(v => !v)}/></header>
+          <header><IconButton icon={ChevronDown} label="收起播放页" onClick={() => setNowPlaying(false)}/><IconButton icon={ListMusic} label="播放队列" onClick={toggleQueue}/></header>
           <div className="now-layout">
             <AnimatePresence mode="wait" initial={false}>
               <motion.div key={current.id} className="now-left" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={textTransition}>
@@ -429,19 +448,19 @@ export function App() {
         </motion.section>}
       </AnimatePresence>
 
-      <AnimatePresence>
+      <AnimatePresence onExitComplete={() => { setQueueContentReady(false); setQueueImagesReady(false); }}>
         {queueOpen && <motion.button key="queue-dismiss" type="button" className="drawer-dismiss" aria-label="关闭队列背景" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setQueueOpen(false)}/>}
         {queueOpen && <motion.aside key="queue-drawer" className="queue-drawer" initial={{ x: '100%', opacity: .7 }} animate={{ x: 0, opacity: 1 }} exit={{ x: '100%', opacity: .7 }} transition={layoutTransition}>
           <div className="drawer-heading"><div><h2>播放队列</h2><motion.p key={queue.length} initial={{ opacity: 0, y: 2 }} animate={{ opacity: 1, y: 0 }} transition={quickTextTransition}>{queue.length} 首本地音乐</motion.p></div><IconButton icon={X} label="关闭播放队列" onClick={() => setQueueOpen(false)}/></div>
-          <div className="queue-list">
+          {queueContentReady && <motion.div className="queue-list" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: .18, ease: smoothEase }}>
             <AnimatePresence initial={false}>
-              {queue.map((id, i) => { const track = library?.tracks.find(t => t.id === id); return track && <motion.div key={`${id}-${i}`} layout="position" className={`queue-item ${id === currentId ? 'current' : ''}`} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ ...layoutTransition, delay: Math.min(i * .015, .1) }}>
-                <PressableButton onClick={() => playTrack(id)}><Cover track={track}/><span><strong>{track.title}</strong><small>{track.artist}</small></span>{id === currentId && <motion.span className="centered-motion-icon" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={quickTextTransition}><AudioLines size={17}/></motion.span>}</PressableButton>
+              {queue.map((id, i) => { const track = library?.tracks.find(t => t.id === id); return track && <motion.div key={`${id}-${i}`} className={`queue-item ${id === currentId ? 'current' : ''}`} initial={false} exit={{ opacity: 0 }} transition={quickTextTransition}>
+                <PressableButton onClick={() => playTrack(id)}><Cover track={track} enableLayout={false} loadImage={queueImagesReady}/><span><strong>{track.title}</strong><small>{track.artist}</small></span>{id === currentId && <motion.span className="centered-motion-icon" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={quickTextTransition}><AudioLines size={17}/></motion.span>}</PressableButton>
                 <IconButton icon={X} label={`从队列移除 ${track.title}`} onClick={() => setQueue(q => q.filter(x => x !== id))}/>
               </motion.div>; })}
             </AnimatePresence>
             <AnimatePresence>{!queue.length && <motion.div className="empty-state" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><ListMusic size={32}/><p>播放歌曲后，队列会出现在这里。</p></motion.div>}</AnimatePresence>
-          </div>
+          </motion.div>}
         </motion.aside>}
       </AnimatePresence>
 

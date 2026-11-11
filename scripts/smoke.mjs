@@ -148,7 +148,42 @@ try {
   await page.screenshot({ path: path.join(root, 'lyrics.png') });
   await page.getByRole('button', { name: '暂停', exact: true }).last().click();
   await page.keyboard.press('Space'); await page.getByRole('button', { name: '暂停', exact: true }).last().waitFor();
-  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: '收起播放页', exact: true }).click();
+  await page.waitForFunction(() => {
+    const player = document.querySelector('.now-playing');
+    if (!player) return false;
+    const style = getComputedStyle(player);
+    return style.opacity !== '1' || style.transform !== 'none';
+  });
+  await page.locator('.now-playing').waitFor({ state: 'detached' });
+  assert.equal(await page.locator('.queue-drawer').count(), 0, 'queue drawer was already open');
+  const queueShell = await page.evaluate(() => new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('queue drawer mount timed out')), 2000);
+    const observer = new MutationObserver(() => {
+      const drawer = document.querySelector('.queue-drawer');
+      if (!drawer) return;
+      clearTimeout(timeout);
+      observer.disconnect();
+      resolve({
+        itemCount: drawer.querySelectorAll('.queue-item').length,
+        transform: getComputedStyle(drawer).transform,
+      });
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    document.querySelector('button[aria-label="播放队列"]').click();
+  }));
+  assert.equal(queueShell.itemCount, 0, 'queue content mounted with the drawer shell');
+  assert.notEqual(queueShell.transform, 'none', 'queue drawer animation did not start');
+  await page.locator('.queue-item').first().waitFor();
+  assert.equal(await page.locator('.queue-item').first().evaluate(element => getComputedStyle(element).transform), 'none');
+  await page.getByRole('button', { name: '关闭播放队列', exact: true }).click();
+  await page.waitForFunction(() => {
+    const drawer = document.querySelector('.queue-drawer');
+    if (!drawer) return false;
+    const style = getComputedStyle(drawer);
+    return style.opacity !== '1' || style.transform !== 'none';
+  });
+  await page.locator('.queue-drawer').waitFor({ state: 'detached' });
   await page.getByRole('button', { name: '音乐库 3', exact: true }).click();
   await page.getByRole('button', { name: '播放 夜色温柔', exact: true }).click();
   await page.getByRole('button', { name: '打开歌词播放页', exact: true }).click();

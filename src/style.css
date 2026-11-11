@@ -99,7 +99,10 @@ button,input,select{transition:background-color .24s cubic-bezier(.22,1,.36,1),c
 .play-button:hover{transform:none;filter:brightness(1.05)}
 .play-button,.transport-state-icon{transform-origin:center center}
 .scan-status{overflow:hidden;transform-origin:top center}
-.song-menu,.queue-drawer,.modal{will-change:transform,opacity}
+.song-menu,.queue-drawer,.modal,.now-playing{will-change:transform,opacity}
+.now-playing{transform-origin:center top}
+.queue-drawer{overscroll-behavior:contain}
+.queue-item{content-visibility:auto;contain-intrinsic-size:auto 60px}
 
 /* Keep AMLL's own depth blur smooth; the word reveal itself stays sharp. */
 .lyrics-host .dr-lyric-line{

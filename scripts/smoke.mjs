@@ -77,9 +77,98 @@ try {
     return { status: reply.status, size: (await reply.arrayBuffer()).byteLength, range: reply.headers.get('content-range') };
   });
   assert.equal(check.status, 206); assert.equal(check.size, 56); assert.match(check.range, /^bytes 44-99\//);
-  await page.getByRole('button', { name: '打开歌词播放页', exact: true }).click();
-  await page.locator('.now-playing').waitFor();
-  await page.waitForTimeout(400);
+  const volumeSlider = page.getByRole('slider', { name: '音量', exact: true });
+  const volumeBefore = await volumeSlider.evaluate(element => ({
+    box: element.getBoundingClientRect().toJSON(),
+    transform: getComputedStyle(element).transform,
+  }));
+  await volumeSlider.hover();
+  await page.waitForTimeout(240);
+  const volumeHover = await volumeSlider.evaluate(element => {
+    return {
+      box: element.getBoundingClientRect().toJSON(),
+      transform: getComputedStyle(element).transform,
+    };
+  });
+  const sliderThumbHoverStyle = await page.evaluate(() => {
+    const rule = [...document.styleSheets]
+      .flatMap(sheet => [...sheet.cssRules])
+      .find(rule => rule instanceof CSSStyleRule && rule.selectorText.includes('.volume-slider:hover::-webkit-slider-thumb'));
+    return { width: rule?.style.width, height: rule?.style.height, borderRadius: rule?.style.borderRadius };
+  });
+  for (const key of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(volumeHover.box[key] - volumeBefore.box[key]) < .5, `volume slider ${key} moved`);
+  assert.equal(volumeHover.transform, volumeBefore.transform);
+  assert.deepEqual(sliderThumbHoverStyle, { width: '5px', height: '16px', borderRadius: '999px' });
+  await page.screenshot({ path: path.join(root, 'volume-slider-hover.png') });
+  await page.mouse.move(1, 1);
+  const playerEntry = await page.evaluate(() => new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('player entry animation timed out')), 2000);
+    const player = document.querySelector('.now-playing');
+    if (!player) { reject(new Error('pre-mounted player is missing')); return; }
+    const visibilityBefore = getComputedStyle(player).visibility;
+    const observer = new MutationObserver(() => {
+      if (player.dataset.open !== 'true') return;
+      requestAnimationFrame(() => {
+        clearTimeout(timeout);
+        observer.disconnect();
+        const transform = getComputedStyle(player).transform;
+        const startedAt = performance.now();
+        let previous = startedAt;
+        let maxFrameGap = 0;
+        const sample = (now) => {
+          maxFrameGap = Math.max(maxFrameGap, now - previous);
+          previous = now;
+          if (now - startedAt < 520) requestAnimationFrame(sample);
+          else resolve({ visibilityBefore, transform, translateY: new DOMMatrixReadOnly(transform).m42, maxFrameGap });
+        };
+        requestAnimationFrame(sample);
+      });
+    });
+    observer.observe(player, { attributes: true, attributeFilter: ['data-open'] });
+    document.querySelector('button[aria-label="打开歌词播放页"]').click();
+  }));
+  assert.equal(playerEntry.visibilityBefore, 'hidden');
+  assert.notEqual(playerEntry.transform, 'none');
+  assert.ok(playerEntry.translateY > 0, 'player did not enter from below');
+  assert.ok(playerEntry.maxFrameGap < 80, `player entry frame gap was ${playerEntry.maxFrameGap.toFixed(1)}ms`);
+  await page.waitForFunction(() => {
+    const transform = getComputedStyle(document.querySelector('.now-playing')).transform;
+    return transform === 'none' || Math.abs(new DOMMatrixReadOnly(transform).m42) < .5;
+  });
+  await page.waitForTimeout(120);
+  const positionClock = page.locator('.now-playing .progress-control span').first();
+  const clockBefore = await positionClock.evaluate(element => {
+    element.dataset.stableClock = 'true';
+    return { text: element.textContent, opacity: getComputedStyle(element).opacity, transform: getComputedStyle(element).transform };
+  });
+  await page.waitForTimeout(1100);
+  const clockAfter = await positionClock.evaluate(element => ({
+    text: element.textContent,
+    stable: element.dataset.stableClock,
+    opacity: getComputedStyle(element).opacity,
+    transform: getComputedStyle(element).transform,
+  }));
+  assert.notEqual(clockAfter.text, clockBefore.text);
+  assert.equal(clockAfter.stable, 'true');
+  assert.equal(clockAfter.opacity, clockBefore.opacity);
+  assert.equal(clockAfter.transform, clockBefore.transform);
+  const progressSlider = page.locator('.now-playing input[aria-label="播放进度"]');
+  const progressBefore = await progressSlider.evaluate(element => ({
+    box: element.getBoundingClientRect().toJSON(),
+    transform: getComputedStyle(element).transform,
+  }));
+  await progressSlider.hover();
+  await page.waitForTimeout(240);
+  const progressHover = await progressSlider.evaluate(element => {
+    return {
+      box: element.getBoundingClientRect().toJSON(),
+      transform: getComputedStyle(element).transform,
+    };
+  });
+  for (const key of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(progressHover.box[key] - progressBefore.box[key]) < .5, `progress slider ${key} moved`);
+  assert.equal(progressHover.transform, progressBefore.transform);
+  await page.screenshot({ path: path.join(root, 'progress-slider-hover.png') });
+  await page.mouse.move(1, 1);
   await page.getByRole('button', { name: '收起播放页', exact: true }).hover();
   await page.getByRole('tooltip').filter({ hasText: '收起播放页' }).waitFor();
   assert.equal(await page.getByRole('tooltip').getAttribute('data-theme'), 'dark');
@@ -153,9 +242,15 @@ try {
     const player = document.querySelector('.now-playing');
     if (!player) return false;
     const style = getComputedStyle(player);
-    return style.opacity !== '1' || style.transform !== 'none';
+    return player.dataset.open === 'false' && style.transform !== 'none';
   });
-  await page.locator('.now-playing').waitFor({ state: 'detached' });
+  await page.waitForFunction(() => {
+    const player = document.querySelector('.now-playing');
+    if (!player) return false;
+    const style = getComputedStyle(player);
+    const translateY = style.transform === 'none' ? 0 : new DOMMatrixReadOnly(style.transform).m42;
+    return style.visibility === 'hidden' && translateY >= innerHeight - 1;
+  });
   assert.equal(await page.locator('.queue-drawer').count(), 0, 'queue drawer was already open');
   const queueShell = await page.evaluate(() => new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('queue drawer mount timed out')), 2000);
@@ -175,6 +270,14 @@ try {
   assert.equal(queueShell.itemCount, 0, 'queue content mounted with the drawer shell');
   assert.notEqual(queueShell.transform, 'none', 'queue drawer animation did not start');
   await page.locator('.queue-item').first().waitFor();
+  const virtualQueue = await page.locator('.queue-list').evaluate(element => ({
+    start: Number(element.dataset.virtualStart),
+    end: Number(element.dataset.virtualEnd),
+    rendered: element.querySelectorAll('.queue-item').length,
+    height: element.querySelector('.queue-virtual-space')?.getBoundingClientRect().height,
+  }));
+  assert.equal(virtualQueue.rendered, virtualQueue.end - virtualQueue.start);
+  assert.equal(virtualQueue.height, 60);
   assert.equal(await page.locator('.queue-item').first().evaluate(element => getComputedStyle(element).transform), 'none');
   await page.getByRole('button', { name: '关闭播放队列', exact: true }).click();
   await page.waitForFunction(() => {

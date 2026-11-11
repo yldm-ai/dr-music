@@ -4,6 +4,7 @@ import { Music2, Library as LibraryIcon, Heart, Disc3, Mic2, FolderPlus, Plus, S
 import type { LucideIcon } from 'lucide-react';
 import type { Library, Track, Settings, LyricFile, Progress, Playlist } from './types';
 import { formatTime, nextTrack } from './lib/queue';
+import { virtualRange } from './lib/virtual';
 import { Lyrics } from './Lyrics';
 
 const media = (track: Track, kind = 'audio') => `https://media.dr-music.local/${kind}/${track.id}`;
@@ -13,6 +14,8 @@ const quickTextTransition: Transition = { duration: .24, ease: smoothEase };
 const pressTransition: Transition = { duration: .2, ease: smoothEase };
 const playTransition = { type: 'spring', stiffness: 340, damping: 32, mass: .78 } as const;
 const layoutTransition = { type: 'spring', stiffness: 250, damping: 30, mass: .9 } as const;
+const QUEUE_ROW_HEIGHT = 60;
+const QUEUE_OVERSCAN = 4;
 type MotionButtonProps = React.ComponentProps<typeof motion.button>;
 
 function PressableButton({ whileHover, whileTap, transition, ...props }: MotionButtonProps) {
@@ -65,6 +68,7 @@ export function App() {
   const [queueOpen, setQueueOpen] = useState(false);
   const [queueContentReady, setQueueContentReady] = useState(false);
   const [queueImagesReady, setQueueImagesReady] = useState(false);
+  const [queueViewport, setQueueViewport] = useState({ scrollTop: 0, height: 0 });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [noticeText, setNoticeText] = useState('');
   const [toast, setToast] = useState('');
@@ -78,6 +82,7 @@ export function App() {
   const [audio] = useState(() => new Audio());
   const stateRef = useRef({ library, queue, currentId }); stateRef.current = { library, queue, currentId };
   const searchRef = useRef<HTMLInputElement>(null);
+  const queueListRef = useRef<HTMLDivElement>(null);
   const lyricRequest = useRef(0);
   const persistence = useRef(Promise.resolve());
   const notify = useCallback((message: string) => setToast(message), []);
@@ -99,8 +104,33 @@ export function App() {
       window.clearTimeout(imageTimer);
     };
   }, [queueOpen]);
+  useEffect(() => {
+    if (!queueOpen || !queueContentReady) return;
+    const list = queueListRef.current;
+    if (!list) return;
+    let frame = 0;
+    const update = () => {
+      const next = { scrollTop: list.scrollTop, height: list.clientHeight };
+      setQueueViewport(previous => previous.scrollTop === next.scrollTop && previous.height === next.height ? previous : next);
+    };
+    const onScroll = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(update);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(list);
+    list.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      list.removeEventListener('scroll', onScroll);
+    };
+  }, [queueOpen, queueContentReady]);
 
-  const current = library?.tracks.find(t => t.id === currentId);
+  const trackById = useMemo(() => new Map((library?.tracks || []).map(track => [track.id, track])), [library?.tracks]);
+  const current = currentId ? trackById.get(currentId) : undefined;
+  const queueWindow = useMemo(() => virtualRange(queue.length, QUEUE_ROW_HEIGHT, queueViewport.scrollTop, queueViewport.height, QUEUE_OVERSCAN), [queue.length, queueViewport]);
   const settings = library?.settings;
   useEffect(() => {
     if (!settings) return;
@@ -211,6 +241,8 @@ export function App() {
     else {
       setQueueContentReady(false);
       setQueueImagesReady(false);
+      setQueueViewport({ scrollTop: 0, height: 0 });
+      queueListRef.current?.scrollTo({ top: 0 });
       setQueueOpen(true);
     }
   };
@@ -264,9 +296,9 @@ export function App() {
     <IconButton icon={settings?.repeat === 'one' ? Repeat1 : Repeat} label={`循环模式：${settings?.repeat === 'all' ? '列表循环' : settings?.repeat === 'one' ? '单曲循环' : '关闭'}`} active={settings?.repeat !== 'off'} onClick={() => setSettings({ repeat: settings?.repeat === 'off' ? 'all' : settings?.repeat === 'all' ? 'one' : 'off' })}/>
   </div>;
   const renderProgress = () => <div className="progress-control">
-    <motion.span key={formatTime(position)} initial={{ opacity: .55 }} animate={{ opacity: 1 }} transition={quickTextTransition}>{formatTime(position)}</motion.span>
-    <motion.input aria-label="播放进度" type="range" min="0" max={duration || 1} step="0.1" value={Math.min(position, duration || 0)} disabled={!current || !duration} whileHover={{ scaleY: 1.8 }} whileTap={{ scaleY: 2.2 }} onChange={e => seek(Number(e.target.value))} style={{ '--progress': `${duration ? position / duration * 100 : 0}%` } as React.CSSProperties}/>
-    <motion.span key={formatTime(duration)} initial={{ opacity: .55 }} animate={{ opacity: 1 }} transition={quickTextTransition}>{formatTime(duration)}</motion.span>
+    <span>{formatTime(position)}</span>
+    <input aria-label="播放进度" type="range" min="0" max={duration || 1} step="0.1" value={Math.min(position, duration || 0)} disabled={!current || !duration} onChange={e => seek(Number(e.target.value))} style={{ '--progress': `${duration ? position / duration * 100 : 0}%` } as React.CSSProperties}/>
+    <span>{formatTime(duration)}</span>
   </div>;
   const renderRows = (tracks: Track[]) => tracks.map((track, index) => <motion.div layout="position" className={`track-row ${currentId === track.id ? 'current' : ''}`} key={track.id} role="row" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, x: -10 }} transition={{ ...layoutTransition, delay: Math.min(index * .018, .12) }} onDoubleClick={() => playTrack(track.id, filtered.map(t => t.id))}>
     <PressableButton className="row-number" aria-label={`播放 ${track.title}`} onClick={() => playTrack(track.id, filtered.map(t => t.id))}>
@@ -408,15 +440,14 @@ export function App() {
         <div className="player-center">{renderTransport()}{renderProgress()}</div>
         <div className="player-tools">
           <IconButton icon={settings?.volume === 0 ? VolumeX : Volume2} label="静音 / 恢复音量" onClick={() => setSettings({ volume: settings?.volume ? 0 : 0.7 })}/>
-          <motion.input aria-label="音量" type="range" min="0" max="1" step="0.01" value={settings?.volume ?? 0.7} whileHover={{ scaleY: 1.7 }} whileTap={{ scaleY: 2.1 }} onChange={e => setSettings({ volume: Number(e.target.value) })}/>
+          <input className="volume-slider" aria-label="音量" type="range" min="0" max="1" step="0.01" value={settings?.volume ?? 0.7} onChange={e => setSettings({ volume: Number(e.target.value) })} style={{ '--progress': `${(settings?.volume ?? 0.7) * 100}%` } as React.CSSProperties}/>
           <span className="tool-divider"/>
           <IconButton icon={ListMusic} label="播放队列" active={queueOpen} onClick={toggleQueue}/>
           <IconButton icon={Maximize2} label="打开歌词播放页" disabled={!current} onClick={() => setNowPlaying(true)}/>
         </div>
       </motion.footer>
 
-      <AnimatePresence>
-        {nowPlaying && current && <motion.section key="now-playing" className="now-playing" aria-label="正在播放" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }} transition={{ duration: .42, ease: smoothEase }}>
+      {current && <section className="now-playing" data-open={nowPlaying ? 'true' : 'false'} aria-label="正在播放" aria-hidden={!nowPlaying} inert={!nowPlaying}>
           <div className="now-bg"><AnimatePresence mode="popLayout" initial={false}>{current.cover && <motion.img key={current.id} src={media(current, 'cover')} alt="" initial={{ opacity: 0, scale: 1.05 }} animate={{ opacity: .7, scale: 1 }} exit={{ opacity: 0, scale: .98 }} transition={{ duration: .58, ease: smoothEase }}/>}</AnimatePresence></div>
           <header><IconButton icon={ChevronDown} label="收起播放页" onClick={() => setNowPlaying(false)}/><IconButton icon={ListMusic} label="播放队列" onClick={toggleQueue}/></header>
           <div className="now-layout">
@@ -431,7 +462,7 @@ export function App() {
             <div className="now-right">
               <AnimatePresence mode="wait" initial={false}>
                 <motion.div key={lyricFile.text ? `lyrics:${current.id}:${lyricFile.source}` : `empty:${current.id}:${lyricLoading}`} className="lyric-content" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={textTransition}>
-                  {lyricFile.text ? <Lyrics file={lyricFile} audio={audio} offset={settings?.lyricOffset || 0} onSeek={seek}/> : <div className="no-lyrics"><AudioLines size={38}/><h3>{lyricLoading ? '正在读取本地歌词' : '让文字也跟着旋律'}</h3><p>自动读取歌曲旁的同名歌词文件<br/>也可以手动关联 LRC、TTML、YRC 或 TXT</p><PressableButton className="secondary-button" onClick={() => void attachLyrics()}><Plus size={16}/>关联本地歌词</PressableButton></div>}
+                  {lyricFile.text ? <Lyrics file={lyricFile} audio={audio} offset={settings?.lyricOffset || 0} active={nowPlaying} onSeek={seek}/> : <div className="no-lyrics"><AudioLines size={38}/><h3>{lyricLoading ? '正在读取本地歌词' : '让文字也跟着旋律'}</h3><p>自动读取歌曲旁的同名歌词文件<br/>也可以手动关联 LRC、TTML、YRC 或 TXT</p><PressableButton className="secondary-button" onClick={() => void attachLyrics()}><Plus size={16}/>关联本地歌词</PressableButton></div>}
                 </motion.div>
               </AnimatePresence>
               <div className="lyric-toolbar">
@@ -445,21 +476,23 @@ export function App() {
               </div>
             </div>
           </div>
-        </motion.section>}
-      </AnimatePresence>
+        </section>}
 
       <AnimatePresence onExitComplete={() => { setQueueContentReady(false); setQueueImagesReady(false); }}>
         {queueOpen && <motion.button key="queue-dismiss" type="button" className="drawer-dismiss" aria-label="关闭队列背景" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setQueueOpen(false)}/>}
-        {queueOpen && <motion.aside key="queue-drawer" className="queue-drawer" initial={{ x: '100%', opacity: .7 }} animate={{ x: 0, opacity: 1 }} exit={{ x: '100%', opacity: .7 }} transition={layoutTransition}>
+        {queueOpen && <motion.aside key="queue-drawer" className="queue-drawer" initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} transition={{ duration: .38, ease: smoothEase }}>
           <div className="drawer-heading"><div><h2>播放队列</h2><motion.p key={queue.length} initial={{ opacity: 0, y: 2 }} animate={{ opacity: 1, y: 0 }} transition={quickTextTransition}>{queue.length} 首本地音乐</motion.p></div><IconButton icon={X} label="关闭播放队列" onClick={() => setQueueOpen(false)}/></div>
-          {queueContentReady && <motion.div className="queue-list" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: .18, ease: smoothEase }}>
-            <AnimatePresence initial={false}>
-              {queue.map((id, i) => { const track = library?.tracks.find(t => t.id === id); return track && <motion.div key={`${id}-${i}`} className={`queue-item ${id === currentId ? 'current' : ''}`} initial={false} exit={{ opacity: 0 }} transition={quickTextTransition}>
-                <PressableButton onClick={() => playTrack(id)}><Cover track={track} enableLayout={false} loadImage={queueImagesReady}/><span><strong>{track.title}</strong><small>{track.artist}</small></span>{id === currentId && <motion.span className="centered-motion-icon" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={quickTextTransition}><AudioLines size={17}/></motion.span>}</PressableButton>
-                <IconButton icon={X} label={`从队列移除 ${track.title}`} onClick={() => setQueue(q => q.filter(x => x !== id))}/>
-              </motion.div>; })}
-            </AnimatePresence>
-            <AnimatePresence>{!queue.length && <motion.div className="empty-state" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><ListMusic size={32}/><p>播放歌曲后，队列会出现在这里。</p></motion.div>}</AnimatePresence>
+          {queueContentReady && <motion.div ref={queueListRef} className="queue-list" data-virtual-start={queueWindow.start} data-virtual-end={queueWindow.end} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: .18, ease: smoothEase }}>
+            {queue.length ? <div className="queue-virtual-space" role="list" style={{ height: queueWindow.totalHeight }}>
+              {queue.slice(queueWindow.start, queueWindow.end).map((id, offset) => {
+                const index = queueWindow.start + offset;
+                const track = trackById.get(id);
+                return track && <div key={`${id}-${index}`} className={`queue-item ${id === currentId ? 'current' : ''}`} role="listitem" aria-setsize={queue.length} aria-posinset={index + 1} style={{ top: index * QUEUE_ROW_HEIGHT }}>
+                  <PressableButton onClick={() => playTrack(id)}><Cover track={track} enableLayout={false} loadImage={queueImagesReady}/><span><strong>{track.title}</strong><small>{track.artist}</small></span>{id === currentId && <span className="centered-motion-icon"><AudioLines size={17}/></span>}</PressableButton>
+                  <IconButton icon={X} label={`从队列移除 ${track.title}`} onClick={() => setQueue(q => q.filter(x => x !== id))}/>
+                </div>;
+              })}
+            </div> : <div className="empty-state"><ListMusic size={32}/><p>播放歌曲后，队列会出现在这里。</p></div>}
           </motion.div>}
         </motion.aside>}
       </AnimatePresence>

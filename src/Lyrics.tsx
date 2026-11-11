@@ -9,11 +9,12 @@ const smoothEase: [number, number, number, number] = [.22, 1, .36, 1];
 const textTransition = { duration: .36, ease: smoothEase } as const;
 const quickTextTransition = { duration: .24, ease: smoothEase } as const;
 
-export function Lyrics({ file, audio, offset, onSeek }: { file: LyricFile; audio: HTMLAudioElement; offset: number; onSeek: (seconds: number) => void }) {
+export function Lyrics({ file, audio, offset, active, onSeek }: { file: LyricFile; audio: HTMLAudioElement; offset: number; active: boolean; onSeek: (seconds: number) => void }) {
   const host = useRef<HTMLDivElement>(null);
   const [info, setInfo] = useState('');
   const [plain, setPlain] = useState('');
   const seekRef = useRef(onSeek); seekRef.current = onSeek;
+  const activeRef = useRef(active); activeRef.current = active;
   useEffect(() => {
     if (!host.current) return;
     let parsed;
@@ -53,7 +54,7 @@ export function Lyrics({ file, audio, offset, onSeek }: { file: LyricFile; audio
     };
     let frame = 0, previous = performance.now();
     const tick = (now: number) => {
-      if (!document.hidden) {
+      if (activeRef.current && !document.hidden) {
         player.setCurrentTime(Math.max(0, audio.currentTime * 1000 + offset));
         player.update(Math.min(50, now - previous));
         softenBlur();

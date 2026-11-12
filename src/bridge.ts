@@ -1,4 +1,4 @@
-import type { Progress } from './types';
+import type { Progress, Track } from './types';
 
 // Same request-id / PostWebMessage model as ../dr-dict/web/bridge.ts.
 interface WebViewHost {
@@ -9,6 +9,8 @@ const host = (window as unknown as { chrome?: { webview?: WebViewHost } }).chrom
 let sequence = 0;
 const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: number }>();
 const progressListeners = new Set<(progress: Progress) => void>();
+const metadataListeners = new Set<(tracks: Track[]) => void>();
+const metadataErrorListeners = new Set<(error: string) => void>();
 type CaptionTooltip = { text: string; left: number; width: number };
 type CaptionRect = { x: number; y: number; width: number; height: number };
 type CaptionLayout = { caption: CaptionRect; minimize: CaptionRect; maximize: CaptionRect; close: CaptionRect; dpr: number };
@@ -22,6 +24,8 @@ export function onCaptionButton(listener: (event: CaptionButtonEvent) => void) {
 host?.addEventListener('message', ({ data }) => {
   if (data?.event === 'window-state') { for (const listener of windowListeners) listener(!!data.data?.maximized); return; }
   if (data?.event === 'library:progress') { for (const listener of progressListeners) listener(data.data); return; }
+  if (data?.event === 'library:metadata') { for (const listener of metadataListeners) listener(data.data); return; }
+  if (data?.event === 'library:metadata-error') { for (const listener of metadataErrorListeners) listener(data.data); return; }
   if (data?.event === 'caption-tooltip') { for (const listener of captionListeners) listener(data.data); return; }
   if (data?.event === 'caption-button') { for (const listener of captionButtonListeners) listener(data.data?.event); return; }
   const request = pending.get(data?.id);
@@ -46,6 +50,7 @@ window.music = Object.freeze({
   rescan: () => call('library:rescan'),
   update: (data: Parameters<Window['music']['update']>[0]) => call('library:update', data),
   remove: (id: string) => call('library:remove', { id }),
+  removeFolder: (folder: string) => call('library:remove-folder', { folder }),
   lyrics: (id: string) => call('lyrics:get', { id }),
   attachLyrics: (id: string) => call('lyrics:attach', { id }),
   reveal: (id: string) => call('track:reveal', { id }),
@@ -55,4 +60,6 @@ window.music = Object.freeze({
   windowCommand: (command: 'minimize' | 'maximize' | 'close') => call('window:command', { command }),
   appearance: (data: { theme: string; dimmed: boolean }) => call('window:appearance', data),
   onProgress: (listener: (progress: Progress) => void) => { progressListeners.add(listener); return () => { progressListeners.delete(listener); }; },
+  onMetadata: (listener: (tracks: Track[]) => void) => { metadataListeners.add(listener); return () => { metadataListeners.delete(listener); }; },
+  onMetadataError: (listener: (error: string) => void) => { metadataErrorListeners.add(listener); return () => { metadataErrorListeners.delete(listener); }; },
 }) as Window['music'];

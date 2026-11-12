@@ -50,14 +50,19 @@ void write_atomic(const fs::path &file, const std::string &text) {
 }
 std::string lower(std::string text) { std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); }); return text; }
 std::string path_key(const fs::path &file) {
-    auto text = fs::weakly_canonical(file).wstring();
+    return stored_path_key(fs::weakly_canonical(file));
+}
+std::string stored_path_key(const fs::path &file) {
+    auto text = file.lexically_normal().wstring();
     if (text.starts_with(L"\\\\?\\")) text.erase(0, 4);
+    std::replace(text.begin(), text.end(), L'/', L'\\');
+    while (text.size() > 3 && text.back() == L'\\') text.pop_back();
     std::wstring normalized(text.size(), L'\0');
     if (!LCMapStringEx(LOCALE_NAME_INVARIANT, LCMAP_LOWERCASE, text.data(), static_cast<int>(text.size()), normalized.data(), static_cast<int>(normalized.size()), nullptr, nullptr, 0)) normalized = text;
     return utf8(normalized);
 }
 std::string track_id(const fs::path &file) {
-    auto key = path_key(file); unsigned char hash[32]{};
+    auto key = stored_path_key(file); unsigned char hash[32]{};
     auto status = BCryptHash(BCRYPT_SHA256_ALG_HANDLE, nullptr, 0, reinterpret_cast<PUCHAR>(key.data()), static_cast<ULONG>(key.size()), hash, sizeof(hash));
     if (status < 0) throw std::runtime_error("无法生成歌曲标识");
     std::ostringstream out; out << std::hex << std::setfill('0');

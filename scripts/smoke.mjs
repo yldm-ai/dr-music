@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 const executable = path.resolve(process.env.DR_MUSIC_SMOKE_EXE || 'build/bin/Release/dr-music.exe');
 const root = path.resolve('.test-data/native-smoke');
 await rm(root, { recursive: true, force: true });
-await mkdir(path.join(root, 'songs'), { recursive: true });
+await mkdir(path.join(root, 'songs', 'nested'), { recursive: true });
 const rate = 22050, bytes = rate * 16 * 2;
 const wav = Buffer.alloc(44 + bytes);
 wav.write('RIFF', 0); wav.writeUInt32LE(36 + bytes, 4); wav.write('WAVEfmt ', 8); wav.writeUInt32LE(16, 16);
@@ -21,7 +21,7 @@ const server = createServer(); server.listen(0, '127.0.0.1'); await once(server,
 let child, browser, page;
 const errors = [];
 try {
-  child = spawn(executable, ['--data-dir', path.join(root, 'data'), '--import', path.join(root, 'songs'), '--debug-port', String(port)], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false });
+  child = spawn(executable, ['--data-dir', path.join(root, 'data'), '--import', path.join(root, 'songs'), '--import', path.join(root, 'songs', 'nested'), '--debug-port', String(port)], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false });
   child.on('error', error => errors.push(error.message));
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
@@ -35,6 +35,7 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   await page.waitForURL('https://app.dr-music.local/index.html');
   await page.getByRole('button', { name: '播放 午后散步', exact: true }).waitFor();
+  await page.waitForFunction(async () => (await window.music.getLibrary()).tracks.every(track => !track.metadataPending));
   assert.equal(await page.title(), 'DR Music');
   assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()), '#ec4141');
   assert.equal((await page.evaluate(() => window.music.getLibrary())).tracks.length, 3);
@@ -348,6 +349,10 @@ try {
   await page.locator('.folder-list span').first().hover();
   await page.getByRole('tooltip').filter({ hasText: 'songs' }).waitFor();
   assert.equal(await page.getByRole('tooltip').getAttribute('data-theme'), 'light');
+  const nestedFolder = page.locator('.folder-list>div').filter({ hasText: 'nested' });
+  await nestedFolder.getByRole('button', { name: /^移除文件夹 / }).click();
+  await page.waitForFunction(async () => (await window.music.getLibrary()).folders.length === 1);
+  assert.equal((await page.evaluate(() => window.music.getLibrary())).tracks.length, 3);
   await page.getByRole('tab', { name: '外观', exact: true }).click();
   await page.getByRole('combobox', { name: '原生标题栏', exact: true }).click();
   await page.getByRole('option', { name: 'Windows 系统标题栏', exact: true }).click();
@@ -379,8 +384,22 @@ try {
   await page.getByRole('combobox', { name: '原生标题栏', exact: true }).click();
   await page.getByRole('option', { name: 'Direct2D 自绘', exact: true }).click();
   await page.getByRole('tab', { name: '音乐库', exact: true }).click();
+  await page.evaluate(() => {
+    const original = window.music;
+    window.__metadataEvents = [];
+    original.onMetadata(tracks => window.__metadataEvents.push(...tracks));
+    window.music = { ...original, rescan: async () => {
+      const result = await original.rescan();
+      window.__quickImport = result;
+      return result;
+    } };
+  });
   await page.getByRole('button', { name: '重新扫描', exact: true }).click();
-  await page.getByRole('status').filter({ hasText: '已扫描 3 首音乐' }).waitFor();
+  await page.waitForFunction(() => window.__quickImport?.library.tracks.length === 3);
+  assert.equal(await page.evaluate(() => window.__quickImport.library.tracks.every(track => track.metadataPending)), true);
+  await page.waitForFunction(() => new Set(window.__metadataEvents.filter(track => !track.metadataPending).map(track => track.id)).size === 3);
+  await page.waitForFunction(async () => (await window.music.getLibrary()).tracks.every(track => !track.metadataPending));
+  assert.equal((await page.evaluate(() => window.music.getLibrary())).folders.length, 1);
   await page.getByRole('button', { name: '关闭设置', exact: true }).click();
   const security = await page.evaluate(async () => {
     let blocked = false; try { await fetch('https://example.com'); } catch { blocked = true; }
@@ -398,6 +417,37 @@ try {
   const saved = JSON.parse(await readFile(path.join(root, 'data', 'library.json'), 'utf8'));
   assert.equal(saved.favorites.length, 1); assert.equal(saved.playlists[0].trackIds.length, 1); assert.deepEqual(errors, []);
   assert.equal(await page.locator('[title]').count(), 0);
+  // Deliberately hold the native removal request: cached UI state, playback,
+  // lyrics and queue must clear before any persistence result can arrive.
+  await page.getByRole('button', { name: '音乐库 3', exact: true }).click();
+  await page.getByRole('button', { name: '播放 午后散步', exact: true }).click();
+  await page.getByRole('button', { name: /设置与关于/ }).click();
+  await page.getByRole('tab', { name: '音乐库', exact: true }).click();
+  await page.evaluate(() => {
+    const original = window.music;
+    window.music = { ...original, removeFolder: folder => new Promise((resolve, reject) => {
+      window.__releaseRemoval = fail => fail ? reject(new Error('simulated save failure')) : original.removeFolder(folder).then(resolve, reject);
+    }) };
+  });
+  const removeFolderButton = page.locator('.folder-list').getByRole('button', { name: /^移除文件夹 / });
+  await removeFolderButton.click();
+  await page.waitForFunction(() => document.querySelectorAll('.folder-list>div').length === 0 && document.querySelectorAll('.track-row:not(.table-head)').length === 0);
+  assert.equal((await page.evaluate(() => window.music.getLibrary())).tracks.length, 3);
+  await page.waitForFunction(() => navigator.mediaSession.metadata === null && navigator.mediaSession.playbackState !== 'playing');
+  await page.evaluate(() => window.__releaseRemoval(true));
+  await removeFolderButton.waitFor();
+  await page.waitForFunction(() => document.querySelectorAll('.track-row:not(.table-head)').length === 3);
+  await removeFolderButton.click();
+  await page.waitForFunction(() => document.querySelectorAll('.folder-list>div').length === 0 && document.querySelectorAll('.track-row:not(.table-head)').length === 0);
+  await page.evaluate(() => window.__releaseRemoval(false));
+  await page.waitForFunction(async () => (await window.music.getLibrary()).tracks.length === 0);
+  const cleared = JSON.parse(await readFile(path.join(root, 'data', 'library.json'), 'utf8'));
+  assert.deepEqual(cleared.tracks, []); assert.deepEqual(cleared.folders, []); assert.deepEqual(cleared.favorites, []);
+  assert.equal(cleared.playlists.every(playlist => playlist.trackIds.length === 0), true);
+  assert.equal((await readFile(path.join(root, 'songs', '午后散步.wav'))).length > 44, true);
+  await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+  await page.getByRole('button', { name: /播放队列/ }).click();
+  await page.waitForFunction(() => document.querySelector('.drawer-heading p')?.textContent === '0 首本地音乐');
   console.log('PASS: real C++/WebView2 host, native scan and bridge, audio playback and Range stream, favorites/playlists, AMLL LRC click seeking, TTML rendering, rescan, theme/titlebar switching and persistence, native command validation and network isolation.');
   console.log(`Screenshots: ${root}`);
 } catch (error) {

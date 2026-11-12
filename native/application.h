@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <deque>
 #include <thread>
+#include <chrono>
 namespace dr {
 class Application {
 public:
@@ -13,7 +14,8 @@ public:
     ~Application();
     int run(HINSTANCE instance);
 private:
-    void enqueue(std::function<void(std::stop_token)> task);
+    void enqueue(std::function<void(std::stop_token)> task, bool background = false);
+    void schedule_metadata(Json candidates, size_t offset = 0);
     void receive(const Json &request);
     void reply(const Json &id, Json result);
     void reject(const Json &id, const std::string &error);
@@ -30,6 +32,8 @@ private:
     std::mutex jobs_mutex_;
     std::condition_variable_any ready_;
     std::deque<std::function<void(std::stop_token)>> jobs_;
+    std::deque<std::function<void(std::stop_token)>> background_jobs_;
+    std::chrono::steady_clock::time_point metadata_saved_ = std::chrono::steady_clock::now();
     std::jthread worker_;
 };
 }

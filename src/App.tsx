@@ -5,6 +5,7 @@ import type { LucideIcon } from 'lucide-react';
 import type { Library, Track, Settings, LyricFile, Progress, Playlist } from './types';
 import { formatTime, nextTrack } from './lib/queue';
 import { virtualRange } from './lib/virtual';
+import { withoutFolder, withMetadata } from './lib/library';
 import { Lyrics } from './Lyrics';
 import { Select } from './Select';
 import { onCaptionButton, onWindowState } from './bridge';
@@ -113,13 +114,32 @@ export function App() {
   const queueListRef = useRef<HTMLDivElement>(null);
   const lyricRequest = useRef(0);
   const persistence = useRef(Promise.resolve());
+  const pendingWrites = useRef<{ patch: Parameters<Window['music']['update']>[0] }[]>([]);
+  const removingFolder = useRef<string | undefined>(undefined);
+  const projectLibrary = useCallback((data: Library) => {
+    for (const { patch } of pendingWrites.current) data = { ...data, ...patch, settings: { ...data.settings, ...patch.settings } };
+    return removingFolder.current ? withoutFolder(data, removingFolder.current) : data;
+  }, []);
   const notify = useCallback((message: string) => setToast(message), []);
   useEffect(() => { if (toast) { const timer = setTimeout(() => setToast(''), 5000); return () => clearTimeout(timer); } }, [toast]);
   useEffect(() => {
     if (!window.music) { notify('请通过 C++ / WebView2 桌面程序打开'); return; }
-    window.music.getLibrary().then(data => { setLibrary(data); if (data.notice) notify(data.notice); }).catch(e => notify(String(e)));
+    window.music.getLibrary().then(data => { setLibrary(projectLibrary(data)); if (data.notice) notify(data.notice); }).catch(e => notify(String(e)));
     return window.music.onProgress(setProgress);
-  }, [notify]);
+  }, [notify, projectLibrary]);
+  useEffect(() => {
+    const pending = new Map<string, Track>();
+    let frame = 0;
+    const off = window.music.onMetadata(tracks => {
+      for (const track of tracks) pending.set(track.id, track);
+      if (!frame) frame = requestAnimationFrame(() => {
+        const updates = [...pending.values()]; pending.clear(); frame = 0;
+        setLibrary(previous => previous ? projectLibrary(withMetadata(previous, updates)) : previous);
+      });
+    });
+    const offError = window.music.onMetadataError(error => notify(`歌曲信息保存失败：${error}`));
+    return () => { off(); offError(); cancelAnimationFrame(frame); };
+  }, [notify, projectLibrary]);
   useEffect(() => { document.documentElement.dataset.theme = library?.settings.theme || 'dark'; }, [library?.settings.theme]);
   useEffect(() => { audio.volume = library?.settings.volume ?? 0.7; }, [audio, library?.settings.volume]);
   useEffect(() => { setLimit(100); setSongMenu(undefined); }, [query, page, group]);
@@ -198,12 +218,18 @@ export function App() {
     }).catch(error => notify(String(error)));
   }, [settings?.theme, nowPlaying, settingsOpen, playlistDialog, deletePlaylist, noticeText, notify]);
   const persist = useCallback((patch: Parameters<Window['music']['update']>[0]) => {
-    setLibrary(previous => previous ? { ...previous, ...patch, settings: { ...previous.settings, ...patch.settings } } : previous);
-    persistence.current = persistence.current.then(async () => { await window.music.update(patch); }).catch(error => {
-      notify(`保存失败：${error}`);
-      void window.music.getLibrary().then(setLibrary);
+    const write = { patch };
+    pendingWrites.current.push(write);
+    setLibrary(previous => previous ? projectLibrary({ ...previous, ...patch, settings: { ...previous.settings, ...patch.settings } }) : previous);
+    const forget = () => { pendingWrites.current = pendingWrites.current.filter(item => item !== write); };
+    persistence.current = persistence.current.then(async () => {
+      try { await window.music.update(patch); }
+      catch (error) {
+        forget(); notify(`保存失败：${error}`);
+        try { setLibrary(projectLibrary(await window.music.getLibrary())); } catch { /* retain current state while the host is unavailable */ }
+      } finally { forget(); }
     });
-  }, [notify]);
+  }, [notify, projectLibrary]);
   const setSettings = useCallback((patch: Partial<Settings>) => persist({ settings: patch }), [persist]);
   const favorite = useCallback((id: string) => {
     const ids = stateRef.current.library?.favorites || [];
@@ -249,10 +275,10 @@ export function App() {
   useEffect(() => {
     const token = ++lyricRequest.current;
     setLyricFile({ text: '', source: '', format: 'lrc' });
-    if (!currentId) return;
+    if (!currentId) { setLyricLoading(false); return; }
     setLyricLoading(true);
     window.music.lyrics(currentId).then(file => { if (token === lyricRequest.current) setLyricFile(file); }).catch(e => { if (token === lyricRequest.current) notify(String(e)); }).finally(() => { if (token === lyricRequest.current) setLyricLoading(false); });
-  }, [currentId, notify]);
+  }, [currentId, current?.metadataPending, notify]);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       const element = event.target as HTMLElement;
@@ -284,7 +310,7 @@ export function App() {
     try {
       await persistence.current;
       const result = await (kind === 'rescan' ? window.music.rescan() : window.music.importMusic(kind));
-      if (result) { setLibrary(result.library); notify(`已扫描 ${result.imported} 首音乐${result.warnings.length ? `，${result.warnings.length} 个文件存在读取问题：${result.warnings.slice(0, 2).join('；')}` : ''}`); }
+      if (result) { setLibrary(projectLibrary(result.library)); notify(`已加入 ${result.imported} 首音乐，歌曲信息将在后台补齐${result.warnings.length ? `，${result.warnings.length} 个文件存在读取问题：${result.warnings.slice(0, 2).join('；')}` : ''}`); }
     } catch (error) { notify(`导入失败：${error}`); }
     finally { setBusy(false); setProgress(undefined); }
   };
@@ -318,7 +344,11 @@ export function App() {
   }, [library, page, group, query, sort, selectedPlaylist]);
   const groups = useMemo(() => {
     const result = new Map<string, Track[]>();
-    for (const track of filtered) { const key = page === 'artists' ? track.artist : track.album; result.set(key, [...(result.get(key) || []), track]); }
+    for (const track of filtered) {
+      const key = page === 'artists' ? track.artist : track.album;
+      const tracks = result.get(key);
+      if (tracks) tracks.push(track); else result.set(key, [track]);
+    }
     return [...result];
   }, [filtered, page]);
   const totalDuration = filtered.reduce((n, t) => n + t.duration, 0);
@@ -335,6 +365,43 @@ export function App() {
       notify('已从音乐库移除，磁盘文件已保留');
     } catch (error) { notify(String(error)); }
     setSongMenu(undefined);
+  };
+  const removeFolder = async (folder: string) => {
+    if (busy || removingFolder.current || !library) return;
+    const before = library;
+    const next = withoutFolder(before, folder);
+    const valid = new Set(next.tracks.map(track => track.id));
+    const nextQueue = queue.filter(id => valid.has(id));
+    const removedCurrent = !!currentId && !valid.has(currentId);
+    removingFolder.current = folder;
+    stateRef.current = { library: next, queue: nextQueue, currentId: removedCurrent ? undefined : currentId };
+    setLibrary(next); setQueue(nextQueue); setSongMenu(undefined);
+    if (removedCurrent) {
+      ++lyricRequest.current;
+      audio.pause(); audio.removeAttribute('src'); audio.load();
+      setCurrentId(undefined); setPlaying(false); setPosition(0); setDuration(0); setNowPlaying(false);
+      setLyricFile({ text: '', source: '', format: 'lrc' }); setLyricLoading(false);
+    }
+    setBusy(true);
+    // Queue the mutation with settings/favorites writes, while the UI is
+    // already cleared. Later writes must not race ahead of the removal.
+    const removal = persistence.current.then(async () => {
+      try {
+        await window.music.removeFolder(folder);
+        notify('已移除文件夹，磁盘音乐已保留');
+      } catch (error) {
+        const restored = await window.music.getLibrary().catch(() => before);
+        removingFolder.current = undefined;
+        setLibrary(projectLibrary(restored));
+        setQueue(q => q.length === nextQueue.length && q.every((id, index) => id === nextQueue[index]) ? queue : [...q, ...queue.filter(id => !q.includes(id))]);
+        notify(`移除失败，已恢复音乐库：${error}`);
+      } finally {
+        removingFolder.current = undefined;
+        setBusy(false);
+      }
+    });
+    persistence.current = removal;
+    await removal;
   };
   const savePlaylist = (event: React.FormEvent) => {
     event.preventDefault(); if (!playlistDialog?.name.trim() || !library) return;
@@ -487,7 +554,7 @@ export function App() {
           </motion.section>
 
           <AnimatePresence initial={false}>
-            {busy && <motion.div className="scan-status" role="status" initial={{ opacity: 0, height: 0, y: -8 }} animate={{ opacity: 1, height: 'auto', y: 0 }} exit={{ opacity: 0, height: 0, y: -8 }} transition={layoutTransition}><RefreshCw className="spin" size={16}/>{progress ? `正在扫描 ${progress.done} / ${progress.total} · ${progress.name}` : '正在选择或查找本地音乐…'}</motion.div>}
+            {(busy || library?.tracks.some(track => track.metadataPending)) && <motion.div className="scan-status" role="status" initial={{ opacity: 0, height: 0, y: -8 }} animate={{ opacity: 1, height: 'auto', y: 0 }} exit={{ opacity: 0, height: 0, y: -8 }} transition={layoutTransition}><RefreshCw className="spin" size={16}/>{busy ? progress ? `已找到 ${progress.done} 首音乐 · ${progress.name}` : '正在选择或查找本地音乐…' : '音乐已加入，正在后台完善标签和封面…'}</motion.div>}
           </AnimatePresence>
 
           <motion.section className="collection">
@@ -582,8 +649,8 @@ export function App() {
               <section role="tabpanel" aria-label="外观" hidden={settingsTab !== 'appearance'}><h4>外观</h4><p className="settings-hint">选择适合你的配色和窗口风格。</p>
               <div className="settings-row"><span>应用主题</span><Select label="应用主题" value={settings?.theme || 'dark'} onChange={value => setSettings({ theme: value as Settings['theme'] })} options={[{ value: 'dark', label: '深色 · 夜间唱片店' }, { value: 'light', label: '浅色 · 午后音乐室' }]}/></div>
               <div className="settings-row"><span>原生标题栏</span><Select label="原生标题栏" value={settings?.titleBar || 'direct2d'} onChange={value => setSettings({ titleBar: value as Settings['titleBar'] })} options={[{ value: 'direct2d', label: 'Direct2D 自绘' }, { value: 'webview2', label: 'WebView2 沉浸式' }, { value: 'system', label: 'Windows 系统标题栏' }]}/></div>
-              </section><section role="tabpanel" aria-label="音乐库" hidden={settingsTab !== 'library'}><h4>本地音乐库</h4><p className="settings-hint">文件夹扫描包含子目录。重新扫描会更新标签和新增歌曲；失效文件可手动移出音乐库。移除操作不会删除磁盘音乐。</p>
-              <div className="folder-list"><AnimatePresence initial={false}>{library?.folders.map(folder => <motion.div key={folder} layout="position" initial={{ opacity: 0, x: -4 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 4 }} transition={textTransition}><FolderOpen size={16}/><span data-tooltip={folder}>{folder}</span></motion.div>)}{!library?.folders.length && <motion.p key="empty-folders" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>还没有导入音乐文件夹</motion.p>}</AnimatePresence></div>
+              </section><section role="tabpanel" aria-label="音乐库" hidden={settingsTab !== 'library'}><h4>本地音乐库</h4><p className="settings-hint">添加文件夹时包含子目录，歌曲先加入，标签和封面在后台补齐。重新扫描会更新标签和新增歌曲。移除文件夹会同时清理子目录、收藏和歌单中的歌曲记录，磁盘音乐会保留。</p>
+              <div className="folder-list">{library?.folders.map(folder => <div key={folder}><FolderOpen size={16}/><span data-tooltip={folder}>{folder}</span><IconButton icon={X} label={`移除文件夹 ${folder}`} disabled={busy} onClick={() => void removeFolder(folder)}/></div>)}{!library?.folders.length && <p>还没有导入音乐文件夹</p>}</div>
               <div className="settings-actions"><PressableButton className="secondary-button" disabled={busy} onClick={() => void runImport('folder')}><FolderPlus size={16}/>添加文件夹</PressableButton><PressableButton className="secondary-button" disabled={busy || !library?.folders.length} onClick={() => void runImport('rescan')}><RefreshCw size={16}/>重新扫描</PressableButton><PressableButton className="text-button" onClick={() => void window.music.openData().catch(e => notify(String(e)))}>打开数据目录</PressableButton></div>
               </section><section role="tabpanel" aria-label="播放与快捷键" hidden={settingsTab !== 'playback'}><h4>键盘与播放</h4><div className="shortcut-list"><span>播放 / 暂停 <kbd>Space</kbd></span><span>上一首 / 下一首 <kbd>Ctrl ← / →</kbd></span><span>打开 / 收起播放页 <kbd>Ctrl L</kbd></span><span>喜欢当前歌曲 <kbd>Ctrl D</kbd></span><span>搜索音乐 <kbd>Ctrl F</kbd></span><span>关闭面板 <kbd>Esc</kbd></span></div>
               </section><section role="tabpanel" aria-label="关于" hidden={settingsTab !== 'about'}><h4>来源与开源声明</h4><p className="settings-hint">本项目由 suxiaofan 定制，基于 MySpotify 的产品布局与歌词分词逻辑重构。原作者及开源声明保留。歌词使用 Apple Music-like Lyrics 渲染。应用遵循 AGPL-3.0-only。</p>

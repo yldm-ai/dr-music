@@ -7,6 +7,8 @@
 #include <fstream>
 #include <map>
 #include <set>
+#include <unordered_set>
+#include <chrono>
 namespace dr {
 namespace {
 const std::set<std::string> audio_extensions{ ".mp3", ".flac", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".webm", ".mp4" };
@@ -44,89 +46,161 @@ Json Library::load() {
         fs::copy_file(file, directory_ / name, fs::copy_options::none);
         state_ = defaults(); state_["notice"] = "音乐库文件损坏，原文件已备份到 " + name + "。请重新导入音乐。";
     }
+    rebuild_index_locked();
     return state_;
 }
+void Library::rebuild_index_locked() {
+    track_index_.clear();
+    for (size_t i = 0; i < state_["tracks"].size(); ++i) {
+        const auto &t = state_["tracks"][i];
+        track_index_[t["id"].get<std::string>()] = i;
+        metadata_revision_ = std::max(metadata_revision_, t.value("metadataRevision", 0ULL));
+    }
+}
 Json Library::snapshot() const { std::lock_guard lock(mutex_); return state_; }
+Json Library::settings() const { std::lock_guard lock(mutex_); return state_["settings"]; }
 void Library::save_locked() { write_atomic(directory_ / L"library.json", state_.dump(2, ' ', false, Json::error_handler_t::replace)); }
 Json Library::track(const std::string &id) const {
     std::lock_guard lock(mutex_);
-    for (const auto &track : state_["tracks"]) if (track["id"] == id) return track;
+    const auto found = track_index_.find(id);
+    if (found != track_index_.end()) return state_["tracks"][found->second];
     throw std::runtime_error("歌曲不在音乐库中");
 }
 Json Library::import_paths(const std::vector<fs::path> &inputs, std::function<void(Json)> progress, std::stop_token stop) {
     auto before = snapshot();
     std::map<std::string, fs::path> files;
     std::set<std::string> visited, roots;
-    for (const auto &root : before["folders"]) if (root.is_string()) roots.insert(root.get<std::string>());
+    for (const auto &root : before["folders"]) roots.insert(root.get<std::string>());
     Json warnings = Json::array();
-    std::function<void(const fs::path &)> walk = [&](const fs::path &input) {
+    size_t discovered = 0;
+    auto last_progress = std::chrono::steady_clock::now();
+    // Resolve selected roots once. Entries below them already have absolute,
+    // canonical parents; do not reopen every path component for every file.
+    std::function<void(const fs::path &, DWORD)> walk = [&](const fs::path &input, DWORD attributes) {
         if (stop.stop_requested()) throw std::runtime_error("扫描已取消");
         try {
-            auto real = fs::canonical(input); auto key = path_key(real);
+            const auto key = stored_path_key(input);
             if (!visited.insert(key).second) return;
-            if (fs::is_directory(real)) {
-                for (const auto &entry : fs::directory_iterator(real, fs::directory_options::skip_permission_denied)) {
-                    auto attr = GetFileAttributesW(entry.path().c_str());
-                    if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_REPARSE_POINT)) walk(entry.path());
+            if (attributes & FILE_ATTRIBUTE_DIRECTORY) {
+                for (const auto &entry : fs::directory_iterator(input, fs::directory_options::skip_permission_denied)) {
+                    const auto attr = GetFileAttributesW(entry.path().c_str());
+                    if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_REPARSE_POINT)) walk(entry.path(), attr);
                 }
-            } else if (fs::is_regular_file(real) && audio_extensions.contains(lower(path_text(real.extension())))) files.emplace(key, real);
+            } else if (audio_extensions.contains(lower(path_text(input.extension())))) {
+                files.emplace(key, input); ++discovered;
+                const auto now = std::chrono::steady_clock::now();
+                if (progress && now - last_progress >= std::chrono::milliseconds(100)) {
+                    progress({{"done", discovered}, {"total", 0}, {"name", path_text(input.filename())}}); last_progress = now;
+                }
+            }
         } catch (const fs::filesystem_error &) { warnings.push_back("无法访问：" + path_text(input)); }
     };
     for (const auto &input : inputs) {
-        std::error_code error;
-        if (fs::is_directory(input, error)) roots.insert(path_text(fs::canonical(input)));
-        walk(input);
+        try {
+            const auto real = fs::canonical(input);
+            const auto attributes = GetFileAttributesW(real.c_str());
+            if (attributes == INVALID_FILE_ATTRIBUTES) { warnings.push_back("无法访问：" + path_text(input)); continue; }
+            if (attributes & FILE_ATTRIBUTE_DIRECTORY) roots.insert(path_text(real));
+            walk(real, attributes);
+        } catch (const fs::filesystem_error &) { warnings.push_back("无法访问：" + path_text(input)); }
     }
     std::map<std::string, Json> tracks;
     std::map<std::string, std::string> previous_ids;
     for (const auto &t : before["tracks"]) {
         const auto id = t["id"].get<std::string>(); tracks[id] = t;
-        previous_ids[path_key(from_text(t["path"]))] = id;
+        previous_ids[stored_path_key(from_text(t["path"]))] = id;
     }
-    size_t done = 0;
+    Json pending = Json::array();
     for (const auto &[key, file] : files) {
         if (stop.stop_requested()) throw std::runtime_error("扫描已取消");
         const auto id = previous_ids.contains(key) ? previous_ids[key] : track_id(file);
-        auto old = tracks.contains(id) ? tracks[id] : Json::object();
-        auto format = path_text(file.extension()).substr(1);
-        std::transform(format.begin(), format.end(), format.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-        Json t = {{"id", id}, {"path", path_text(file)}, {"title", path_text(file.stem())}, {"artist", "未知艺术家"}, {"album", "未知专辑"},
-            {"duration", 0}, {"format", format}, {"addedAt", old.value("addedAt", timestamp())}};
-        if (old.contains("lyricPath")) t["lyricPath"] = old["lyricPath"];
-        try {
-            t["size"] = fs::file_size(file);
-            // TagLib reads the audio directly in C++; no Node.js helper process.
-            TagLib::FileRef ref(file.c_str(), true, TagLib::AudioProperties::Accurate);
-            if (ref.isNull()) throw std::runtime_error("无法读取音频标签");
-            if (auto tag = ref.tag()) {
-                t["title"] = string_or(tag->title(), path_text(file.stem()));
-                t["artist"] = string_or(tag->artist(), "未知艺术家"); t["album"] = string_or(tag->album(), "未知专辑");
-            }
-            if (auto p = ref.audioProperties()) { t["duration"] = p->lengthInMilliseconds() / 1000.0; t["sampleRate"] = p->sampleRate(); t["bitrate"] = p->bitrate() * 1000; }
-            const auto properties = ref.properties();
-            if (properties.contains("LYRICS")) t["embedded"] = properties["LYRICS"].toString("\n").to8Bit(true);
-            const auto pictures = ref.complexProperties("PICTURE");
-            if (!pictures.isEmpty()) {
-                auto picture = pictures.front();
-                const auto mime = picture["mimeType"].toString().to8Bit(true);
-                auto data = picture["data"].toByteVector();
-                if ((mime == "image/jpeg" || mime == "image/png" || mime == "image/webp") && data.size() <= 20 * 1024 * 1024) {
-                    std::ofstream cover(directory_ / (id + ".cover"), std::ios::binary);
-                    cover.write(data.data(), data.size()); if (cover) t["cover"] = mime;
-                }
-            }
-        } catch (const std::exception &) { warnings.push_back("无法读取标签，已按文件名导入：" + path_text(file.filename())); }
+        Json t;
+        if (tracks.contains(id)) t = tracks[id];
+        else {
+            auto format = path_text(file.extension()).substr(1);
+            std::transform(format.begin(), format.end(), format.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+            t = {{"id", id}, {"path", path_text(file)}, {"title", path_text(file.stem())}, {"artist", "未知艺术家"}, {"album", "未知专辑"},
+                {"duration", 0}, {"format", format}, {"addedAt", timestamp()}};
+        }
+        t["metadataPending"] = true; t["metadataRevision"] = ++metadata_revision_;
+        pending.push_back({{"id", id}, {"revision", metadata_revision_}});
         tracks[id] = std::move(t);
-        ++done;
-        if (progress) progress({{"done", done}, {"total", files.size()}, {"name", path_text(file.filename())}});
     }
     {
         std::lock_guard lock(mutex_);
-        state_["tracks"] = Json::array();
-        for (const auto &[id, t] : tracks) state_["tracks"].push_back(t);
-        state_["folders"] = roots; save_locked();
+        auto next = state_; next["tracks"] = Json::array();
+        for (auto &[id, t] : tracks) next["tracks"].push_back(std::move(t));
+        next["folders"] = roots;
+        write_atomic(directory_ / L"library.json", next.dump(2, ' ', false, Json::error_handler_t::replace));
+        state_ = std::move(next); rebuild_index_locked();
     }
-    return {{"library", snapshot()}, {"imported", done}, {"warnings", warnings}};
+    return {{"library", snapshot()}, {"imported", files.size()}, {"warnings", warnings}, {"pending", pending}};
+}
+Json Library::pending_metadata() const {
+    std::lock_guard lock(mutex_); Json pending = Json::array();
+    for (const auto &t : state_["tracks"]) if (t.value("metadataPending", false))
+        pending.push_back({{"id", t["id"]}, {"revision", t["metadataRevision"]}});
+    return pending;
+}
+Json Library::enrich_metadata(const Json &candidate) {
+    const auto id = candidate.at("id").get<std::string>();
+    Json t;
+    {
+        std::lock_guard lock(mutex_);
+        const auto found = track_index_.find(id);
+        if (found == track_index_.end()) return nullptr;
+        t = state_["tracks"][found->second];
+        if (!t.value("metadataPending", false) || t["metadataRevision"] != candidate.at("revision")) return nullptr;
+    }
+    const auto file = from_text(t["path"]);
+    TagLib::ByteVector cover;
+    std::string cover_mime;
+    try {
+        t["size"] = fs::file_size(file);
+        // Fast duration estimates avoid a full audio scan. Playback obtains
+        // the exact duration from the media element when the track is opened.
+        TagLib::FileRef ref(file.c_str(), true, TagLib::AudioProperties::Fast);
+        if (ref.isNull()) throw std::runtime_error("无法读取音频标签");
+        if (auto tag = ref.tag()) {
+            t["title"] = string_or(tag->title(), path_text(file.stem()));
+            t["artist"] = string_or(tag->artist(), "未知艺术家"); t["album"] = string_or(tag->album(), "未知专辑");
+        }
+        if (auto p = ref.audioProperties()) { t["duration"] = p->lengthInMilliseconds() / 1000.0; t["sampleRate"] = p->sampleRate(); t["bitrate"] = p->bitrate() * 1000; }
+        t.erase("embedded"); t.erase("metadataError");
+        const auto properties = ref.properties();
+        if (properties.contains("LYRICS")) t["embedded"] = properties["LYRICS"].toString("\n").to8Bit(true);
+        const auto pictures = ref.complexProperties("PICTURE");
+        if (!pictures.isEmpty()) {
+            const auto picture = pictures.front();
+            const auto mime = picture["mimeType"].toString().to8Bit(true);
+            auto data = picture["data"].toByteVector();
+            if ((mime == "image/jpeg" || mime == "image/png" || mime == "image/webp") && data.size() <= 20 * 1024 * 1024) {
+                cover = std::move(data); cover_mime = mime;
+            }
+        }
+    } catch (const std::exception &) { t["metadataError"] = "无法读取标签，已保留文件名信息"; }
+    std::lock_guard lock(mutex_);
+    const auto found = track_index_.find(id);
+    if (found == track_index_.end()) return nullptr;
+    auto &current = state_["tracks"][found->second];
+    if (current["metadataRevision"] != candidate.at("revision")) return nullptr;
+    // A removal or a newer import invalidates old work before it can write a
+    // cover or put a track back. Keep lyrics attached during the read as well.
+    if (current.contains("lyricPath")) t["lyricPath"] = current["lyricPath"];
+    if (!cover_mime.empty()) {
+        std::ofstream out(directory_ / (id + ".cover"), std::ios::binary);
+        out.write(cover.data(), cover.size());
+        if (out) t["cover"] = cover_mime;
+    } else if (!t.contains("metadataError")) {
+        if (t.contains("cover")) { std::error_code error; fs::remove(directory_ / (id + ".cover"), error); }
+        t.erase("cover");
+    }
+    t["metadataPending"] = false; current = t; metadata_dirty_ = true;
+    return t;
+}
+void Library::flush_metadata() {
+    std::lock_guard lock(mutex_);
+    if (metadata_dirty_) { save_locked(); metadata_dirty_ = false; }
 }
 Json Library::update(const Json &patch) {
     std::lock_guard lock(mutex_);
@@ -160,7 +234,52 @@ Json Library::remove(const std::string &id) {
     auto &tracks = state_["tracks"];
     tracks.erase(std::remove_if(tracks.begin(), tracks.end(), [&](const Json &t) { return t["id"] == id; }), tracks.end());
     remove_id(state_["favorites"]); for (auto &p : state_["playlists"]) remove_id(p["trackIds"]);
-    save_locked(); return state_;
+    rebuild_index_locked(); save_locked(); return state_;
+}
+Json Library::remove_folder(const std::string &folder) {
+    std::lock_guard lock(mutex_);
+    auto key = stored_path_key(from_text(folder));
+    const auto &folders = state_["folders"];
+    auto registered = [&] {
+        return std::any_of(folders.begin(), folders.end(), [&](const Json &value) {
+            return value.is_string() && stored_path_key(from_text(value.get<std::string>())) == key;
+        });
+    };
+    if (!registered()) {
+        // API callers may pass an alias of an imported root. Only resolve
+        // that one input; normal UI requests use the stored canonical path.
+        key = path_key(from_text(folder));
+        if (!registered()) throw std::runtime_error("音乐文件夹不在音乐库中");
+    }
+    const auto prefix = key.ends_with('\\') ? key : key + '\\';
+    auto inside = [&](const std::string &path) {
+        const auto normalized = stored_path_key(from_text(path));
+        return normalized == key || normalized.starts_with(prefix);
+    };
+    auto next = state_;
+    auto &next_folders = next["folders"];
+    next_folders.erase(std::remove_if(next_folders.begin(), next_folders.end(),
+        [&](const Json &value) { return inside(value.get<std::string>()); }), next_folders.end());
+    std::unordered_set<std::string> ids;
+    std::vector<std::string> covers;
+    auto &tracks = next["tracks"];
+    tracks.erase(std::remove_if(tracks.begin(), tracks.end(), [&](const Json &t) {
+        if (!inside(t["path"].get<std::string>())) return false;
+        auto id = t["id"].get<std::string>(); ids.insert(id);
+        if (t.contains("cover")) covers.push_back(id);
+        return true;
+    }), tracks.end());
+    auto prune = [&](Json &values) {
+        values.erase(std::remove_if(values.begin(), values.end(),
+            [&](const Json &value) { return ids.contains(value.get<std::string>()); }), values.end());
+    };
+    prune(next["favorites"]); for (auto &playlist : next["playlists"]) prune(playlist["trackIds"]);
+    // Keep the old state intact if persistence fails, so the UI can recover.
+    write_atomic(directory_ / L"library.json", next.dump(2, ' ', false, Json::error_handler_t::replace));
+    state_ = std::move(next); rebuild_index_locked();
+    std::error_code error;
+    for (const auto &id : covers) fs::remove(directory_ / (id + ".cover"), error);
+    return state_;
 }
 Json Library::lyrics(const std::string &id) const {
     auto t = track(id); auto audio = from_text(t["path"]); auto stem = audio; stem.replace_extension();

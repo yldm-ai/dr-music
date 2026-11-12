@@ -9,6 +9,7 @@
 #include <cstring>
 #include <windowsx.h>
 #include <dwmapi.h>
+#include <chrono>
 #define CHECK(value) do { if (!(value)) throw std::runtime_error("Check failed at line " + std::to_string(__LINE__) + ": " #value); } while (false)
 namespace {
 void write(const dr::fs::path &file, const std::string &text) { std::ofstream out(file, std::ios::binary); out.write(text.data(), text.size()); }
@@ -39,6 +40,9 @@ void library_test(const dr::fs::path &root) {
     auto lrc = songs / L"测试歌曲.lrc"; write(lrc, "[00:01.00]本地歌词");
     dr::Library library(root / L"data"); library.load(); auto result = library.import_paths({songs.parent_path(), audio});
     CHECK(result["imported"] == 1); auto tracks = result["library"]["tracks"]; CHECK(tracks.size() == 1);
+    CHECK(tracks[0]["duration"] == 0); CHECK(tracks[0]["artist"] == "未知艺术家"); CHECK(tracks[0]["metadataPending"] == true);
+    for (const auto &candidate : result["pending"]) CHECK(!library.enrich_metadata(candidate).is_null());
+    library.flush_metadata(); tracks = library.snapshot()["tracks"];
     auto t = tracks[0]; const auto id = t["id"].get<std::string>(); CHECK(t["artist"] == "测试艺术家"); CHECK(t["duration"].get<double>() >= 15.9); CHECK(id.size() == 24);
     CHECK(library.lyrics(id)["text"] == "[00:01.00]本地歌词");
     library.update({{"favorites", {id, id, "unknown"}}, {"playlists", {{{"id", "mix"}, {"name", "Mix"}, {"trackIds", {id}}}}}, {"settings", {{"volume", 20}, {"theme", "light"}, {"titleBar", "system"}}}});
@@ -57,6 +61,88 @@ void library_test(const dr::fs::path &root) {
     CHECK(fresh.attach_lyrics(id, utf16)["text"] == "[00:01.00]A");
     CHECK(throws([&] { fresh.lyrics("unknown"); }));
     fresh.remove(id); CHECK(fresh.snapshot()["playlists"][0]["trackIds"].empty()); CHECK(dr::fs::exists(audio));
+    auto other = root / L"其他音乐"; dr::fs::create_directories(other);
+    auto outside = other / L"保留歌曲.wav"; wave(outside);
+    auto restored = fresh.import_paths({songs.parent_path(), other, outside});
+    auto folder = dr::path_text(songs.parent_path());
+    CHECK(restored["library"]["folders"].size() == 2);
+    CHECK(restored["library"]["tracks"].size() == 2);
+    std::string inside_id, outside_id;
+    for (const auto &track : restored["library"]["tracks"]) {
+        const auto path = track["path"].get<std::string>();
+        if (dr::path_key(dr::from_text(path)) == dr::path_key(audio)) inside_id = track["id"].get<std::string>();
+        else outside_id = track["id"].get<std::string>();
+    }
+    CHECK(!inside_id.empty()); CHECK(!outside_id.empty());
+    fresh.update({{"favorites", {inside_id, outside_id}}, {"playlists", {{{"id", "mix"}, {"name", "Mix"}, {"trackIds", {inside_id, outside_id}}}}}});
+    CHECK(throws([&] { fresh.remove_folder(dr::path_text(other / L"不存在")); }));
+    auto after_removal = fresh.remove_folder(folder);
+    CHECK(after_removal["folders"].size() == 1);
+    CHECK(after_removal["tracks"].size() == 1);
+    CHECK(dr::path_key(dr::from_text(after_removal["tracks"][0]["path"].get<std::string>())) == dr::path_key(outside));
+    CHECK(after_removal["favorites"].size() == 1); CHECK(after_removal["favorites"][0] == outside_id);
+    CHECK(after_removal["playlists"][0]["trackIds"].size() == 1); CHECK(after_removal["playlists"][0]["trackIds"][0] == outside_id);
+    CHECK(dr::fs::exists(audio)); CHECK(dr::fs::exists(outside));
+    dr::Library reloaded(root / L"data"); reloaded.load(); CHECK(reloaded.snapshot()["folders"] == after_removal["folders"]);
+}
+// Metadata is optional for admission and old background jobs cannot restore
+// removed songs or overwrite the result of a newer rescan.
+void deferred_metadata_test(const dr::fs::path &root) {
+    auto songs = root / L"deferred"; dr::fs::create_directory(songs);
+    auto audio = songs / L"filename.wav"; wave(audio);
+    { TagLib::FileRef ref(audio.c_str()); ref.tag()->setTitle("Tagged title"); CHECK(ref.save()); }
+    dr::Library library(root / L"deferred-data"); library.load();
+    auto first = library.import_paths({songs});
+    CHECK(first["library"]["tracks"][0]["title"] == "filename");
+    CHECK(first["library"]["tracks"][0]["metadataPending"] == true);
+    dr::Library resumed(root / L"deferred-data"); resumed.load();
+    CHECK(resumed.pending_metadata().size() == 1);
+    auto second = library.import_paths({songs});
+    CHECK(library.enrich_metadata(first["pending"][0]).is_null());
+    auto enriched = library.enrich_metadata(second["pending"][0]);
+    CHECK(enriched["title"] == "Tagged title"); CHECK(enriched["duration"].get<double>() >= 15.9);
+    CHECK(enriched["metadataPending"] == false); library.flush_metadata();
+    auto third = library.import_paths({songs});
+    CHECK(third["library"]["tracks"][0]["title"] == "Tagged title");
+    library.remove_folder(dr::path_text(songs));
+    CHECK(library.enrich_metadata(third["pending"][0]).is_null());
+    CHECK(library.snapshot()["tracks"].empty()); CHECK(dr::fs::exists(audio));
+}
+// A large cached library, missing directories, nested roots, similarly named
+// siblings and individually imported songs require no disk traversal to remove.
+void bulk_remove_test(const dr::fs::path &root) {
+    auto data = root / L"bulk-data"; dr::fs::create_directory(data);
+    auto songs = root / L"offline-songs";
+    auto state = dr::Library::defaults();
+    state["folders"] = {dr::path_text(songs), dr::path_text(songs / L"nested"), dr::path_text(root / L"offline-songs-other")};
+    dr::Json ids = dr::Json::array();
+    for (int i = 0; i < 10000; ++i) {
+        const auto id = std::to_string(i); ids.push_back(id);
+        state["tracks"].push_back({{"id", id}, {"path", dr::path_text(songs / L"nested" / (id + ".wav"))}});
+    }
+    for (const auto &[id, file] : std::vector<std::pair<std::string, dr::fs::path>>{
+            {"sibling", root / L"offline-songs-other" / L"keep.wav"}, {"single", root / L"single.wav"}}) {
+        state["tracks"].push_back({{"id", id}, {"path", dr::path_text(file)}}); ids.push_back(id);
+    }
+    state["favorites"] = ids;
+    for (int i = 0; i < 6; ++i) state["playlists"].push_back({{"id", std::to_string(i)}, {"name", "Bulk"}, {"trackIds", ids}});
+    state["tracks"][0]["cover"] = "image/png"; write(data / L"0.cover", "cached cover");
+    write(data / L"library.json", state.dump());
+    dr::Library library(data); library.load();
+    // A failed atomic save must leave the current library and cover intact.
+    dr::fs::create_directory(data / L"library.json.tmp");
+    CHECK(throws([&] { library.remove_folder(dr::path_text(songs)); }));
+    CHECK(library.snapshot() == state); CHECK(dr::fs::exists(data / L"0.cover"));
+    dr::fs::remove(data / L"library.json.tmp");
+    const auto started = std::chrono::steady_clock::now();
+    const auto removed = library.remove_folder(dr::path_text(songs));
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+    std::cout << "Bulk removal: 10000 songs, 6 playlists in " << elapsed << " ms\n";
+    CHECK(removed["tracks"].size() == 2); CHECK(removed["folders"].size() == 1);
+    CHECK(removed["favorites"] == dr::Json({"sibling", "single"}));
+    for (const auto &p : removed["playlists"]) CHECK(p["trackIds"] == removed["favorites"]);
+    CHECK(!dr::fs::exists(data / L"0.cover"));
+    dr::Library reloaded(data); CHECK(reloaded.load() == removed);
 }
 // Recovery must preserve the original index bytes, including invalid UTF-8.
 void recovery_test(const dr::fs::path &root) {
@@ -159,7 +245,7 @@ int main() {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     auto root = dr::fs::temp_directory_path() / ("dr-music-native-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(dr::timestamp()));
     dr::fs::create_directories(root); int code = 0;
-    try { media_test(root); library_test(root); recovery_test(root); caption_test(); caption_leave_test(); webview_caption_test(); std::cout << "PASS: native metadata/library/persistence/lyrics, bounded media streaming, ranges, D2D caption hit tests, leave-message regression, WebView2 caption hit testing and switching\n"; }
+    try { media_test(root); library_test(root); deferred_metadata_test(root); bulk_remove_test(root); recovery_test(root); caption_test(); caption_leave_test(); webview_caption_test(); std::cout << "PASS: native metadata/library/persistence/lyrics, bounded media streaming, ranges, D2D caption hit tests, leave-message regression, WebView2 caption hit testing and switching\n"; }
     catch (const std::exception &e) { std::cerr << e.what() << '\n'; code = 1; }
     dr::fs::remove_all(root); CoUninitialize(); return code;
 }

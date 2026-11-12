@@ -16,6 +16,8 @@ std::string read_text(const fs::path &file, size_t limit = 64 * 1024 * 1024);
 void write_atomic(const fs::path &file, const std::string &text);
 std::string lower(std::string text);
 std::string path_key(const fs::path &file);
+// Normalize paths already stored by the importer without querying the disk.
+std::string stored_path_key(const fs::path &file);
 std::string track_id(const fs::path &file);
 long long timestamp();
 }

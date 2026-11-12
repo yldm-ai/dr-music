@@ -2,6 +2,7 @@ export interface Track {
   id: string; path: string; title: string; artist: string; album: string;
   duration: number; format: string; addedAt: number; cover?: string;
   sampleRate?: number; bitrate?: number; size?: number;
+  metadataPending?: boolean; metadataRevision?: number; metadataError?: string;
 }
 export interface Playlist { id: string; name: string; trackIds: string[] }
 export interface Settings { volume: number; repeat: 'off' | 'all' | 'one'; shuffle: boolean; lyricOffset: number; theme: 'dark' | 'light'; titleBar: 'direct2d' | 'system' | 'webview2' }
@@ -17,6 +18,7 @@ declare global {
       rescan(): Promise<ImportResult>;
       update(data: Partial<Pick<Library, 'favorites' | 'playlists'>> & { settings?: Partial<Settings> }): Promise<Library>;
       remove(id: string): Promise<Library>;
+      removeFolder(folder: string): Promise<Library>;
       lyrics(id: string): Promise<LyricFile>;
       attachLyrics(id: string): Promise<LyricFile | null>;
       reveal(id: string): Promise<void>;
@@ -26,6 +28,8 @@ declare global {
       windowCommand(command: 'minimize' | 'maximize' | 'close'): Promise<void>;
       appearance(data: { theme: string; dimmed: boolean }): Promise<void>;
       onProgress(callback: (p: Progress) => void): () => void;
+      onMetadata(callback: (tracks: Track[]) => void): () => void;
+      onMetadataError(callback: (error: string) => void): () => void;
     };
   }
 }

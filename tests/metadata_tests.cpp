@@ -76,6 +76,114 @@ void image_test() {
     CHECK(image->bytes.starts_with(std::string("\x89PNG\r\n\x1a\n", 8))); CHECK(pixel(image->bytes) == 0x123456);
     CHECK(!dr::decode_cover("not an image"));
     auto malformed = bitmap(2, 2, 0); number(malformed, 18, 0x7fffffff, 4); CHECK(!dr::decode_cover(malformed));
+    dr::CoverCache cache;
+    const auto bytes = bitmap(16, 16, 0x123456);
+    const auto first = cache.decode(bytes), second = cache.decode(bytes);
+    CHECK(first && first == second); // Identical artwork shares the decoded result.
+    CHECK(cache.decode(bitmap(16, 16, 0x654321)) != first);
+}
+struct ExclusiveRead {
+    HANDLE handle;
+    explicit ExclusiveRead(const dr::fs::path &file) : handle(CreateFileW(file.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)) { CHECK(handle != INVALID_HANDLE_VALUE); }
+    ~ExclusiveRead() { CloseHandle(handle); }
+};
+void bounded_cache_test() {
+    dr::BoundedCache<std::string> cache(6, 2);
+    cache.put("a", std::make_shared<std::string>("abc"), 3);
+    cache.put("b", std::make_shared<std::string>("def"), 3);
+    const auto pinned = cache.get("a"); CHECK(pinned);
+    auto stream = dr::memory_slice(pinned, 1, 2);
+    cache.put("c", std::make_shared<std::string>("ghi"), 3);
+    CHECK(!cache.get("b")); CHECK(cache.get("a")); CHECK(cache.bytes() == 6);
+    cache.clear(); CHECK(cache.bytes() == 0); CHECK(*pinned == "abc");
+    char bytes[8]{}; ULONG count = 0;
+    CHECK(stream->Read(bytes, sizeof(bytes), &count) == S_FALSE); CHECK(std::string(bytes, count) == "bc");
+    LARGE_INTEGER offset{}; offset.QuadPart = -1; CHECK(SUCCEEDED(stream->Seek(offset, STREAM_SEEK_END, nullptr)));
+    Microsoft::WRL::ComPtr<IStream> clone; CHECK(SUCCEEDED(stream->Clone(&clone)));
+    CHECK(SUCCEEDED(clone->Read(bytes, 1, &count))); CHECK(std::string(bytes, count) == "c");
+    CHECK(SUCCEEDED(stream->Read(bytes, 1, &count))); CHECK(std::string(bytes, count) == "c");
+    offset.QuadPart = -3; CHECK(FAILED(stream->Seek(offset, STREAM_SEEK_SET, nullptr)));
+    STATSTG stat{}; CHECK(SUCCEEDED(stream->Stat(&stat, STATFLAG_NONAME))); CHECK(stat.cbSize.QuadPart == 2);
+    cache.put("oversized", std::make_shared<std::string>("1234567"), 7); CHECK(!cache.get("oversized"));
+    CHECK(cache.bytes() == 0);
+}
+void cache_test(const dr::fs::path &root) {
+    const auto songs = root / L"cached-songs"; dr::fs::create_directory(songs);
+    const auto file = songs / L"song.wav", cover_file = songs / L"folder.jpg", lyrics = songs / L"song.lrc";
+    write(file, wave()); write(cover_file, bitmap(2, 2, 0x102030)); write(lyrics, "[00:01.00]cached");
+    dr::Library library(root / L"cache-data"); library.load();
+    const auto imported = library.import_paths({songs});
+    const auto first = library.enrich_metadata(imported["pending"][0]); library.flush_metadata();
+    CHECK(first.contains("metadataFingerprint")); CHECK(first.contains("coverHash"));
+    const auto id = first["id"].get<std::string>();
+    const auto cached_file = library.directory() / (id + ".cover");
+    const auto original_stamp = dr::file_stamp(cached_file);
+    const auto original_resource = library.cover_resource(id);
+    CHECK(original_resource && original_resource == library.cover_resource(id));
+    // Cache hits succeed even while another handle denies opening the file.
+    const auto pending = library.import_paths({file});
+    {
+        ExclusiveRead audio_lock(file), image_lock(cached_file);
+        const auto reused = library.enrich_metadata(pending["pending"][0]);
+        CHECK(!reused.contains("metadataError")); CHECK(reused["title"] == first["title"]);
+        CHECK(reused["coverRevision"] == first["coverRevision"]); CHECK(reused["metadataPending"] == false);
+        CHECK(library.cover_resource(id) == original_resource);
+        CHECK(dr::file_stamp(cached_file) == original_stamp);
+    }
+    library.flush_metadata();
+    dr::Library restarted(library.directory()); restarted.load();
+    const auto restored = restarted.import_paths({file});
+    {
+        ExclusiveRead audio_lock(file);
+        const auto reused = restarted.enrich_metadata(restored["pending"][0]);
+        CHECK(!reused.contains("metadataError")); CHECK(reused["metadataFingerprint"] == first["metadataFingerprint"]);
+        CHECK(reused["coverRevision"] == first["coverRevision"]);
+    }
+    CHECK(library.lyrics(id)["text"] == "[00:01.00]cached");
+    {
+        ExclusiveRead lyric_lock(lyrics);
+        CHECK(library.lyrics(id)["text"] == "[00:01.00]cached");
+    }
+    write(lyrics, "[00:02.00]changed lyrics"); CHECK(library.lyrics(id)["text"] == "[00:02.00]changed lyrics");
+    const auto ttml = songs / L"song.ttml"; write(ttml, "<tt/>"); CHECK(library.lyrics(id)["format"] == "ttml");
+    const auto attached = songs / L"attached.lrc"; write(attached, "[00:03.00]attached");
+    CHECK(library.attach_lyrics(id, attached)["text"] == "[00:03.00]attached");
+    {
+        TagLib::FileRef ref(file.c_str()); ref.tag()->setTitle("Updated tag"); CHECK(ref.save());
+    }
+    const auto retagged = enrich(library, file);
+    CHECK(retagged["title"] == "Updated tag"); CHECK(retagged["metadataFingerprint"] != first["metadataFingerprint"]);
+    CHECK(retagged["coverHash"] == first["coverHash"]); CHECK(retagged["coverRevision"] == first["coverRevision"]);
+    CHECK(dr::file_stamp(cached_file) == original_stamp);
+    // A higher-priority candidate existed but was corrupt, then is repaired.
+    const auto priority_cover = songs / L"song.jpg"; write(priority_cover, "broken");
+    const auto fallback = enrich(library, file); CHECK(fallback["coverHash"] == first["coverHash"]);
+    write(priority_cover, bitmap(2, 2, 0x405060));
+    const auto changed = enrich(library, file); CHECK(changed["coverSource"] == "song.jpg");
+    CHECK(changed["coverHash"] != first["coverHash"]); CHECK(changed["coverRevision"] != first["coverRevision"]);
+    CHECK(pixel(cover_bytes(library, changed)) == 0x405060);
+    const auto uri = L"https://media.dr-music.local/cover/" + dr::wide(id);
+    const auto hash_uri = uri + L"?v=" + dr::wide(changed["coverHash"].get<std::string>());
+    auto response = dr::serve_media(library, hash_uri, "", "GET");
+    CHECK(response.status == 200); CHECK(response.headers.find(L"immutable") != std::wstring::npos);
+    CHECK(dr::serve_media(library, uri, "", "GET").headers.find(L"immutable") == std::wstring::npos);
+    CHECK(dr::serve_media(library, uri + L"?v=" + dr::wide(first["coverHash"].get<std::string>()), "", "GET").status == 404);
+    const auto range = dr::serve_media(library, hash_uri, "bytes=1-3", "GET");
+    char bytes[8]{}; ULONG count = 0;
+    CHECK(range.status == 206); CHECK(range.stream->Read(bytes, 8, &count) == S_FALSE); CHECK(count == 3);
+    CHECK(std::string(bytes, count) == original_resource->bytes.substr(1, 3));
+    const auto head = dr::serve_media(library, hash_uri, "", "HEAD"); CHECK(head.status == 200); CHECK(!head.stream);
+    // A missing disk cache is regenerated even with unchanged source files.
+    dr::fs::remove(cached_file);
+    const auto repaired = enrich(library, file); CHECK(dr::fs::exists(cached_file)); CHECK(repaired["coverHash"] == changed["coverHash"]);
+    dr::fs::remove(priority_cover); dr::fs::remove(cover_file);
+    const auto cleared = enrich(library, file); CHECK(!cleared.contains("cover")); CHECK(!library.cover_resource(id));
+    write(cover_file, bitmap(2, 2, 0x708090)); const auto added = enrich(library, file); CHECK(added.contains("cover"));
+    library.remove_folder(dr::path_text(songs)); CHECK(!library.cover_resource(id));
+    CHECK(dr::serve_media(library, hash_uri, "", "GET").status == 404); CHECK(!dr::fs::exists(cached_file));
+    // In-flight streams own their immutable bytes even after cache invalidation.
+    CHECK(SUCCEEDED(response.stream->Read(bytes, sizeof(bytes), &count))); CHECK(count == 8);
+    CHECK(dr::fs::exists(file)); CHECK(dr::fs::exists(lyrics));
 }
 void embedded_test(const dr::fs::path &root) {
     const auto file = root / L"嵌入封面.wav"; write(file, wave());
@@ -202,7 +310,7 @@ int main() {
     const auto root = dr::fs::temp_directory_path() / ("dr-music-metadata-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(dr::timestamp()));
     dr::fs::create_directories(root); int code = 0;
     try {
-        image_test(); embedded_test(root); external_test(root); compressed_test(root); flac_test(root); migration_test(root);
+        bounded_cache_test(); image_test(); embedded_test(root); external_test(root); compressed_test(root); flac_test(root); migration_test(root); cache_test(root);
         std::cout << "PASS: TagLib 2.3.2, compressed ID3, cover selection/content detection/resize/fallback, cache recovery, versioned resources and metadata migration\n";
     } catch (const std::exception &error) { std::cerr << error.what() << '\n'; code = 1; }
     dr::fs::remove_all(root); CoUninitialize(); return code;

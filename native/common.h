@@ -3,6 +3,8 @@
 #include <objbase.h>
 #include <filesystem>
 #include <string>
+#include <string_view>
+#include <optional>
 #include <nlohmann/json.hpp>
 namespace dr {
 namespace fs = std::filesystem;
@@ -19,5 +21,7 @@ std::string path_key(const fs::path &file);
 // Normalize paths already stored by the importer without querying the disk.
 std::string stored_path_key(const fs::path &file);
 std::string track_id(const fs::path &file);
+std::string content_hash(std::string_view bytes);
+std::optional<std::string> file_stamp(const fs::path &file);
 long long timestamp();
 }

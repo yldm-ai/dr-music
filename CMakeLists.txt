@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 project(dr_music VERSION 0.2.0 LANGUAGES C CXX RC)
+set(CMAKE_VS_GLOBALS "VcpkgEnabled=false;VcpkgEnableManifest=false")
 if(NOT WIN32)
   message(FATAL_ERROR "DR Music native host currently requires Windows")
 endif()
@@ -42,7 +43,11 @@ target_link_libraries(dr_music_core PUBLIC nlohmann_json::nlohmann_json tag bcry
 add_library(dr_music_shell STATIC native/window.cpp)
 target_include_directories(dr_music_shell PUBLIC native)
 target_link_libraries(dr_music_shell PUBLIC d2d1 dwrite dwmapi user32 gdi32)
-add_executable(dr-music WIN32 native/main.cpp native/application.cpp native/webview.cpp native/app.rc)
+add_executable(dr-music WIN32 native/main.cpp native/application.cpp native/webview.cpp native/system_media.cpp native/app.rc)
+target_link_libraries(dr-music PRIVATE windowsapp)
+include(cmake/Playback.cmake)
+target_link_libraries(dr-music PRIVATE dr_music_playback)
+dr_copy_audio_runtime(dr-music)
 target_include_directories(dr-music PRIVATE "${webview2_SOURCE_DIR}/build/native/include")
 target_link_libraries(dr-music PRIVATE dr_music_core dr_music_shell "${webview2_SOURCE_DIR}/build/native/x64/WebView2LoaderStatic.lib" shell32 comdlg32 version dcomp)
 target_link_options(dr-music PRIVATE /MANIFEST:NO)
@@ -67,9 +72,20 @@ add_custom_target(dr-music-assets
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${zlib_SOURCE_DIR}/LICENSE" "$<TARGET_FILE_DIR:dr-music>/licenses/native/zlib-LICENSE"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${taglib_SOURCE_DIR}/3rdparty/utfcpp/LICENSE" "$<TARGET_FILE_DIR:dr-music>/licenses/native/utfcpp-LICENSE"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${webview2_SOURCE_DIR}/LICENSE.txt" "$<TARGET_FILE_DIR:dr-music>/licenses/native/WebView2-LICENSE.txt"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${miniaudio_SOURCE_DIR}/LICENSE" "$<TARGET_FILE_DIR:dr-music>/licenses/native/miniaudio-LICENSE"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory "${DR_FFMPEG_ROOT}/share/ffmpeg" "$<TARGET_FILE_DIR:dr-music>/licenses/native/ffmpeg"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${DR_FFMPEG_SOURCE_ARCHIVE}" "$<TARGET_FILE_DIR:dr-music>/licenses/native/ffmpeg/ffmpeg-8.1.2-source.tar.gz"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory "${PROJECT_SOURCE_DIR}/cmake/ports/ffmpeg" "$<TARGET_FILE_DIR:dr-music>/licenses/native/ffmpeg/build-recipe/port"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PROJECT_SOURCE_DIR}/cmake/triplets/x64-dr-music.cmake" "${PROJECT_SOURCE_DIR}/vcpkg.json" "${PROJECT_SOURCE_DIR}/cmake/ports/README.md" "${PROJECT_SOURCE_DIR}/cmake/ports/vcpkg-LICENSE.txt" "$<TARGET_FILE_DIR:dr-music>/licenses/native/ffmpeg/build-recipe"
   DEPENDS "${CMAKE_BINARY_DIR}/frontend.stamp" VERBATIM)
 add_dependencies(dr-music dr-music-assets)
 if(BUILD_TESTING)
+  find_program(DR_NODE NAMES node REQUIRED)
+  find_program(DR_TEST_FFMPEG NAMES ffmpeg REQUIRED)
+  add_executable(dr-music-playback-tests tests/playback_tests.cpp)
+  target_link_libraries(dr-music-playback-tests PRIVATE dr_music_playback)
+  dr_copy_audio_runtime(dr-music-playback-tests)
+  add_test(NAME native-playback-decode-and-transport COMMAND "${DR_NODE}" "${PROJECT_SOURCE_DIR}/tests/playback_fixtures.mjs" "$<TARGET_FILE:dr-music-playback-tests>" "${DR_TEST_FFMPEG}")
   add_executable(dr-music-tests tests/native_tests.cpp)
   target_link_libraries(dr-music-tests PRIVATE dr_music_core dr_music_shell)
   add_test(NAME native-library-media-and-caption COMMAND dr-music-tests)
@@ -80,6 +96,9 @@ if(BUILD_TESTING)
   set_tests_properties(frontend-lyrics-and-queue PROPERTIES WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 endif()
 install(TARGETS dr-music RUNTIME DESTINATION . COMPONENT Runtime)
+foreach(component avformat avcodec swresample avutil)
+  install(FILES "$<TARGET_FILE:dr_${component}>" DESTINATION . COMPONENT Runtime)
+endforeach()
 install(DIRECTORY "${PROJECT_SOURCE_DIR}/dist/" DESTINATION web COMPONENT Runtime)
 install(FILES LICENSE THIRD_PARTY_NOTICES.md README.md DESTINATION . COMPONENT Runtime)
 install(DIRECTORY "$<TARGET_FILE_DIR:dr-music>/licenses/" DESTINATION licenses COMPONENT Runtime)

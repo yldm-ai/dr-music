@@ -34,6 +34,8 @@ DR Music 是 suxiaofan 的个人本地音乐播放器。当前宿主为独立实
 
 ## C++ / Windows 依赖
 
+- **miniaudio 0.11.26**：https://github.com/mackron/miniaudio 。David Reid 及贡献者，采用 Public Domain / MIT-0 双重许可；用于原生音频设备输出，许可证位于 `licenses/native/miniaudio-LICENSE`。
+- **FFmpeg 8.1.2**：https://ffmpeg.org/ 。本软件使用 FFmpeg 项目的 `avformat`、`avcodec`、`avutil`、`swresample` 动态库，采用 LGPL-2.1-or-later；构建未启用 GPL/nonfree 组件。只启用本地音频解封装与解码，不启用网络、编码器、视频解码或 FFmpeg 命令行程序。许可、对应源码压缩包、vcpkg 补丁和构建配方随分发保存在 `licenses/native/ffmpeg/`。构建配方基于 microsoft/vcpkg（MIT），保留其版权与许可。
 - **TagLib 2.3.2**：https://taglib.org/ / https://github.com/taglib/taglib 。本地元数据、封面与内嵌文本歌词读取。版权归 Scott Wheeler、TagLib 作者及贡献者；提供 LGPL-2.1 / MPL-1.1 双重许可，原文随应用保存在 `licenses/native/COPYING.LGPL` 和 `COPYING.MPL`。
 - **zlib 1.4**：https://zlib.net/ 。用于 TagLib 解压压缩 ID3 标签；版权归 Jean-loup Gailly、Mark Adler 及贡献者，采用 zlib 许可证，原文随应用保存在 `licenses/native/zlib-LICENSE`。
 - **utfcpp**：TagLib 发行源码内含的 Unicode 支持库；原许可证收录于 `licenses/native/utfcpp-LICENSE`。

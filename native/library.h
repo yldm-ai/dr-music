@@ -1,11 +1,13 @@
 #pragma once
 #include "common.h"
+#include "cover.h"
 #include <functional>
 #include <mutex>
 #include <stop_token>
 #include <vector>
 #include <unordered_map>
 namespace dr {
+struct CoverResource { std::string bytes, mime; unsigned long long revision = 0; std::string hash; };
 class Library {
 public:
     explicit Library(fs::path directory);
@@ -13,6 +15,8 @@ public:
     Json snapshot() const;
     Json settings() const;
     Json track(const std::string &id) const;
+    fs::path audio_path(const std::string &id) const;
+    std::shared_ptr<const CoverResource> cover_resource(const std::string &id, const std::string &revision = {}) const;
     Json import_paths(const std::vector<fs::path> &inputs, std::function<void(Json)> progress = {}, std::stop_token stop = {});
     Json pending_metadata() const;
     Json enrich_metadata(const Json &candidate);
@@ -33,5 +37,9 @@ private:
     std::unordered_map<std::string, size_t> track_index_;
     unsigned long long metadata_revision_ = 0;
     bool metadata_dirty_ = false;
+    struct CachedLyrics { std::string signature; Json result; };
+    CoverCache cover_cache_;
+    mutable BoundedCache<CoverResource> cover_bytes_{32 * 1024 * 1024, 512};
+    mutable BoundedCache<CachedLyrics> lyric_cache_{8 * 1024 * 1024, 128};
 };
 }

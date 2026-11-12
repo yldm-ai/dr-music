@@ -49,6 +49,7 @@ Json Library::defaults() {
 Library::Library(fs::path directory) : directory_(std::move(directory)), state_(defaults()) {}
 Json Library::load() {
     std::lock_guard lock(mutex_);
+    cover_cache_.clear(); cover_bytes_.clear(); lyric_cache_.clear();
     fs::create_directories(directory_);
     const auto file = directory_ / L"library.json";
     if (!fs::exists(file)) return state_;
@@ -94,7 +95,37 @@ Json Library::track(const std::string &id) const {
     if (found != track_index_.end()) return state_["tracks"][found->second];
     throw std::runtime_error("歌曲不在音乐库中");
 }
+fs::path Library::audio_path(const std::string &id) const {
+    std::lock_guard lock(mutex_);
+    const auto found = track_index_.find(id);
+    if (found == track_index_.end()) throw std::runtime_error("歌曲不在音乐库中");
+    return from_text(state_["tracks"][found->second]["path"]);
+}
+std::shared_ptr<const CoverResource> Library::cover_resource(const std::string &id, const std::string &revision) const {
+    // A cache hit performs no filesystem work and never copies embedded lyrics
+    // or image bytes. Every request still validates membership and revision.
+    std::lock_guard lock(mutex_);
+    const auto found = track_index_.find(id);
+    if (found == track_index_.end()) return {};
+    const auto &track = state_["tracks"][found->second];
+    if (!track.contains("cover")) return {};
+    const auto version = track.value("coverRevision", 0ULL);
+    if (!revision.empty() && revision != std::to_string(version) && revision != track.value("coverHash", "")) return {};
+    if (auto cached = cover_bytes_.get(id); cached && cached->revision == version) return cached;
+    const auto file = directory_ / (id + ".cover");
+    std::error_code error;
+    const auto size = fs::file_size(file, error);
+    if (error || !size || size > 64 * 1024 * 1024) return {};
+    std::ifstream input(file, std::ios::binary);
+    auto data = std::make_shared<CoverResource>();
+    data->bytes.resize(static_cast<size_t>(size));
+    if (!input.read(data->bytes.data(), static_cast<std::streamsize>(size))) return {};
+    data->mime = track["cover"].get<std::string>(); data->revision = version; data->hash = track.value("coverHash", "");
+    cover_bytes_.put(id, data, data->bytes.size() + 128);
+    return data;
+}
 Json Library::import_paths(const std::vector<fs::path> &inputs, std::function<void(Json)> progress, std::stop_token stop) {
+    cover_cache_.clear_directories();
     auto before = snapshot();
     std::map<std::string, fs::path> files;
     std::set<std::string> visited, roots;
@@ -181,6 +212,22 @@ Json Library::enrich_metadata(const Json &candidate) {
         if (!t.value("metadataPending", false) || t["metadataRevision"] != candidate.at("revision")) return nullptr;
     }
     const auto file = from_text(t["path"]);
+    const auto audio_stamp = file_stamp(file);
+    const auto inputs = cover_cache_.inputs(file);
+    const auto fingerprint = audio_stamp && inputs.valid ? content_hash(*audio_stamp + ":" + inputs.fingerprint) : "";
+    std::error_code cache_error;
+    const bool cover_available = !t.contains("cover") || fs::is_regular_file(directory_ / (id + ".cover"), cache_error);
+    if (!fingerprint.empty() && t.value("metadataParserVersion", 0U) == metadata_parser_version &&
+        t.value("metadataFingerprint", "") == fingerprint && !t.contains("metadataError") &&
+        !t.contains("coverError") && cover_available) {
+        std::lock_guard lock(mutex_);
+        const auto found = track_index_.find(id);
+        if (found == track_index_.end()) return nullptr;
+        auto &current = state_["tracks"][found->second];
+        if (current["metadataRevision"] != candidate.at("revision")) return nullptr;
+        current["metadataPending"] = false; metadata_dirty_ = true;
+        return current;
+    }
     TagLib::FileRef ref;
     t.erase("metadataError");
     try {
@@ -209,7 +256,9 @@ Json Library::enrich_metadata(const Json &candidate) {
         if (properties.contains("LYRICS")) t["embedded"] = properties["LYRICS"].toString("\n").to8Bit(true);
     } catch (const std::exception &error) { t["metadataError"] = "无法读取标签，已保留已有信息：" + std::string(error.what()); }
     // A tag failure must not prevent finding a local external cover.
-    const auto cover = find_cover(file, ref.isNull() ? nullptr : &ref);
+    const auto cover = cover_cache_.find(inputs, ref.isNull() ? nullptr : &ref);
+    // Never save a successful cache key for an audio file changed while read.
+    const bool stable = audio_stamp && file_stamp(file) == audio_stamp;
     std::lock_guard lock(mutex_);
     const auto found = track_index_.find(id);
     if (found == track_index_.end()) return nullptr;
@@ -220,17 +269,24 @@ Json Library::enrich_metadata(const Json &candidate) {
     if (current.contains("lyricPath")) t["lyricPath"] = current["lyricPath"];
     if (cover.image) {
         try {
-            write_atomic(directory_ / (id + ".cover"), cover.image->bytes);
-            t["cover"] = cover.image->mime; t["coverSource"] = cover.image->source;
-            t["coverRevision"] = t["metadataRevision"];
+            const auto hash = content_hash(cover.image->bytes);
+            const bool unchanged = t.value("coverHash", "") == hash && t.contains("coverRevision");
+            if (!unchanged || !cover_available) write_atomic(directory_ / (id + ".cover"), cover.image->bytes);
+            t["cover"] = cover.image->mime; t["coverSource"] = cover.source; t["coverHash"] = hash;
+            if (!unchanged) t["coverRevision"] = t["metadataRevision"];
+            auto resource = std::make_shared<CoverResource>(CoverResource{cover.image->bytes, cover.image->mime, t["coverRevision"].get<unsigned long long>(), hash});
+            cover_bytes_.put(id, resource, resource->bytes.size() + 128);
             t.erase("coverError");
         } catch (const std::exception &error) { t["coverError"] = "无法缓存封面：" + std::string(error.what()); }
     } else if (!cover.error.empty()) {
         t["coverError"] = cover.error;
     } else if (!t.contains("metadataError")) {
         if (t.contains("cover")) { std::error_code error; fs::remove(directory_ / (id + ".cover"), error); }
-        for (auto field : {"cover", "coverSource", "coverRevision", "coverError"}) t.erase(field);
+        for (auto field : {"cover", "coverSource", "coverRevision", "coverHash", "coverError"}) t.erase(field);
+        cover_bytes_.erase(id);
     }
+    if (stable && !fingerprint.empty() && !t.contains("metadataError") && !t.contains("coverError")) t["metadataFingerprint"] = fingerprint;
+    else t.erase("metadataFingerprint");
     t["metadataParserVersion"] = metadata_parser_version;
     t["metadataPending"] = false; current = t; metadata_dirty_ = true;
     return t;
@@ -271,7 +327,10 @@ Json Library::remove(const std::string &id) {
     auto &tracks = state_["tracks"];
     tracks.erase(std::remove_if(tracks.begin(), tracks.end(), [&](const Json &t) { return t["id"] == id; }), tracks.end());
     remove_id(state_["favorites"]); for (auto &p : state_["playlists"]) remove_id(p["trackIds"]);
-    rebuild_index_locked(); save_locked(); return state_;
+    rebuild_index_locked(); save_locked();
+    cover_bytes_.erase(id); lyric_cache_.erase(id); cover_cache_.clear();
+    { std::error_code error; fs::remove(directory_ / (id + ".cover"), error); }
+    return state_;
 }
 Json Library::remove_folder(const std::string &folder) {
     std::lock_guard lock(mutex_);
@@ -314,6 +373,8 @@ Json Library::remove_folder(const std::string &folder) {
     // Keep the old state intact if persistence fails, so the UI can recover.
     write_atomic(directory_ / L"library.json", next.dump(2, ' ', false, Json::error_handler_t::replace));
     state_ = std::move(next); rebuild_index_locked();
+    for (const auto &id : ids) { cover_bytes_.erase(id); lyric_cache_.erase(id); }
+    cover_cache_.clear();
     std::error_code error;
     for (const auto &id : covers) fs::remove(directory_ / (id + ".cover"), error);
     return state_;
@@ -323,14 +384,25 @@ Json Library::lyrics(const std::string &id) const {
     std::vector<fs::path> candidates;
     if (t.contains("lyricPath") && t["lyricPath"].is_string()) candidates.push_back(from_text(t["lyricPath"]));
     else for (auto ext : {L".ttml", L".yrc", L".lrc", L".txt"}) { auto p = stem; p += ext; candidates.push_back(p); }
-    for (const auto &p : candidates) if (fs::exists(p)) return {{"text", read_text(p, 5 * 1024 * 1024)}, {"format", lower(path_text(p.extension()).substr(1))}, {"source", path_text(p.filename())}};
+    for (const auto &p : candidates) if (const auto stamp = file_stamp(p)) {
+        const auto signature = stored_path_key(p) + ":" + *stamp;
+        if (const auto cached = lyric_cache_.get(id); cached && cached->signature == signature) return cached->result;
+        auto text = read_text(p, 5 * 1024 * 1024);
+        Json result{{"text", text}, {"format", lower(path_text(p.extension()).substr(1))}, {"source", path_text(p.filename())}};
+        // Do not cache a partial read of a file being edited.
+        if (file_stamp(p) == stamp) {
+            std::lock_guard lock(mutex_);
+            if (track_index_.contains(id)) lyric_cache_.put(id, std::make_shared<CachedLyrics>(CachedLyrics{signature, result}), text.size() + signature.size() + 256);
+        }
+        return result;
+    }
     const auto embedded = t.value("embedded", "");
     return {{"text", embedded}, {"format", "lrc"}, {"source", embedded.empty() ? "" : "内嵌歌词"}};
 }
 Json Library::attach_lyrics(const std::string &id, const fs::path &file) {
     if (!lyric_extensions.contains(lower(path_text(file.extension())))) throw std::runtime_error("不支持的歌词格式");
     (void)read_text(file, 5 * 1024 * 1024); (void)track(id);
-    { std::lock_guard lock(mutex_); for (auto &t : state_["tracks"]) if (t["id"] == id) t["lyricPath"] = path_text(fs::canonical(file)); save_locked(); }
+    { std::lock_guard lock(mutex_); for (auto &t : state_["tracks"]) if (t["id"] == id) t["lyricPath"] = path_text(fs::canonical(file)); save_locked(); lyric_cache_.erase(id); }
     return lyrics(id);
 }
 }

@@ -70,4 +70,20 @@ std::string track_id(const fs::path &file) {
     return out.str();
 }
 long long timestamp() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count(); }
+std::string content_hash(std::string_view bytes) {
+    unsigned char hash[32]{};
+    if (bytes.size() > ULONG_MAX || BCryptHash(BCRYPT_SHA256_ALG_HANDLE, nullptr, 0,
+        reinterpret_cast<PUCHAR>(const_cast<char *>(bytes.data())), static_cast<ULONG>(bytes.size()), hash, sizeof(hash)) < 0)
+        throw std::runtime_error("无法计算缓存标识");
+    std::ostringstream out; out << std::hex << std::setfill('0');
+    for (auto byte : hash) out << std::setw(2) << static_cast<unsigned>(byte);
+    return out.str();
+}
+std::optional<std::string> file_stamp(const fs::path &file) {
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    if (!GetFileAttributesExW(file.c_str(), GetFileExInfoStandard, &data) || (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) return {};
+    auto time = [](FILETIME value) { return (static_cast<unsigned long long>(value.dwHighDateTime) << 32) | value.dwLowDateTime; };
+    const auto size = (static_cast<unsigned long long>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
+    return std::to_string(size) + ":" + std::to_string(time(data.ftLastWriteTime)) + ":" + std::to_string(time(data.ftCreationTime));
+}
 }

@@ -1,0 +1,3 @@
+# Preserve the vendored vcpkg port's shell templates and patch context on Windows.
+cmake/ports/ffmpeg/* text eol=lf
+cmake/ports/ffmpeg/*.patch -whitespace

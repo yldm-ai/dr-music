@@ -19,14 +19,31 @@ Application::Application(fs::path data, fs::path assets, unsigned debug_port, st
             task(stop);
         }
     });
+    transport_worker_ = std::jthread([this](std::stop_token stop) {
+        while (true) {
+            std::function<void()> task;
+            { std::unique_lock lock(transport_mutex_); transport_ready_.wait(lock, stop, [this] { return !transport_jobs_.empty(); });
+              if (stop.stop_requested() && transport_jobs_.empty()) break;
+              if (transport_jobs_.empty()) continue;
+              task = std::move(transport_jobs_.front()); transport_jobs_.pop_front(); }
+            task();
+        }
+    });
 }
 Application::~Application() {
     closing_ = true; worker_.request_stop(); ready_.notify_all(); if (worker_.joinable()) worker_.join();
+    transport_worker_.request_stop(); transport_ready_.notify_all(); if (transport_worker_.joinable()) transport_worker_.join();
+    system_media_.shutdown();
+    playback_.set_listener({});
+    playback_.command({{"action", "stop"}, {"request", UINT64_MAX}});
     try { library_.flush_metadata(); } catch (const std::exception &) { /* pending entries resume on the next launch */ }
     webview_.close();
 }
 void Application::enqueue(std::function<void(std::stop_token)> task, bool background) {
     { std::lock_guard lock(jobs_mutex_); (background ? background_jobs_ : jobs_).push_back(std::move(task)); } ready_.notify_one();
+}
+void Application::enqueue_transport(std::function<void()> task) {
+    { std::lock_guard lock(transport_mutex_); transport_jobs_.push_back(std::move(task)); } transport_ready_.notify_one();
 }
 void Application::schedule_metadata(Json candidates, size_t offset) {
     if (candidates.empty() || closing_) return;
@@ -53,7 +70,11 @@ void Application::schedule_metadata(Json candidates, size_t offset) {
             });
         }
         if (!updated.empty() && !closing_) window_.post([this, updated = std::move(updated)] {
-            if (!closing_) webview_.send({{"event", "library:metadata"}, {"data", updated}});
+            if (!closing_) {
+                if (!media_track_.is_null()) for (const auto &track : updated)
+                    if (track["id"] == media_track_.value("id", "")) media_track_ = track;
+                webview_.send({{"event", "library:metadata"}, {"data", updated}});
+            }
         });
         if (offset < candidates.size() && !stop.stop_requested()) schedule_metadata(std::move(candidates), offset);
     }, true);
@@ -84,6 +105,17 @@ void Application::receive(const Json &request) {
     if (closing_ || !request.is_object() || !request.contains("id") || !request["id"].is_number_unsigned() || !request.contains("method") || !request["method"].is_string()) return;
     const auto id = request["id"]; const auto method = request["method"].get<std::string>(); const auto params = request.value("params", Json::object());
     try {
+        if (method == "playback:command") {
+            if (!params.is_object() || !params.contains("request") || !params["request"].is_number_unsigned()) throw std::runtime_error("无效的播放请求");
+            enqueue_transport([this, id, params] {
+                try {
+                    fs::path file;
+                    if (params.at("action") == "play") file = library_.audio_path(params.at("id").get<std::string>());
+                    reply(id, playback_.command(params, file));
+                } catch (const std::exception &e) { reject(id, e.what()); }
+            });
+            return;
+        }
         if (method == "window:caption-layout") {
             if (library_.settings().value("titleBar", "direct2d") != "webview2") throw std::runtime_error("当前标题栏不支持此操作");
             const auto dpr = params.value("dpr", 1.0);
@@ -157,8 +189,14 @@ void Application::receive(const Json &request) {
                     auto updated = library_.update(params);
                     if (params.contains("settings") && params["settings"].contains("titleBar")) window_.post([this, s = updated["settings"]] { if (!closing_) window_.set_style(s.value("titleBar", "direct2d") == "direct2d", s.value("titleBar", "direct2d") == "webview2"); });
                     reply(id, updated);
-                } else if (method == "library:remove") reply(id, library_.remove(params.at("id").get<std::string>()));
-                else if (method == "library:remove-folder") reply(id, library_.remove_folder(params.at("folder").get<std::string>()));
+                } else if (method == "library:remove" || method == "library:remove-folder") {
+                    auto result = method == "library:remove" ? library_.remove(params.at("id").get<std::string>()) : library_.remove_folder(params.at("folder").get<std::string>());
+                    auto state = playback_.command({{"action", "state"}, {"request", 0ULL}});
+                    const auto current = state.value("id", "");
+                    if (!current.empty() && std::none_of(result["tracks"].begin(), result["tracks"].end(), [&](const Json &track) { return track["id"] == current; }))
+                        playback_.command({{"action", "stop"}, {"request", state["request"]}});
+                    reply(id, result);
+                }
                 else if (method == "lyrics:get") reply(id, library_.lyrics(params.at("id").get<std::string>()));
                 else if (method == "app:notices") reply(id, read_text(assets_.parent_path() / L"THIRD_PARTY_NOTICES.md"));
                 else throw std::runtime_error("不支持的原生命令");
@@ -170,6 +208,21 @@ int Application::run(HINSTANCE instance) {
     auto s = library_.settings();
     if (!shell_.empty()) { s["titleBar"] = shell_; library_.update({{"settings", {{"titleBar", shell_}}}}); }
     if (!window_.create(instance, s.value("titleBar", "direct2d") == "direct2d", s.value("theme", "dark") == "dark")) throw std::runtime_error("无法创建 DR Music 窗口");
+    playback_.set_listener([this](Json state) {
+        if (!closing_) window_.post([this, state = std::move(state)] {
+            if (closing_) return;
+            const auto id = state.value("id", "");
+            if (id.empty()) media_track_ = Json::object();
+            if (!id.empty() && (media_track_.is_null() || media_track_.value("id", "") != id)) {
+                try { media_track_ = library_.track(id); } catch (const std::exception &) { media_track_ = Json::object(); }
+            }
+            system_media_.update(state, media_track_.is_null() ? Json::object() : media_track_);
+            webview_.send({{"event", "playback:state"}, {"data", state}});
+        });
+    });
+    system_media_.initialize(window_.handle(), [this](Json action) {
+        if (!closing_) window_.post([this, action = std::move(action)] { if (!closing_) webview_.send({{"event", "playback:action"}, {"data", action}}); });
+    });
     window_.set_style(s.value("titleBar", "direct2d") == "direct2d", s.value("titleBar", "direct2d") == "webview2");
     window_.on_resize = [this] { webview_.resize(window_.content_bounds()); webview_.send({{"event", "window-state"}, {"data", {{"maximized", IsZoomed(window_.handle()) != FALSE}}}}); };
     window_.on_caption_tooltip = [this](const std::wstring &text, RECT button) {

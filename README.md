@@ -6,7 +6,7 @@ suxiaofan 的完全本地音乐播放器。**C++20 / Win32 原生宿主 + WebVie
 
 ## 一键编译运行
 
-需要 Windows 10/11 x64、Visual Studio 的「使用 C++ 的桌面开发」、CMake 3.25+、Node.js 22.12+（仅构建前端时使用），以及 Microsoft Edge WebView2 Evergreen Runtime。
+需要 Windows 10/11 x64、Visual Studio 的「使用 C++ 的桌面开发」、CMake 3.25+、Node.js 22.12+（仅构建前端时使用）、已 bootstrap 并加入 PATH 的 vcpkg、用于生成测试文件的 FFmpeg CLI，以及 Microsoft Edge WebView2 Evergreen Runtime。
 
 ```powershell
 .\scripts\build.ps1 -Run               # 安装依赖 → CMake 构建 → CTest → 启动
@@ -19,7 +19,7 @@ suxiaofan 的完全本地音乐播放器。**C++20 / Win32 原生宿主 + WebVie
 
 编译输出：`build/bin/Release/dr-music.exe`。请保留旁边的 `web/`、`licenses/`、`LICENSE` 与声明文件。打包输出：`release/DR-Music-0.2.0-Windows-x64.zip`，解压后运行 `dr-music.exe`。
 
-首次构建需要下载 npm 依赖及固定版本的 C++ 依赖（nlohmann/json 3.12.0、TagLib 2.3.2、zlib 1.4、WebView2 SDK 1.0.2903.40）。构建好的应用不需要联网；系统 WebView2 Runtime 的安装与维护由 Windows/Edge 管理。
+首次构建需要下载 npm 依赖及固定版本的 C++ 依赖（nlohmann/json 3.12.0、TagLib 2.3.2、zlib 1.4、miniaudio 0.11.26、精简 FFmpeg 8.1.2、WebView2 SDK 1.0.2903.40）。构建好的应用不需要联网；系统 WebView2 Runtime 的安装与维护由 Windows/Edge 管理。
 
 ## 功能
 
@@ -39,7 +39,7 @@ suxiaofan 的完全本地音乐播放器。**C++20 / Win32 原生宿主 + WebVie
 
 ## 音频与歌词
 
-扫描：MP3、FLAC、WAV、M4A、AAC、OGG、OPUS、WEBM、MP4。实际播放由 WebView2 的 HTMLAudio 解码，兼容性取决于具体编码；TagLib 不支持的标签会回退为文件名。没有接入转码、WMA / APE / DSD 解码。
+扫描：MP3、FLAC、WAV、M4A、AAC、OGG、OPUS、WEBM、MP4。播放由 C++ / FFmpeg 解封装与解码、miniaudio 输出，支持所启用的 PCM、MP3、FLAC、AAC、ALAC、Vorbis 和 Opus 编码；TagLib 不支持的标签会回退为文件名。没有接入转码、WMA / APE / DSD 解码，受保护的 DRM 音频不可播放。
 
 同名歌词放在歌曲旁边：
 
@@ -63,7 +63,7 @@ Music/
 | 搜索 | Ctrl + F |
 | 关闭面板 | Esc |
 
-输入框内不会拦截空格。系统媒体键通过 WebView2 的 Media Session 接入，具体取决于 Windows / Runtime 支持。
+输入框内不会拦截空格。系统媒体键与播放信息通过 Windows 原生 SMTC 接入，WebView 保留 Media Session 元数据同步。
 
 ## 架构与验证
 
@@ -74,8 +74,11 @@ native/
   webview.*           WebView2 控制器、页面映射、消息与资源边界
   application.*       原生文件选择、固定命令分发、后台工作队列
   library.*           TagLib 扫描、收藏/歌单/设置、原子 JSON 保存
-  media.*             Range 请求与可定位的有界 IStream 文件流
-src/                  React 页面、WebView2 消息桥、HTMLAudio、AMLL
+  media.*             Range 请求与可定位的有界文件/缓存流
+  decoder.*           精简 FFmpeg 解封装、解码与重采样
+  playback.*          miniaudio 设备、PCM 环形缓冲、播放命令与时钟
+  system_media.*      Windows 原生系统媒体控制
+src/                  React 页面、WebView2 消息桥、原生播放状态适配、AMLL
 tests/native_tests.cpp 原生音乐库、元数据、文件流和标题栏交互测试
 tests/*.test.ts        歌词与队列逻辑测试
 scripts/build.ps1      一键原生构建 / 测试 / 运行 / 打包
@@ -89,7 +92,7 @@ ctest --test-dir build -C Release --output-on-failure
 npm run test:smoke # 先构建；使用独立测试库和自动生成的 WAV
 ```
 
-`npm run dev` 仅启动 Vite 界面预览；完整本地功能须从 C++ 程序打开。正式资源通过 `https://app.dr-music.local/` 映射，音频通过 `https://media.dr-music.local/audio/<已导入 ID>` 读取。桥接只接受主页面发送的固定命令，不提供任意脚本、命令或路径执行。
+`npm run dev` 仅启动 Vite 界面预览；完整本地功能须从 C++ 程序打开。正式资源通过 `https://app.dr-music.local/` 映射，封面通过 `https://media.dr-music.local/cover/<已导入 ID>` 读取；原生播放通过固定 `playback:command` 消息控制，音频 Range 资源接口保留用于兼容与测试。桥接只接受主页面发送的固定命令，不提供任意脚本、命令或路径执行。
 
 命令行支持 `--data-dir <目录>`、`--import <文件或文件夹>`、`--shell direct2d|webview2|system`。`--debug-port <端口>` 仅供显式开启本机 CDP 调试；正常启动不开放调试端口。
 
@@ -98,3 +101,9 @@ npm run test:smoke # 先构建；使用独立测试库和自动生成的 WAV
 数据继续保存在 `%APPDATA%/DR Music/`，可以直接读取 0.1.0 的 `library.json`、收藏、歌单和封面。新版 WebView2 缓存位于其 `webview-profile/` 子目录，不影响原索引。只保存音频绝对路径，不复制或上传音频。
 
 文件夹手动重新扫描，不持续监听；音频移动后重新导入并移除旧条目。队列和当前进度仅在本次运行保留。未接入系统托盘、全局热键、均衡器。关闭窗口退出程序。当前原生宿主仅支持 Windows x64。验证范围见 [验证记录](docs/VALIDATION.md)。
+
+缓存由 C++ 管理：索引保存音频大小、修改/创建时间与封面候选文件的指纹，重新扫描时复用未变化的元数据；每轮扫描重新检查目录图片，避免错过新增、删除或修复的封面。相同图片内容复用解码和缩放结果，像素未变化时保留封面版本、不重复写盘。封面使用内容哈希 URL，允许 WebView 缓存；音频仍按 Range 流式读取。
+
+原生内存缓存采用 LRU 淘汰，分别限制封面响应 32 MiB、图片解码结果 24 MiB、外部图片原始数据 16 MiB、目录图片索引 4 MiB、歌词文件文本 8 MiB，并限制条目数量。歌词修改或重新关联后刷新缓存，移除歌曲/目录后清理相关缓存。缓存命中不代表持续监听文件；音频标签和外部封面的变更在重新扫描时检查。播放解封装、解码、重采样与设备输出均在 C++：FFmpeg 输出 48 kHz 双声道浮点 PCM，经两秒有界缓冲交给 miniaudio。播放控制使用独立命令队列，不排在音乐库扫描后；声卡回调不读文件、不分配内存、不解析标签。WebView 每 100ms 接收原生播放位置，并在帧间短距离插值供 AMLL 渲染；歌词文件时间轴解析仍在 WebView。Windows 媒体按键与系统播放信息由原生 SMTC 接入。
+
+原生音频依赖由 `vcpkg.json`、`cmake/ports/ffmpeg` 和 `cmake/triplets/x64-dr-music.cmake` 固定。只分发四个音频 DLL，不分发 ffmpeg.exe；首次构建会编译依赖并下载对应源码，后续复用 vcpkg 二进制缓存。运行目录和安装包包含 FFmpeg 许可证、源码压缩包和补丁/构建配方。`BUILD_TESTING=ON` 时需要 FFmpeg CLI 生成隔离的 WAV、MP3、FLAC、AAC、AAC-M4A、ALAC-M4A、Vorbis、Opus、WebM 测试文件。

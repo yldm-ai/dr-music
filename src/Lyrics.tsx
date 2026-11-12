@@ -1,3 +1,4 @@
+import type { NativePlayback } from './playback';
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { LyricPlayer, LyricLineMouseEvent } from '@applemusic-like-lyrics/core';
@@ -9,7 +10,7 @@ const smoothEase: [number, number, number, number] = [.22, 1, .36, 1];
 const textTransition = { duration: .36, ease: smoothEase } as const;
 const quickTextTransition = { duration: .24, ease: smoothEase } as const;
 
-export function Lyrics({ file, audio, offset, active, onSeek }: { file: LyricFile; audio: HTMLAudioElement; offset: number; active: boolean; onSeek: (seconds: number) => void }) {
+export function Lyrics({ file, audio, offset, active, onSeek }: { file: LyricFile; audio: NativePlayback; offset: number; active: boolean; onSeek: (seconds: number) => void }) {
   const host = useRef<HTMLDivElement>(null);
   const [info, setInfo] = useState('');
   const [plain, setPlain] = useState('');

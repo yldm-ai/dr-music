@@ -111,6 +111,19 @@ try {
   await page.getByRole('button', { name: '播放 午后散步', exact: true }).click();
   await page.getByRole('button', { name: '暂停', exact: true }).waitFor();
   await page.waitForFunction(() => Number(document.querySelector('input[aria-label="播放进度"]').value) > .1);
+  const nativePlaying = await page.evaluate(() => window.music.playback({ action: 'state', request: 0 }));
+  assert.equal(nativePlaying.playing, true); assert.ok(nativePlaying.position > 0); assert.ok(nativePlaying.duration >= 15.9);
+  assert.ok(['WASAPI', 'DirectSound', 'WinMM'].includes(nativePlaying.backend));
+  await page.getByRole('button', { name: '暂停', exact: true }).click();
+  const nativePaused = await page.evaluate(() => window.music.playback({ action: 'state', request: 0 }));
+  assert.equal(nativePaused.playing, false);
+  await page.waitForTimeout(130);
+  assert.equal((await page.evaluate(() => window.music.playback({ action: 'state', request: 0 }))).position, nativePaused.position);
+  assert.equal(await page.evaluate(async () => {
+    try { await window.music.playback({ action: 'play', id: 'not-a-library-track', request: 1 }); return false; } catch { return true; }
+  }), true);
+  await page.getByRole('button', { name: '播放', exact: true }).click();
+  await page.getByRole('button', { name: '暂停', exact: true }).waitFor();
   const check = await page.evaluate(async () => {
     const library = await window.music.getLibrary(); const id = library.tracks.find(t => t.title === '午后散步').id;
     const reply = await fetch(`https://media.dr-music.local/audio/${id}`, { headers: { Range: 'bytes=44-99' } });
@@ -422,7 +435,21 @@ try {
   assert.equal(refreshedArtwork.every(track => track.coverRevision !== initialArtwork.find(old => old.id === track.id).coverRevision), true);
   assert.equal((await page.evaluate(() => window.music.getLibrary())).folders.length, 1);
   await page.getByRole('button', { name: '关闭设置', exact: true }).click();
-  await page.waitForFunction(tracks => tracks.every(track => Array.from(document.querySelectorAll('.track-row img')).some(img => img.src.endsWith(`${track.id}?v=${track.coverRevision}`) && img.complete && img.naturalWidth === 2)), refreshedArtwork);
+  await page.waitForFunction(tracks => tracks.every(track => Array.from(document.querySelectorAll('.track-row img')).some(img => img.src.endsWith(`${track.id}?v=${track.coverHash || track.coverRevision}`) && img.complete && img.naturalWidth === 2)), refreshedArtwork);
+  // A warm scan keeps artwork URLs and cached bytes stable.
+  const cachedCoverFiles = await Promise.all(refreshedArtwork.map(track => readFile(path.join(root, 'data', `${track.id}.cover`))));
+  await page.locator('.track-row img').first().evaluate(img => img.dispatchEvent(new Event('error')));
+  await page.waitForFunction(() => document.querySelectorAll('.track-row img').length === 2);
+  await page.evaluate(() => { window.__metadataEvents = []; });
+  await page.getByRole('button', { name: /设置与关于/ }).click();
+  await page.getByRole('tab', { name: '音乐库', exact: true }).click();
+  await page.getByRole('button', { name: '重新扫描', exact: true }).click();
+  await page.waitForFunction(() => new Set(window.__metadataEvents.filter(track => !track.metadataPending).map(track => track.id)).size === 3);
+  const warmArtwork = (await page.evaluate(() => window.music.getLibrary())).tracks;
+  await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+  await page.waitForFunction(() => Array.from(document.querySelectorAll('.track-row img')).filter(img => img.complete && img.naturalWidth === 2).length === 3);
+  assert.equal(warmArtwork.every(track => track.coverRevision === refreshedArtwork.find(previous => previous.id === track.id).coverRevision && track.coverHash === refreshedArtwork.find(previous => previous.id === track.id).coverHash), true);
+  for (const [index, track] of refreshedArtwork.entries()) assert.deepEqual(await readFile(path.join(root, 'data', `${track.id}.cover`)), cachedCoverFiles[index]);
   const security = await page.evaluate(async () => {
     let blocked = false; try { await fetch('https://example.com'); } catch { blocked = true; }
     const id = 987654;

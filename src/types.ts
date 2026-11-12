@@ -4,7 +4,7 @@ export interface Track {
   sampleRate?: number; bitrate?: number; size?: number;
   metadataPending?: boolean; metadataRevision?: number; metadataError?: string;
   albumArtist?: string; trackNumber?: number; discNumber?: number; year?: number;
-  coverRevision?: number; coverSource?: string; coverError?: string;
+  coverRevision?: number; coverHash?: string; coverSource?: string; coverError?: string;
 }
 export interface Playlist { id: string; name: string; trackIds: string[] }
 export interface Settings { volume: number; repeat: 'off' | 'all' | 'one'; shuffle: boolean; lyricOffset: number; theme: 'dark' | 'light'; titleBar: 'direct2d' | 'system' | 'webview2' }
@@ -12,9 +12,14 @@ export interface Library { version: number; tracks: Track[]; folders: string[]; 
 export interface LyricFile { text: string; format: string; source: string }
 export interface ImportResult { library: Library; imported: number; warnings: string[] }
 export interface Progress { done: number; total: number; name: string }
+export interface PlaybackState { id: string; position: number; duration: number; playing: boolean; ended: boolean; volume: number; error: string; request: number; serial: number; backend?: string }
+export interface PlaybackCommand { action: 'play' | 'pause' | 'stop' | 'seek' | 'volume' | 'state'; request: number; id?: string; position?: number; volume?: number }
 declare global {
   interface Window {
     music: {
+      playback(command: PlaybackCommand): Promise<PlaybackState>;
+      onPlayback(callback: (state: PlaybackState) => void): () => void;
+      onPlaybackAction(callback: (action: { action: string; position?: number }) => void): () => void;
       getLibrary(): Promise<Library>;
       importMusic(kind: 'folder' | 'files'): Promise<ImportResult | null>;
       rescan(): Promise<ImportResult>;

@@ -1,3 +1,4 @@
+import { NativePlayback } from './playback';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion, MotionConfig, type Transition } from 'motion/react';
 import { Music2, Library as LibraryIcon, Heart, Disc3, Mic2, FolderPlus, Plus, Search, Play, Pause, SkipBack, SkipForward, Shuffle, Repeat, Repeat1, Volume2, VolumeX, ListMusic, Maximize2, ChevronDown, ChevronLeft, Settings2, MoreHorizontal, FolderOpen, RefreshCw, X, Check, FileMusic, ArrowUpRight, Headphones, Trash2, Pencil, ListPlus, AudioLines } from 'lucide-react';
@@ -10,7 +11,7 @@ import { Lyrics } from './Lyrics';
 import { Select } from './Select';
 import { onCaptionButton, onWindowState } from './bridge';
 
-const media = (track: Track, kind = 'audio') => `https://media.dr-music.local/${kind}/${track.id}${kind === 'cover' && track.coverRevision !== undefined ? `?v=${track.coverRevision}` : ''}`;
+const media = (track: Track, kind = 'audio') => `https://media.dr-music.local/${kind}/${track.id}${kind === 'cover' && (track.coverHash || track.coverRevision !== undefined) ? `?v=${track.coverHash || track.coverRevision}` : ''}`;
 const smoothEase: [number, number, number, number] = [.22, 1, .36, 1];
 const textTransition: Transition = { duration: .36, ease: smoothEase };
 const quickTextTransition: Transition = { duration: .24, ease: smoothEase };
@@ -39,6 +40,7 @@ function NavButton({ selected = false, children, className = '', ...props }: Omi
 function Cover({ track, className = '', enableLayout = true, loadImage = true }: { track?: Track; className?: string; enableLayout?: boolean; loadImage?: boolean }) {
   const [failedSource, setFailedSource] = useState<string>();
   const source = track?.cover ? media(track, 'cover') : undefined;
+  useEffect(() => { if (!track?.metadataPending) setFailedSource(undefined); }, [source, track?.metadataPending, track?.metadataRevision]);
   return <motion.div layout={enableLayout ? 'position' : false} initial={false} className={`cover ${className}`} style={{ '--cover-hue': String(parseInt(track?.id.slice(0, 3) || '320', 16) % 360) } as React.CSSProperties}>
     <AnimatePresence mode="sync" initial={false}>
       {track && source && failedSource !== source && loadImage
@@ -108,7 +110,7 @@ export function App() {
   const [songMenuPoint, setSongMenuPoint] = useState<{ x: number; y: number }>();
   const [playlistDialog, setPlaylistDialog] = useState<{ id?: string; name: string }>();
   const [deletePlaylist, setDeletePlaylist] = useState<Playlist>();
-  const [audio] = useState(() => new Audio());
+  const [audio] = useState(() => new NativePlayback());
   const stateRef = useRef({ library, queue, currentId }); stateRef.current = { library, queue, currentId };
   const searchRef = useRef<HTMLInputElement>(null);
   const queueListRef = useRef<HTMLDivElement>(null);
@@ -263,9 +265,16 @@ export function App() {
     if (id) { if (id === currentId) seek(0); playTrack(id); }
     else { audio.pause(); setPlaying(false); }
   }, [audio, playTrack, seek]);
+  useEffect(() => window.music.onPlaybackAction(({ action, position }) => {
+    if (action === 'play') void audio.play().catch(error => notify(String(error)));
+    else if (action === 'pause') audio.pause();
+    else if (action === 'next') advance(1);
+    else if (action === 'previous') advance(-1);
+    else if (action === 'seek' && position !== undefined) seek(position);
+  }), [audio, advance, seek, notify]);
   useEffect(() => {
     const time = () => setPosition(audio.currentTime);
-    const loaded = () => setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
+    const loaded = () => { setDuration(Number.isFinite(audio.duration) ? audio.duration : 0); setCurrentId(audio.src || undefined); };
     const play = () => setPlaying(true); const pause = () => setPlaying(false);
     const ended = () => advance(1, true);
     const error = () => { setPlaying(false); notify('播放失败：文件可能已移动、已损坏，或当前系统不支持此音频编码。'); };

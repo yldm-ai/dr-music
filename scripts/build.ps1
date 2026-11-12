@@ -16,6 +16,12 @@ try {
     if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
         throw 'CMake is required. Install CMake 3.25+ and Visual Studio with Desktop development with C++.'
     }
+    if (-not (Get-Command vcpkg -ErrorAction SilentlyContinue)) {
+        throw 'A bootstrapped vcpkg must be on PATH to build the pinned native audio libraries.'
+    }
+    if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+        throw 'FFmpeg CLI must be on PATH for generated audio tests. It is not used or shipped at runtime.'
+    }
 
     if (-not $SkipInstall) {
         Write-Host 'Installing locked dependencies...' -ForegroundColor Cyan

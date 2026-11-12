@@ -1,6 +1,7 @@
 #include "library.h"
 #include "cover.h"
 #include "fonts.h"
+#include "online_lyrics.h"
 #include <fileref.h>
 #include <tag.h>
 #include <tpropertymap.h>
@@ -46,7 +47,7 @@ Json filtered_ids(const Json &values, const std::set<std::string> &valid) {
 }
 Json Library::defaults() {
     return {{"version", 1}, {"tracks", Json::array()}, {"folders", Json::array()}, {"favorites", Json::array()}, {"playlists", Json::array()},
-        {"settings", {{"volume", 0.7}, {"repeat", "off"}, {"shuffle", false}, {"lyricOffset", 0}, {"theme", "dark"}, {"titleBar", "direct2d"}, {"lyricFont", ""}, {"lyricWeight", 0}, {"lyricScale", 1}, {"chineseSearch", false}}}};
+        {"settings", {{"volume", 0.7}, {"repeat", "off"}, {"shuffle", false}, {"lyricOffset", 0}, {"theme", "dark"}, {"titleBar", "direct2d"}, {"lyricFont", ""}, {"lyricWeight", 0}, {"lyricScale", 1}, {"chineseSearch", false}, {"onlineLyrics", true}, {"lyricProviders", OnlineLyrics::provider_ids()}, {"amllMirror", ""}}}};
 }
 Library::Library(fs::path directory) : directory_(std::move(directory)), state_(defaults()) {}
 Json Library::load() {
@@ -339,6 +340,14 @@ Json Library::update(const Json &patch) {
         if (s.contains("lyricOffset") && s["lyricOffset"].is_number()) target["lyricOffset"] = std::clamp(s["lyricOffset"].get<double>(), -30000.0, 30000.0);
         if (s.contains("shuffle") && s["shuffle"].is_boolean()) target["shuffle"] = s["shuffle"];
         if (s.contains("chineseSearch") && s["chineseSearch"].is_boolean()) target["chineseSearch"] = s["chineseSearch"];
+        if (s.contains("onlineLyrics") && s["onlineLyrics"].is_boolean()) target["onlineLyrics"] = s["onlineLyrics"];
+        if (s.contains("lyricProviders") && s["lyricProviders"].is_array()) {
+            const auto &known = OnlineLyrics::provider_ids();
+            Json providers = Json::array();
+            for (const auto &id : known) if (std::any_of(s["lyricProviders"].begin(), s["lyricProviders"].end(), [&](const Json &p) { return p == id; })) providers.push_back(id);
+            target["lyricProviders"] = providers; // known ids only, in a fixed order
+        }
+        if (s.contains("amllMirror") && s["amllMirror"].is_string()) { const auto url = s["amllMirror"].get<std::string>(); if (url.empty() || OnlineLyrics::valid_base(url)) target["amllMirror"] = url; }
         // Lyric typography: "" / 0 mean "follow the app default".
         if (s.contains("lyricFont") && s["lyricFont"].is_string()) { auto font = s["lyricFont"].get<std::string>(); if (font.empty() || valid_font_family(font)) target["lyricFont"] = font; }
         if (s.contains("lyricWeight") && s["lyricWeight"].is_number_integer()) { auto weight = s["lyricWeight"].get<int>(); if (weight == 0 || (weight >= 100 && weight <= 900 && weight % 100 == 0)) target["lyricWeight"] = weight; }
@@ -405,6 +414,18 @@ Json Library::remove_folder(const std::string &folder) {
     std::error_code error;
     for (const auto &id : covers) fs::remove(directory_ / (id + ".cover"), error);
     return state_;
+}
+Json Library::set_lyric_preference(const std::string &id, const std::string &source) {
+    const auto &providers = OnlineLyrics::provider_ids();
+    if (!source.empty() && source != "local" && source != "online" && std::find(providers.begin(), providers.end(), source) == providers.end()) throw std::runtime_error("无效的歌词来源");
+    std::lock_guard lock(mutex_);
+    const auto found = track_index_.find(id);
+    if (found == track_index_.end()) throw std::runtime_error("歌曲不存在");
+    auto next = state_; auto &t = next["tracks"][found->second];
+    if (source.empty()) t.erase("lyricPreference"); else t["lyricPreference"] = source;
+    write_atomic(directory_ / L"library.json", next.dump(2, ' ', false, Json::error_handler_t::replace));
+    state_ = std::move(next);
+    return state_["tracks"][found->second];
 }
 Json Library::lyrics(const std::string &id) const {
     auto t = track(id); auto audio = from_text(t["path"]); auto stem = audio; stem.replace_extension();

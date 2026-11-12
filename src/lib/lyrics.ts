@@ -1,4 +1,4 @@
-import { parseLrcLike, parseTTML, parseYrc } from '@applemusic-like-lyrics/lyric';
+import { parseLrcLike, parseQrc, parseTTML, parseYrc } from '@applemusic-like-lyrics/lyric';
 import type { LyricLine, LyricWord } from '@applemusic-like-lyrics/core';
 import type { LyricFile } from '../types';
 
@@ -12,6 +12,24 @@ export function spreadWords(text: string, start: number, end: number): LyricWord
     const duration = (end - start) * 0.85 * [...word.trim()].length / Math.max(1, total);
     const result = { word, startTime: at, endTime: at + duration }; at += duration; return result;
   });
+}
+/**
+ * Kugou KRC (decrypted natively): "[lineStart,lineDuration]<offset,duration,0>word…", word offsets
+ * relative to the line start. Metadata lines such as [ar:…] or [language:…] are skipped.
+ */
+export function parseKrc(text: string): LyricLine[] {
+  const lines: LyricLine[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const head = /^\[(\d+),(\d+)\](.*)$/.exec(raw.trim());
+    if (!head) continue;
+    const start = Number(head[1]), duration = Number(head[2]);
+    const words: LyricWord[] = [];
+    for (const m of head[3].matchAll(/<(\d+),(\d+),-?\d+>([^<]*)/g))
+      if (m[3]) words.push({ word: m[3], startTime: start + Number(m[1]), endTime: start + Number(m[1]) + Number(m[2]) });
+    if (!words.length && head[3].trim()) words.push({ word: head[3], startTime: start, endTime: start + duration });
+    lines.push({ words, translatedLyric: '', romanLyric: '', startTime: start, endTime: start + duration, isBG: false, isDuet: false });
+  }
+  return lines;
 }
 function parseLocalTTML(text: string): LyricLine[] {
   const document = new DOMParser().parseFromString(text, 'application/xml');
@@ -33,7 +51,11 @@ function parseLocalTTML(text: string): LyricLine[] {
 export function parseLyrics(file: LyricFile, durationMs: number): { lines: LyricLine[]; plain: string; estimated: boolean } {
   if (!file.text.trim()) return { lines: [], plain: '', estimated: false };
   if (file.format === 'txt' || (file.format === 'lrc' && !/\[\d+:\d+/.test(file.text))) return { lines: [], plain: file.text, estimated: false };
-  let lines: LyricLine[] = file.format === 'ttml' ? parseLocalTTML(file.text) : file.format === 'yrc' ? parseYrc(file.text) : parseLrcLike(file.text).lines;
+  let lines: LyricLine[] = file.format === 'ttml' ? parseLocalTTML(file.text)
+    : file.format === 'yrc' ? parseYrc(file.text)
+    : file.format === 'qrc' ? parseQrc(file.text)
+    : file.format === 'krc' ? parseKrc(file.text)
+    : parseLrcLike(file.text).lines;
   let estimated = false;
   // Do not reorder simultaneous TTML background/duet lines. LRC auxiliary
   // lines with equal timestamps are paired as a translation.

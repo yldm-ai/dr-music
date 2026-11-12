@@ -25,13 +25,25 @@ function coverBitmap(rgb) {
 }
 // Deliberately mismatched extension: native decoding must inspect the content.
 await writeFile(path.join(root, 'songs', 'folder.jpg'), coverBitmap(0x123456));
+// Online lyric providers served from local files through --online-lyrics-root (<host>/<path>):
+// the app never goes online in tests. Providers without a fixture answer 404 ("not found").
+const lyricsRoot = path.join(root, 'lyrics-fixture');
+const amll = path.join(lyricsRoot, 'raw.githubusercontent.com', 'amll-dev', 'amll-ttml-db', 'main');
+await mkdir(path.join(amll, 'metadata'), { recursive: true }); await mkdir(path.join(amll, 'raw-lyrics'), { recursive: true });
+const amllEntry = (title, file) => JSON.stringify({ metadata: [['album', ['在线专辑']], ['artists', ['在线歌手']], ['musicName', [title]], ['ncmMusicId', ['1']]], rawLyricFile: file });
+await writeFile(path.join(amll, 'metadata', 'raw-lyrics-index.jsonl'), [amllEntry('写给明天', '1700000000000-1-aaaa.ttml'), amllEntry('午后散步', '1700000000000-1-bbbb.ttml')].join('\n') + '\n');
+const ttml = text => `<tt xmlns="http://www.w3.org/ns/ttml"><body><div><p begin="00:00.500" end="00:06.000"><span begin="00:00.500" end="00:06.000">${text}</span></p><p begin="00:06.000" end="00:12.000"><span begin="00:06.000" end="00:12.000">${text}第二句</span></p></div></body></tt>`;
+await writeFile(path.join(amll, 'raw-lyrics', '1700000000000-1-aaaa.ttml'), ttml('在线歌词第一句'));
+await writeFile(path.join(amll, 'raw-lyrics', '1700000000000-1-bbbb.ttml'), ttml('午后在线歌词'));
+await mkdir(path.join(lyricsRoot, 'lrclib.net', 'api'), { recursive: true });
+await writeFile(path.join(lyricsRoot, 'lrclib.net', 'api', 'search'), JSON.stringify([{ id: 9, trackName: '午后散步', artistName: '在线歌手', albumName: '', duration: 16, instrumental: false, syncedLyrics: '[00:00.50]LRCLIB 午后\n[00:06.00]LRCLIB 第二句', plainLyrics: '' }]));
 await writeFile(path.join(root, 'songs', '午后散步.lrc'), '[00:00.00]测试歌词第一句\n[00:04.00]测试歌词第二句\n[00:08.00]测试歌词第三句\n[00:12.00]最后一句');
 await writeFile(path.join(root, 'songs', '夜色温柔.ttml'), '<tt xmlns="http://www.w3.org/ns/ttml"><body><div><p begin="00:01.000" end="00:03.000"><span begin="00:01.000" end="00:02.000">你好</span><span begin="00:02.000" end="00:03.000">世界</span></p></div></body></tt>');
 const server = createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening'); const port = server.address().port; await new Promise(resolve => server.close(resolve));
 let child, browser, page;
 const errors = [];
 try {
-  child = spawn(executable, ['--data-dir', path.join(root, 'data'), '--import', path.join(root, 'songs'), '--import', path.join(root, 'songs', 'nested'), '--debug-port', String(port)], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false });
+  child = spawn(executable, ['--data-dir', path.join(root, 'data'), '--import', path.join(root, 'songs'), '--import', path.join(root, 'songs', 'nested'), '--online-lyrics-root', lyricsRoot, '--debug-port', String(port)], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false });
   child.on('error', error => errors.push(error.message));
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
@@ -387,7 +399,7 @@ try {
   await page.mouse.move(1, 1);
   await immersiveVolume.waitFor({ state: 'hidden' });
   assert.equal(await page.locator('.lyric-info').count(), 0);
-  const positionClock = page.locator('.now-playing .progress-control span').first();
+  const positionClock = page.locator('.now-playing .progress-control>span').first();
   const clockBefore = await positionClock.evaluate(element => {
     element.dataset.stableClock = 'true';
     return { text: element.textContent, opacity: getComputedStyle(element).opacity, transform: getComputedStyle(element).transform };
@@ -418,6 +430,22 @@ try {
   });
   for (const key of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(progressHover.box[key] - progressBefore.box[key]) < .5, `progress slider ${key} moved`);
   assert.equal(progressHover.transform, progressBefore.transform);
+  // While hovered during playback the thumb keeps one crisp bar shape and steps every 200 ms,
+  // always on whole device pixels (sub-pixel drift made the bar look like it kept swelling).
+  const thumbSamples = await page.evaluate(() => new Promise(resolve => {
+    const thumb = document.querySelector('.now-playing .progress-thumb'), bar = thumb.firstElementChild;
+    const shapes = new Set(), positions = []; const start = performance.now();
+    const sample = now => {
+      const style = getComputedStyle(bar); shapes.add(style.width + 'x' + style.height);
+      const x = thumb.getBoundingClientRect().x; if (positions[positions.length - 1] !== x) positions.push(x);
+      if (now - start < 1500) requestAnimationFrame(sample);
+      else resolve({ shapes: [...shapes], steps: positions.length, snapped: positions.every(value => Math.abs(value * devicePixelRatio - Math.round(value * devicePixelRatio)) < .01) });
+    };
+    requestAnimationFrame(sample);
+  }));
+  assert.deepEqual(thumbSamples.shapes, ['4pxx16px']);
+  assert.ok(thumbSamples.steps >= 2 && thumbSamples.steps <= 9, `thumb should step at most every 200 ms, saw ${thumbSamples.steps} positions`);
+  assert.equal(thumbSamples.snapped, true);
   await page.screenshot({ path: path.join(root, 'progress-slider-hover.png') });
   await page.mouse.move(1, 1);
   await page.getByRole('button', { name: '收起播放页', exact: true }).hover();
@@ -550,6 +578,61 @@ try {
   await page.getByRole('button', { name: '打开歌词播放页', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('.amll-lyric-player')?.textContent.includes('你好世界'));
   await page.keyboard.press('Escape');
+
+  // Online lyrics: a song without its own lyric shows the AMLL TTML DB match automatically.
+  const lyricText = text => page.waitForFunction(value => document.querySelector('.now-playing .amll-lyric-player')?.textContent.includes(value), text);
+  await page.getByRole('button', { name: '播放 写给明天', exact: true }).click();
+  await page.getByRole('button', { name: '打开歌词播放页', exact: true }).click();
+  await lyricText('在线歌词第一句');
+  await page.locator('.lyric-toolbar').hover();
+  await page.locator('.lyric-toolbar', { hasText: 'AMLL TTML DB' }).waitFor();
+  await page.keyboard.press('Escape');
+  // A song with its own lyric keeps it by default; the picker lists every source with its match score
+  // and the choice is saved per song.
+  await page.getByRole('button', { name: '播放 午后散步', exact: true }).click();
+  await page.getByRole('button', { name: '打开歌词播放页', exact: true }).click();
+  await lyricText('测试歌词第一句');
+  const openSources = async () => { await page.locator('.lyric-toolbar').hover(); await page.getByRole('button', { name: '歌词来源', exact: true }).click(); return page.getByRole('menu', { name: '歌词来源', exact: true }); };
+  await page.waitForFunction(() => document.querySelector('.lyric-source-button')?.textContent.includes('3 个来源'));
+  let sources = await openSources();
+  const sourceItems = await sources.getByRole('menuitem').evaluateAll(items => items.map(item => item.getAttribute('aria-label')));
+  assert.equal(sourceItems[0], '本地歌词');
+  assert.deepEqual(sourceItems.slice(1, 3).sort(), ['AMLL TTML DB', 'LRCLIB']); // ordered by match score
+  assert.deepEqual(sourceItems.slice(3), ['重新搜索在线歌词', '关联本地歌词…']);
+  await page.waitForTimeout(150); await page.screenshot({ path: path.join(root, 'lyric-sources.png') });
+  await sources.getByRole('menuitem', { name: 'LRCLIB', exact: true }).click();
+  await lyricText('LRCLIB 午后');
+  await page.waitForFunction(async () => (await window.music.getLibrary()).tracks.find(t => t.title === '午后散步').lyricPreference === 'lrclib');
+  sources = await openSources();
+  await sources.getByRole('menuitem', { name: 'AMLL TTML DB', exact: true }).click();
+  await lyricText('午后在线歌词');
+  await page.waitForTimeout(250); await page.screenshot({ path: path.join(root, 'online-lyrics.png') });
+  sources = await openSources();
+  await sources.getByRole('menuitem', { name: '本地歌词', exact: true }).click();
+  await lyricText('测试歌词第一句');
+  await page.keyboard.press('Escape');
+  // Disabling one provider drops it from the sources.
+  await page.getByRole('button', { name: /设置与关于/ }).click();
+  await page.getByRole('tab', { name: '音乐库', exact: true }).click();
+  const lrclibSwitch = page.getByRole('switch', { name: 'LRCLIB', exact: true });
+  assert.equal(await lrclibSwitch.getAttribute('aria-checked'), 'true');
+  await lrclibSwitch.scrollIntoViewIfNeeded(); await lrclibSwitch.click();
+  await page.waitForFunction(async () => !(await window.music.getLibrary()).settings.lyricProviders.includes('lrclib'));
+  assert.deepEqual(await page.evaluate(async () => { const t = (await window.music.getLibrary()).tracks.find(x => x.title === '午后散步'); return (await window.music.onlineLyrics(t.id)).map(r => r.provider); }), ['amll']);
+  await lrclibSwitch.click();
+  await page.waitForFunction(async () => (await window.music.getLibrary()).settings.lyricProviders.includes('lrclib'));
+  assert.equal((await page.evaluate(() => window.music.lyricsStatus())).appleToken, false);
+  await page.getByRole('button', { name: '关闭设置', exact: true }).click();  // Turning the setting off stops online lookups.
+  await page.getByRole('button', { name: /设置与关于/ }).click();
+  await page.getByRole('tab', { name: '音乐库', exact: true }).click();
+  const onlineSwitch = page.getByRole('switch', { name: '在线歌词', exact: true });
+  assert.equal(await onlineSwitch.getAttribute('aria-checked'), 'true');
+  await onlineSwitch.click();
+  await page.waitForFunction(async () => (await window.music.getLibrary()).settings.onlineLyrics === false);
+  assert.deepEqual(await page.evaluate(async () => { const t = (await window.music.getLibrary()).tracks.find(x => x.title === '写给明天'); return window.music.onlineLyrics(t.id); }), []);
+  await onlineSwitch.click();
+  await page.waitForFunction(async () => (await window.music.getLibrary()).settings.onlineLyrics === true);
+  await page.getByRole('button', { name: '关闭设置', exact: true }).click();
   await page.getByRole('button', { name: /设置与关于/ }).click();
   await page.getByRole('tab', { name: '外观', exact: true }).click();
   await page.getByRole('combobox', { name: '应用主题', exact: true }).focus();

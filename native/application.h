@@ -1,6 +1,7 @@
 #pragma once
 #include "library.h"
 #include "chinese.h"
+#include "online_lyrics.h"
 #include "window.h"
 #include "webview.h"
 #include "playback.h"
@@ -13,12 +14,17 @@
 namespace dr {
 class Application {
 public:
-    Application(fs::path data_root, fs::path assets, unsigned debug_port, std::vector<fs::path> imports, const std::string &shell);
+    Application(fs::path data_root, fs::path assets, unsigned debug_port, std::vector<fs::path> imports, const std::string &shell, fs::path online_lyrics_fixture = {});
     ~Application();
     int run(HINSTANCE instance);
 private:
     void enqueue(std::function<void(std::stop_token)> task, bool background = false);
     void enqueue_transport(std::function<void()> task);
+    void enqueue_network(std::function<void()> task);
+    void apply_lyric_options();
+    fs::path apple_token_file() const;
+    void save_apple_token(const std::string &token);
+    std::string load_apple_token() const;
     void schedule_metadata(Json candidates, size_t offset = 0);
     void receive(const Json &request);
     void reply(const Json &id, Json result);
@@ -32,6 +38,7 @@ private:
     Json media_track_;
     fs::path assets_;
     ChineseText chinese_;
+    OnlineLyrics online_lyrics_;
     unsigned debug_port_;
     std::vector<fs::path> imports_;
     std::string shell_;
@@ -47,5 +54,10 @@ private:
     std::condition_variable_any transport_ready_;
     std::deque<std::function<void()>> transport_jobs_;
     std::jthread transport_worker_;
+    // Online lyrics run on their own thread so slow downloads never hold up library work.
+    std::mutex network_mutex_;
+    std::condition_variable_any network_ready_;
+    std::deque<std::function<void()>> network_jobs_;
+    std::jthread network_worker_;
 };
 }

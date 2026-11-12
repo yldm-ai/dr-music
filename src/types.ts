@@ -5,12 +5,16 @@ export interface Track {
   metadataPending?: boolean; metadataRevision?: number; metadataError?: string;
   albumArtist?: string; trackNumber?: number; discNumber?: number; year?: number;
   coverRevision?: number; coverHash?: string; coverSource?: string; coverError?: string;
+  /** Lyric source shown when several exist: 'local' or an online provider id. */
+  lyricPreference?: string;
 }
 export interface Playlist { id: string; name: string; trackIds: string[] }
-export interface Settings { volume: number; repeat: 'off' | 'all' | 'one'; shuffle: boolean; lyricOffset: number; theme: 'dark' | 'light'; titleBar: 'direct2d' | 'system' | 'webview2'; lyricFont?: string; lyricWeight?: number; lyricScale?: number; chineseSearch?: boolean }
+export interface Settings { volume: number; repeat: 'off' | 'all' | 'one'; shuffle: boolean; lyricOffset: number; theme: 'dark' | 'light'; titleBar: 'direct2d' | 'system' | 'webview2'; lyricFont?: string; lyricWeight?: number; lyricScale?: number; chineseSearch?: boolean; onlineLyrics?: boolean; lyricProviders?: string[]; amllMirror?: string }
 export interface FontFamily { family: string; name: string }
 export interface Library { version: number; tracks: Track[]; folders: string[]; favorites: string[]; playlists: Playlist[]; settings: Settings; notice?: string }
 export interface LyricFile { text: string; format: string; source: string }
+/** A lyric from an online provider, matched natively; best match first. */
+export interface OnlineLyricResult extends LyricFile { provider: string; title: string; artists: string; album: string; score: number; reference: string }
 export interface ImportResult { library: Library; imported: number; removed?: number; warnings: string[] }
 export interface Progress { done: number; total: number; name: string }
 export interface PlaybackState { id: string; position: number; duration: number; playing: boolean; ended: boolean; volume: number; error: string; request: number; serial: number; backend?: string }
@@ -29,6 +33,10 @@ declare global {
       removeFolder(folder: string): Promise<Library>;
       lyrics(id: string): Promise<LyricFile>;
       attachLyrics(id: string): Promise<LyricFile | null>;
+      onlineLyrics(id: string, refresh?: boolean): Promise<Omit<OnlineLyricResult, 'source'>[]>;
+      setLyricPreference(id: string, source: string): Promise<Track>;
+      lyricsStatus(): Promise<{ appleToken: boolean; providers: string[]; amllDefault: string }>;
+      setAppleToken(token: string): Promise<{ appleToken: boolean }>;
       reveal(id: string): Promise<void>;
       openData(): Promise<void>;
       notices(): Promise<string>;

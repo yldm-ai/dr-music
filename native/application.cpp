@@ -1,14 +1,20 @@
 #include "application.h"
 #include "fonts.h"
+#include <wincrypt.h>
 #include <cmath>
 #include <shobjidl.h>
 #include <shlobj.h>
 #include <shellapi.h>
 namespace dr {
 using Microsoft::WRL::ComPtr;
-Application::Application(fs::path data, fs::path assets, unsigned debug_port, std::vector<fs::path> imports, const std::string &shell)
-    : library_(std::move(data)), assets_(std::move(assets)), chinese_(assets_.parent_path() / L"opencc"), debug_port_(debug_port), imports_(std::move(imports)), shell_(shell) {
+Application::Application(fs::path data, fs::path assets, unsigned debug_port, std::vector<fs::path> imports, const std::string &shell, fs::path online_lyrics_fixture)
+    : library_(std::move(data)), assets_(std::move(assets)), chinese_(assets_.parent_path() / L"opencc"),
+      online_lyrics_(library_.directory() / L"online-lyrics",
+          online_lyrics_fixture.empty() ? winhttp_fetch([this](const std::string &host) { return online_lyrics_.allowed_host(host); }) : fixture_fetch(online_lyrics_fixture),
+          [this](const std::string &text) { return chinese_.simplify(text); }),
+      debug_port_(debug_port), imports_(std::move(imports)), shell_(shell) {
     library_.load();
+    apply_lyric_options();
     worker_ = std::jthread([this](std::stop_token stop) {
         while (true) {
             std::function<void(std::stop_token)> task;
@@ -30,10 +36,21 @@ Application::Application(fs::path data, fs::path assets, unsigned debug_port, st
             task();
         }
     });
+    network_worker_ = std::jthread([this](std::stop_token stop) {
+        while (true) {
+            std::function<void()> task;
+            { std::unique_lock lock(network_mutex_); network_ready_.wait(lock, stop, [this] { return !network_jobs_.empty(); });
+              if (stop.stop_requested()) break; // pending lookups are abandoned on exit
+              if (network_jobs_.empty()) continue;
+              task = std::move(network_jobs_.front()); network_jobs_.pop_front(); }
+            task();
+        }
+    });
 }
 Application::~Application() {
     closing_ = true; worker_.request_stop(); ready_.notify_all(); if (worker_.joinable()) worker_.join();
     transport_worker_.request_stop(); transport_ready_.notify_all(); if (transport_worker_.joinable()) transport_worker_.join();
+    network_worker_.request_stop(); network_ready_.notify_all(); if (network_worker_.joinable()) network_worker_.join();
     system_media_.shutdown();
     playback_.set_listener({});
     playback_.command({{"action", "stop"}, {"request", UINT64_MAX}});
@@ -42,6 +59,40 @@ Application::~Application() {
 }
 void Application::enqueue(std::function<void(std::stop_token)> task, bool background) {
     { std::lock_guard lock(jobs_mutex_); (background ? background_jobs_ : jobs_).push_back(std::move(task)); } ready_.notify_one();
+}
+void Application::apply_lyric_options() {
+    const auto settings = library_.settings();
+    OnlineLyrics::Options options;
+    if (settings.contains("lyricProviders") && settings["lyricProviders"].is_array()) {
+        options.providers.clear();
+        for (const auto &p : settings["lyricProviders"]) if (p.is_string()) options.providers.insert(p.get<std::string>());
+    }
+    options.amll_base = settings.value("amllMirror", "");
+    options.apple_token = load_apple_token();
+    online_lyrics_.set_options(std::move(options));
+}
+fs::path Application::apple_token_file() const { return library_.directory() / L"apple-music-token.bin"; }
+void Application::save_apple_token(const std::string &token) {
+    std::error_code ec;
+    if (token.empty()) { fs::remove(apple_token_file(), ec); return; }
+    DATA_BLOB input{static_cast<DWORD>(token.size()), reinterpret_cast<BYTE *>(const_cast<char *>(token.data()))}, output{};
+    if (!CryptProtectData(&input, L"DR Music Apple Music token", nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output)) throw std::runtime_error("无法保存 Apple Music 令牌");
+    std::string sealed(reinterpret_cast<char *>(output.pbData), output.cbData); LocalFree(output.pbData);
+    write_atomic(apple_token_file(), sealed);
+}
+std::string Application::load_apple_token() const {
+    std::error_code ec;
+    if (!fs::is_regular_file(apple_token_file(), ec)) return {};
+    try {
+        auto sealed = read_text(apple_token_file(), 64 * 1024);
+        DATA_BLOB input{static_cast<DWORD>(sealed.size()), reinterpret_cast<BYTE *>(sealed.data())}, output{};
+        if (!CryptUnprotectData(&input, nullptr, nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output)) return {};
+        std::string token(reinterpret_cast<char *>(output.pbData), output.cbData); SecureZeroMemory(output.pbData, output.cbData); LocalFree(output.pbData);
+        return token;
+    } catch (const std::exception &) { return {}; }
+}
+void Application::enqueue_network(std::function<void()> task) {
+    { std::lock_guard lock(network_mutex_); network_jobs_.push_back(std::move(task)); } network_ready_.notify_one();
 }
 void Application::enqueue_transport(std::function<void()> task) {
     { std::lock_guard lock(transport_mutex_); transport_jobs_.push_back(std::move(task)); } transport_ready_.notify_one();
@@ -179,6 +230,30 @@ void Application::receive(const Json &request) {
             auto hr = SHOpenFolderAndSelectItems(item, 0, nullptr, 0); CoTaskMemFree(item);
             if (FAILED(hr)) throw std::runtime_error("无法打开文件位置"); reply(id, nullptr); return;
         }
+        if (method == "lyrics:online") {
+            // Fixed lookup by library track: the page names a track, never a URL or query.
+            const auto track_id = params.at("id").get<std::string>(); (void)library_.track(track_id);
+            if (!library_.settings().value("onlineLyrics", true)) { reply(id, Json::array()); return; }
+            const bool refresh = params.value("refresh", false);
+            enqueue_network([this, id, track_id, refresh] {
+                try {
+                    Json results = Json::array();
+                    for (const auto &r : online_lyrics_.search(library_.track(track_id), refresh))
+                        results.push_back({{"provider", r.provider}, {"title", r.title}, {"artists", r.artists}, {"album", r.album},
+                                           {"format", r.format}, {"text", r.text}, {"score", r.score}, {"reference", r.reference}});
+                    reply(id, results);
+                } catch (const std::exception &e) { reject(id, e.what()); }
+            });
+            return;
+        }
+        if (method == "lyrics:apple-token") {
+            // The token is stored DPAPI-encrypted for this Windows user and never sent back to the page.
+            const auto token = params.at("token").get<std::string>();
+            if (token.size() > 4096 || token.find_first_of("\r\n\"'<>") != std::string::npos) throw std::runtime_error("无效的 Apple Music 令牌");
+            save_apple_token(token); apply_lyric_options();
+            reply(id, {{"appleToken", !token.empty()}}); return;
+        }
+        if (method == "lyrics:status") { reply(id, {{"appleToken", !load_apple_token().empty()}, {"providers", OnlineLyrics::provider_ids()}, {"amllDefault", OnlineLyrics::kAmllDefaultBase}}); return; }
         if (method == "app:data") {
             if (reinterpret_cast<INT_PTR>(ShellExecuteW(window_.handle(), L"open", library_.directory().c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32) throw std::runtime_error("无法打开数据目录");
             reply(id, nullptr); return;
@@ -188,6 +263,7 @@ void Application::receive(const Json &request) {
                 if (method == "library:get") reply(id, library_.snapshot());
                 else if (method == "library:update") {
                     auto updated = library_.update(params);
+                    if (params.contains("settings") && (params["settings"].contains("lyricProviders") || params["settings"].contains("amllMirror"))) apply_lyric_options();
                     if (params.contains("settings") && params["settings"].contains("titleBar")) window_.post([this, s = updated["settings"]] { if (!closing_) window_.set_style(s.value("titleBar", "direct2d") == "direct2d", s.value("titleBar", "direct2d") == "webview2"); });
                     reply(id, updated);
                 } else if (method == "library:remove" || method == "library:remove-folder") {
@@ -199,6 +275,7 @@ void Application::receive(const Json &request) {
                     reply(id, result);
                 }
                 else if (method == "lyrics:get") reply(id, library_.lyrics(params.at("id").get<std::string>()));
+                else if (method == "lyrics:preference") reply(id, library_.set_lyric_preference(params.at("id").get<std::string>(), params.at("source").get<std::string>()));
                 else if (method == "app:notices") reply(id, read_text(assets_.parent_path() / L"THIRD_PARTY_NOTICES.md"));
                 else if (method == "chinese:status") reply(id, {{"available", chinese_.available()}});
                 else if (method == "chinese:simplify") {

@@ -1,10 +1,12 @@
 import { NativePlayback } from './playback';
 import { VolumeControl } from './VolumeControl';
+import { ProgressSlider } from './ProgressSlider';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion, MotionConfig, type Transition } from 'motion/react';
-import { Music2, Library as LibraryIcon, Heart, Disc3, Mic2, FolderPlus, Plus, Search, Play, Pause, SkipBack, SkipForward, Shuffle, Repeat, Repeat1, ListMusic, Maximize2, ChevronDown, ChevronLeft, ChevronRight, Settings2, MoreHorizontal, FolderOpen, RefreshCw, X, Check, FileMusic, ArrowUpRight, Headphones, Trash2, Pencil, ListPlus, AudioLines, Folder, FolderSearch, Copy, ListX } from 'lucide-react';
+import { Music2, Library as LibraryIcon, Heart, Disc3, Mic2, FolderPlus, Plus, Search, Play, Pause, SkipBack, SkipForward, Shuffle, Repeat, Repeat1, ListMusic, Maximize2, ChevronDown, ChevronLeft, ChevronRight, Settings2, MoreHorizontal, FolderOpen, RefreshCw, X, Check, FileMusic, ArrowUpRight, Headphones, Trash2, Pencil, ListPlus, AudioLines, Folder, FolderSearch, Copy, ListX, Globe } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import type { Library, Track, Settings, LyricFile, Progress, Playlist, FontFamily } from './types';
+import type { Library, Track, Settings, LyricFile, Progress, Playlist, FontFamily, OnlineLyricResult } from './types';
+import { chooseLyric, providerName, LYRIC_PROVIDERS, type LyricSource } from './lib/lyricSource';
 import { formatTime, nextTrack } from './lib/queue';
 import { virtualRange } from './lib/virtual';
 import { withoutFolder, withMetadata, musicFolders } from './lib/library';
@@ -110,6 +112,12 @@ export function App() {
   const [progress, setProgress] = useState<Progress>();
   const [lyricFile, setLyricFile] = useState<LyricFile>({ text: '', source: '', format: 'lrc' });
   const [lyricLoading, setLyricLoading] = useState(false);
+  // AMLL TTML DB lyric for the current song: undefined while looking, null when there is none.
+  const [onlineLyrics, setOnlineLyrics] = useState<OnlineLyricResult[] | null>();
+  const [lyricMenu, setLyricMenu] = useState<{ x: number; y: number }>();
+  const [appleToken, setAppleToken] = useState<{ set: boolean; draft: string }>({ set: false, draft: '' });
+  const [mirrorDraft, setMirrorDraft] = useState<string>();
+  const onlineRequest = useRef(0);
   const [menu, setMenu] = useState<{ point: { x: number; y: number }; ids: string[]; playlistsOnly?: boolean }>();
   const [selection, setSelection] = useState<string[]>([]);
   const selectionAnchor = useRef<string | undefined>(undefined);
@@ -130,6 +138,15 @@ export function App() {
     return removingFolder.current ? withoutFolder(data, removingFolder.current) : data;
   }, []);
   const notify = useCallback((message: string) => setToast(message), []);
+  useEffect(() => { if (settingsOpen && window.music) window.music.lyricsStatus().then(status => setAppleToken(t => ({ ...t, set: status.appleToken }))).catch(() => {}); }, [settingsOpen]);
+  const saveAppleToken = (token: string) => void window.music.setAppleToken(token.trim())
+    .then(status => { setAppleToken({ set: status.appleToken, draft: '' }); notify(status.appleToken ? '已保存 Apple Music 令牌' : '已清除 Apple Music 令牌'); })
+    .catch(error => notify(String(error)));
+  const saveMirror = () => {
+    const url = (mirrorDraft ?? settings?.amllMirror ?? '').trim().replace(/\/+$/, '');
+    if (url && !/^https:\/\/[A-Za-z0-9.-]+(:\d+)?(\/[^\s?#"'<>\\]*)?$/.test(url)) { notify('镜像地址需要是不带参数的 https:// 地址'); return; }
+    setSettings({ amllMirror: url }); setMirrorDraft(undefined); notify(url ? '已使用 AMLL TTML DB 镜像' : '已恢复默认地址');
+  };
   // System fonts are enumerated natively (DirectWrite) the first time the appearance tab is shown.
   useEffect(() => {
     if (!settingsOpen || settingsTab !== 'appearance' || fonts || !window.music) return;
@@ -194,8 +211,10 @@ export function App() {
 
   const trackById = useMemo(() => new Map((library?.tracks || []).map(track => [track.id, track])), [library?.tracks]);
   const current = currentId ? trackById.get(currentId) : undefined;
+  const lyric = chooseLyric(lyricFile, onlineLyrics, current?.lyricPreference);
   const queueWindow = useMemo(() => virtualRange(queue.length, QUEUE_ROW_HEIGHT, queueViewport.scrollTop, queueViewport.height, QUEUE_OVERSCAN), [queue.length, queueViewport]);
   const settings = library?.settings;
+  const lookingOnline = !lyricFile.text && onlineLyrics === undefined && settings?.onlineLyrics !== false;
   useEffect(() => { if (settings?.titleBar !== 'webview2') { setCaptionHot(false); setCaptionActive(false); } }, [settings?.titleBar]);
   useEffect(() => {
     if (settings?.titleBar !== 'webview2' || !window.music) return;
@@ -302,6 +321,26 @@ export function App() {
     setLyricLoading(true);
     window.music.lyrics(currentId).then(file => { if (token === lyricRequest.current) setLyricFile(file); }).catch(e => { if (token === lyricRequest.current) notify(String(e)); }).finally(() => { if (token === lyricRequest.current) setLyricLoading(false); });
   }, [currentId, current?.metadataPending, notify]);
+  const loadOnlineLyrics = useCallback((id: string, refresh: boolean) => {
+    const token = ++onlineRequest.current;
+    setOnlineLyrics(undefined);
+    window.music.onlineLyrics(id, refresh)
+      .then(results => { if (token === onlineRequest.current) setOnlineLyrics(results.map(r => ({ ...r, source: providerName(r.provider) }))); })
+      .catch(() => { if (token === onlineRequest.current) setOnlineLyrics(null); });
+  }, []);
+  const providerKey = (settings?.lyricProviders || []).join(",") + "|" + (settings?.amllMirror || "");
+  useEffect(() => {
+    if (!currentId || settings?.onlineLyrics === false || !window.music) { ++onlineRequest.current; setOnlineLyrics(null); return; }
+    // Matching uses tag metadata, so wait for it rather than search by file name.
+    if (current?.metadataPending) { ++onlineRequest.current; setOnlineLyrics(undefined); return; }
+    loadOnlineLyrics(currentId, false);
+  }, [currentId, current?.title, current?.artist, current?.album, current?.metadataPending, settings?.onlineLyrics, providerKey, loadOnlineLyrics]);
+  const chooseLyricSource = (source: LyricSource) => {
+    if (!currentId) return;
+    const id = currentId;
+    setLibrary(previous => previous && { ...previous, tracks: previous.tracks.map(track => track.id === id ? { ...track, lyricPreference: source } : track) });
+    void window.music.setLyricPreference(id, source).catch(error => notify(String(error)));
+  };
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       const element = event.target as HTMLElement;
@@ -352,7 +391,7 @@ export function App() {
   const attachLyrics = async () => {
     if (!currentId) return;
     const id = currentId; const token = ++lyricRequest.current;
-    try { const file = await window.music.attachLyrics(id); if (file && stateRef.current.currentId === id && token === lyricRequest.current) { setLyricFile(file); notify(`已载入 ${file.source}`); } }
+    try { const file = await window.music.attachLyrics(id); if (file && stateRef.current.currentId === id && token === lyricRequest.current) { setLyricFile(file); chooseLyricSource('local'); notify(`已载入 ${file.source}`); } }
     catch (error) { notify(String(error)); }
   };
   const toggleQueue = () => {
@@ -530,7 +569,7 @@ export function App() {
   </div>;
   const renderProgress = () => <div className="progress-control">
     <span>{formatTime(position)}</span>
-    <input aria-label="播放进度" type="range" min="0" max={duration || 1} step="0.1" value={Math.min(position, duration || 0)} disabled={!current || !duration} onChange={e => seek(Number(e.target.value))} style={{ '--progress': `${duration ? position / duration * 100 : 0}%` } as React.CSSProperties}/>
+    <ProgressSlider position={position} duration={duration} disabled={!current || !duration} onSeek={seek}/>
     <span>{formatTime(duration)}</span>
   </div>;
   const copySongText = async (text: string) => {
@@ -762,6 +801,15 @@ export function App() {
       </main>
 
       {menu && <ContextMenu items={menu.playlistsOnly ? playlistMenu(menu.ids) : menuItems(menu.ids)} point={menu.point} label={menu.playlistsOnly ? '添加到歌单' : menu.ids.length > 1 ? `已选 ${menu.ids.length} 首歌曲菜单` : `${trackById.get(menu.ids[0])?.title || ''} 歌曲菜单`} onClose={() => setMenu(undefined)}/>}
+      {lyricMenu && current && <ContextMenu label="歌词来源" point={lyricMenu} onClose={() => setLyricMenu(undefined)} items={[
+        { kind: 'header', label: '歌词来源' },
+        ...(lyricFile.text ? [{ label: '本地歌词', icon: FileMusic, checked: lyric.source === 'local', onSelect: () => chooseLyricSource('local') } as MenuItem] : []),
+        ...lyric.results.map((r): MenuItem => ({ label: r.source, icon: Globe, checked: lyric.source === r.provider, shortcut: `${r.score}%`, onSelect: () => chooseLyricSource(r.provider) })),
+        ...(lookingOnline ? [{ kind: 'header', label: '正在查找在线歌词…' } as MenuItem] : settings?.onlineLyrics !== false && !lyric.results.length ? [{ kind: 'header', label: '没有找到在线歌词' } as MenuItem] : []),
+        { kind: 'separator' },
+        { label: '重新搜索在线歌词', icon: RefreshCw, disabled: settings?.onlineLyrics === false || lookingOnline, onSelect: () => loadOnlineLyrics(current.id, true) },
+        { label: '关联本地歌词…', icon: Plus, onSelect: () => void attachLyrics() },
+      ]}/>}
       <motion.footer className="player-bar" layout="position">
         <div className="player-track">
           <AnimatePresence mode="wait" initial={false}>
@@ -795,13 +843,14 @@ export function App() {
             </AnimatePresence>
             <div className="now-right">
               <AnimatePresence mode="wait" initial={false}>
-                <motion.div key={lyricFile.text ? `lyrics:${current.id}:${lyricFile.source}` : `empty:${current.id}:${lyricLoading}`} className="lyric-content" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={textTransition}>
-                  {lyricFile.text ? <Lyrics file={lyricFile} audio={audio} offset={settings?.lyricOffset || 0} active={nowPlaying} onSeek={seek} typography={{ font: settings?.lyricFont, weight: settings?.lyricWeight, scale: settings?.lyricScale }}/> : <div className="no-lyrics"><AudioLines size={38}/><h3>{lyricLoading ? '正在读取歌词' : '让文字也跟着旋律'}</h3><p>自动读取歌曲旁的同名歌词文件<br/>也可以手动关联 LRC、TTML、YRC 或 TXT</p><PressableButton className="secondary-button" onClick={() => void attachLyrics()}><Plus size={16}/>关联歌词</PressableButton></div>}
+                <motion.div key={lyric.file ? `lyrics:${current.id}:${lyric.source}:${lyric.file.source}` : `empty:${current.id}:${lyricLoading || lookingOnline}`} className="lyric-content" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={textTransition}>
+                  {lyric.file ? <Lyrics file={lyric.file} audio={audio} offset={settings?.lyricOffset || 0} active={nowPlaying} onSeek={seek} typography={{ font: settings?.lyricFont, weight: settings?.lyricWeight, scale: settings?.lyricScale }}/> : <div className="no-lyrics"><AudioLines size={38}/><h3>{lyricLoading ? '正在读取歌词' : lookingOnline ? '正在查找在线歌词' : '让文字也跟着旋律'}</h3><p>自动读取歌曲旁的同名歌词文件{settings?.onlineLyrics !== false ? '，没有时从 AMLL TTML DB 查找' : ''}<br/>也可以手动关联 LRC、TTML、YRC 或 TXT</p><PressableButton className="secondary-button" onClick={() => void attachLyrics()}><Plus size={16}/>关联歌词</PressableButton></div>}
                 </motion.div>
               </AnimatePresence>
               <div className="lyric-toolbar">
-                <PressableButton className="text-button" onClick={() => void attachLyrics()}><FileMusic size={15}/>{lyricFile.source || '选择歌词'}</PressableButton>
+                {(() => { const online = lyric.source && lyric.source !== 'local' ? lyric.results.find(r => r.provider === lyric.source) : undefined; return <PressableButton className="text-button" data-tooltip={online ? `${online.source} · ${online.title} - ${online.artists}（匹配 ${online.score}%）` : undefined} onClick={() => void attachLyrics()}>{online ? <Globe size={15}/> : <FileMusic size={15}/>}{online ? online.source : lyricFile.source || '选择歌词'}</PressableButton>; })()}
                 <div>
+                  {(lyric.switchable || settings?.onlineLyrics !== false) && <button type="button" className="lyric-source-button" aria-haspopup="menu" aria-expanded={!!lyricMenu} aria-label="歌词来源" onClick={event => { const box = event.currentTarget.getBoundingClientRect(); setLyricMenu(lyricMenu ? undefined : { x: box.left, y: box.top - 6 }); }}>{lookingOnline ? '查找中…' : lyric.results.length ? `${lyric.results.length + (lyricFile.text ? 1 : 0)} 个来源` : '来源'}<ChevronDown size={13}/></button>}
                   <PressableButton data-tooltip="歌词延后 0.5 秒" onClick={() => setSettings({ lyricOffset: Math.max(-30000, (settings?.lyricOffset || 0) - 500) })}>−</PressableButton>
                   <motion.span data-tooltip="正值让歌词提前显示" key={settings?.lyricOffset || 0} initial={{ opacity: .55, y: 1 }} animate={{ opacity: 1, y: 0 }} transition={quickTextTransition}>偏移 {((settings?.lyricOffset || 0) / 1000).toFixed(1)}s</motion.span>
                   <PressableButton data-tooltip="歌词提前 0.5 秒" onClick={() => setSettings({ lyricOffset: Math.min(30000, (settings?.lyricOffset || 0) + 500) })}>+</PressableButton>
@@ -849,10 +898,19 @@ export function App() {
               <div className="folder-list">{library?.folders.map(folder => <div key={folder}><FolderOpen size={16}/><span data-tooltip={folder}>{folder}</span><IconButton icon={X} label={`移除文件夹 ${folder}`} disabled={busy} onClick={() => void removeFolder(folder)}/></div>)}{!library?.folders.length && <p>还没有导入音乐文件夹</p>}</div>
               <div className="settings-actions"><PressableButton className="secondary-button" disabled={busy} onClick={() => void runImport('folder')}><FolderPlus size={16}/>添加文件夹</PressableButton><PressableButton className="secondary-button" disabled={busy || !library?.folders.length} onClick={() => void runImport('rescan')}><RefreshCw size={16}/>重新扫描</PressableButton><PressableButton className="text-button" onClick={() => void window.music.openData().catch(e => notify(String(e)))}>打开数据目录</PressableButton></div>
               <h5 className="settings-subheading">搜索</h5><div className="settings-row settings-toggle-row"><span className="settings-row-label"><span>简繁通搜</span><small>{chineseAvailable ? '输入简体或繁体都能找到另一种写法的歌曲，例如「后来」也能搜到「後來」。' : '未找到 OpenCC 数据（程序目录下的 opencc 文件夹），简繁通搜不可用。'}</small></span><button type="button" role="switch" className="switch" aria-label="简繁通搜" aria-checked={chineseSearch} disabled={!chineseAvailable} onClick={() => setSettings({ chineseSearch: !settings?.chineseSearch })}><span/></button></div>
+              <h5 className="settings-subheading">歌词</h5><div className="settings-row settings-toggle-row"><span className="settings-row-label"><span>在线歌词</span><small>歌曲没有歌词时，从下面开启的歌词源同时查找并缓存到本地，选用匹配度最高的；可在播放页右下角切换来源。只会连接这些歌词源的接口。</small></span><button type="button" role="switch" className="switch" aria-label="在线歌词" aria-checked={settings?.onlineLyrics !== false} onClick={() => setSettings({ onlineLyrics: settings?.onlineLyrics === false })}><span/></button></div>
+              <div className="lyric-provider-list" aria-label="歌词源" data-disabled={settings?.onlineLyrics === false ? 'true' : undefined}>
+                {LYRIC_PROVIDERS.map(provider => { const enabled = (settings?.lyricProviders ?? LYRIC_PROVIDERS.map(p => p.id)).includes(provider.id); return <div key={provider.id} className="lyric-provider-row">
+                  <span className="settings-row-label"><span>{provider.name}</span><small>{provider.id === 'apple' ? (appleToken.set ? '已设置 media-user-token（加密保存在本机）' : provider.hint) : provider.hint}</small></span>
+                  <button type="button" role="switch" className="switch" aria-label={provider.name} aria-checked={enabled} disabled={settings?.onlineLyrics === false} onClick={() => { const current = settings?.lyricProviders ?? LYRIC_PROVIDERS.map(p => p.id); setSettings({ lyricProviders: enabled ? current.filter(id => id !== provider.id) : [...current, provider.id] }); }}><span/></button>
+                </div>; })}
+              </div>
+              <div className="settings-field"><label htmlFor="amll-mirror">AMLL TTML DB 地址</label><div><input id="amll-mirror" type="url" spellCheck={false} placeholder="https://raw.githubusercontent.com/amll-dev/amll-ttml-db/main" value={mirrorDraft ?? settings?.amllMirror ?? ''} onChange={event => setMirrorDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') saveMirror(); }}/><PressableButton className="secondary-button" disabled={mirrorDraft === undefined} onClick={saveMirror}>保存</PressableButton></div><small>留空使用 GitHub 原始地址；也可以填写仓库根目录的镜像。</small></div>
+              <div className="settings-field"><label htmlFor="apple-token">Apple Music media-user-token</label><div><input id="apple-token" type="password" autoComplete="off" spellCheck={false} placeholder={appleToken.set ? '已设置，输入新令牌可替换' : '从 music.apple.com 登录后的 Cookie 中复制'} value={appleToken.draft} onChange={event => setAppleToken(t => ({ ...t, draft: event.target.value }))}/><PressableButton className="secondary-button" disabled={!appleToken.draft.trim()} onClick={() => saveAppleToken(appleToken.draft)}>保存</PressableButton>{appleToken.set && <PressableButton className="text-button" onClick={() => saveAppleToken('')}>清除</PressableButton>}</div><small>只有 Apple Music 订阅用户需要；令牌用 Windows 数据保护加密保存，不会显示或发回页面。</small></div>
               </section><section role="tabpanel" aria-label="播放与快捷键" hidden={settingsTab !== 'playback'}><h4>键盘与播放</h4><div className="shortcut-list"><span>播放 / 暂停 <kbd>Space</kbd></span><span>上一首 / 下一首 <kbd>Ctrl ← / →</kbd></span><span>打开 / 收起播放页 <kbd>Ctrl L</kbd></span><span>喜欢当前歌曲 <kbd>Ctrl D</kbd></span><span>搜索音乐 <kbd>Ctrl F</kbd></span><span>关闭面板 <kbd>Esc</kbd></span></div>
               </section><section role="tabpanel" aria-label="关于" hidden={settingsTab !== 'about'}><h4>来源与开源声明</h4><p className="settings-hint">本项目由 suxiaofan 定制，基于 MySpotify 的产品布局与歌词分词逻辑重构。原作者及开源声明保留。歌词使用 Apple Music-like Lyrics 渲染。应用遵循 AGPL-3.0-only。</p>
               <PressableButton className="secondary-button" onClick={() => void window.music.notices().then(setNoticeText).catch(e => notify(String(e)))}>查看原项目及第三方声明</PressableButton>
-              <p className="privacy-note"><Check size={15}/>没有账号、在线搜索、遥测或自动更新。音频、歌词与音乐库都在你的电脑里。</p></section>
+              <p className="privacy-note"><Check size={15}/>没有账号、遥测或自动更新。音频与音乐库都在你的电脑里；只有开启「在线歌词」时才会向所选歌词源查询歌词。</p></section>
             </div>
           </section>
         </div>}

@@ -4,12 +4,17 @@
 #include "cover.h"
 #include "fonts.h"
 #include "chinese.h"
+#include "online_lyrics.h"
+#include "lyric_crypto.h"
+#include "http.h"
+#include <zlib.h>
 #include <fileref.h>
 #include <tag.h>
 #include <tpropertymap.h>
 #include <algorithm>
 #include <fstream>
 #include <set>
+#include <map>
 #include <iostream>
 #include <cstring>
 #include <windowsx.h>
@@ -43,6 +48,159 @@ void rescan_test(const dr::fs::path &root) {
     dr::fs::remove_all(root / L"rescan" / L"music"); // the whole root is unreachable now
     auto offline = library.import_paths({music}, {}, {}, true);
     CHECK(offline["removed"] == 0); CHECK(library.snapshot()["tracks"].size() == 2);
+}
+// Provider codecs: CNG MD5 / AES against published vectors, KRC framing, and QQ's DES variant
+// against a vector produced by AMLL's own encryptQrcHex (@applemusic-like-lyrics/lyric).
+void lyric_crypto_test() {
+    CHECK(dr::md5_hex("abc") == "900150983cd24fb0d6963f7d28e17f72");
+    // FIPS-197 C.1 single block (followed by one PKCS#7 padding block).
+    const std::string key("\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f", 16), block("\x00\x11\x22\x33\x44\x55\x66\x77\x88\x99\xaa\xbb\xcc\xdd\xee\xff", 16);
+    CHECK(dr::hex_upper(dr::aes128_ecb_encrypt(block, key)).starts_with("69C4E0D86A7B0430D8CDB78070B4C55A"));
+    CHECK(dr::base64_decode(dr::base64_encode("歌词 lyrics")) == "歌词 lyrics");
+    const std::string qrc = "[0,1500]测(0,500)试(500,500)歌(1000,500)\n[1500,1500]Second(1500,700) line(2200,800)";
+    CHECK(dr::decrypt_qrc("aae13cd5f0b12c79383b3dcfa8782dc30fdf64d4906eee3f361f6fbd2b17d6e4c763358bee725754fa5b5c07c9a242f9f8e3a19b944784397e0f2b8d226e00a0f44296543d3cf20d1f10d784c9257240") == qrc);
+    CHECK(dr::decrypt_qrc(dr::encrypt_qrc(qrc)) == qrc);
+    CHECK(throws([] { dr::decrypt_qrc("zz"); }));
+    CHECK(dr::url_encode("a b/歌") == "a%20b%2F%E6%AD%8C");
+    CHECK(dr::parse_url("https://Lrclib.net/api/search?x=1")->host == "lrclib.net"); CHECK(dr::parse_url("http://a.b:8080/p")->port == 8080);
+    CHECK(!dr::parse_url("https://user@evil.com/")); CHECK(!dr::parse_url("file:///c:/x"));
+}
+// Online lyrics end to end against fixtures served by fixture_fetch (no network): AMLL matching
+// (script folding, aliases, untagged file names, newest revision), every provider's request /
+// response handling and decoders, ordering, caching and the host allowlist.
+void online_lyrics_test(const dr::fs::path &root) {
+    auto fixture = root / L"fixture";
+    auto put = [&](const std::string &host_and_path, const std::string &body) {
+        auto file = fixture / dr::from_text(host_and_path); dr::fs::create_directories(file.parent_path()); write(file, body); };
+    const std::string amll = "raw.githubusercontent.com/amll-dev/amll-ttml-db/main/";
+    auto entry = [](const std::string &title, const std::string &artist, const std::string &album, const std::string &file) {
+        dr::Json metadata = dr::Json::array();
+        for (const auto &[k, v] : std::vector<std::pair<std::string, std::string>>{{"album", album}, {"artists", artist}, {"musicName", title}, {"ncmMusicId", "1"}})
+            metadata.push_back(dr::Json::array({k, dr::Json::array({v})}));
+        return dr::Json{{"metadata", metadata}, {"rawLyricFile", file}}.dump() + "\n"; };
+    put(amll + "metadata/raw-lyrics-index.jsonl",
+        entry("後來", "劉若英", "我等你", "100-1-aaaa.ttml") + entry("後來", "劉若英", "我等你", "200-1-bbbb.ttml") +
+        entry("Idol", "YOASOBI", "Idol", "300-1-cccc.ttml") + entry("写给明天", "某歌手", "某专辑", "400-1-dddd.ttml") +
+        "not json\n" + entry("Bad", "X", "Y", "../escape.ttml") +
+        R"J({"metadata":[["album",["THE BOOK 3"]],["artists",["YOASOBI","Ikura"]],["musicName",["勇者","The Brave"]]],"rawLyricFile":"500-1-eeee.ttml"})J" "\n");
+    put(amll + "raw-lyrics/200-1-bbbb.ttml", "<tt xmlns=\"http://www.w3.org/ns/ttml\"><body/></tt>");
+    dr::ChineseText chinese(DR_TEST_OPENCC_DIR);
+    auto fold = [&](const std::string &text) { return chinese.simplify(text); };
+    dr::OnlineLyrics online(root / L"lyrics-cache", dr::fixture_fetch(fixture), fold);
+    auto match = online.find({{"title", "后来"}, {"artist", "刘若英"}, {"album", "我等你"}});
+    CHECK(match && match->file == "200-1-bbbb.ttml" && match->score == 100); // simplified input, newest revision
+    CHECK(online.fetch(match->file).find("<tt") == 0);
+    CHECK(dr::fs::exists(root / L"lyrics-cache" / L"files" / L"200-1-bbbb.ttml"));
+    CHECK(online.find({{"title", "Idol (Live)"}, {"artist", "YOASOBI / Ayase"}})->file == "300-1-cccc.ttml");
+    CHECK(!online.find({{"title", "Idol"}, {"artist", "Someone Else"}}));          // artist must match when known
+    CHECK(online.find({{"title", "写给明天"}, {"artist", "未知艺术家"}})->file == "400-1-dddd.ttml");
+    CHECK(!online.find({{"title", "写给明天 (Live)"}, {"artist", "未知艺术家"}}));
+    CHECK(!online.find({{"title", "Bad"}, {"artist", "X"}}));                      // unsafe file names never enter the index
+    CHECK(online.find({{"title", "The Brave"}, {"artist", "Ikura"}})->file == "500-1-eeee.ttml");  // any alias
+    CHECK(online.find({{"title", "YOASOBI - Idol"}, {"artist", "未知艺术家"}})->file == "300-1-cccc.ttml"); // untagged file name
+    CHECK(!online.find({{"title", "Completely Different"}, {"artist", "未知艺术家"}}));
+    CHECK(throws([&] { online.fetch("../escape.ttml"); })); CHECK(throws([&] { online.fetch("100-1-aaaa.ttml"); }));
+    CHECK(dr::LyricMatcher::similarity("abc", "abc") == 1.0); CHECK(dr::LyricMatcher::similarity("", "x") == 0.0);
+    CHECK(dr::LyricMatcher::similarity("martha", "marhta") > .95); // Jaro-Winkler reference: 0.961
+    CHECK(online.matcher().fingerprint("YOASOBI - Idol") == online.matcher().fingerprint("Idol YOASOBI"));
+    // Durations: same song within 1 s scores full; > 10 s apart is another version.
+    dr::LyricMatcher matcher(fold);
+    CHECK(matcher.score({"晴天", "周杰伦", "叶惠美", 269}, {{"晴天"}, {"周杰倫"}, {"葉惠美"}, 269.4}) == 100);
+    CHECK(matcher.score({"晴天", "周杰伦", "", 269}, {{"晴天"}, {"周杰伦"}, {}, 300}) == 0);
+    CHECK(dr::split_artists("A / B、C feat. D & E") == std::vector<std::string>({"A", "B", "C", "D", "E"}));
+    CHECK(dr::search_terms({"Song (feat. X)", "Artist", "Album", 0}) == std::vector<std::string>({"Song (feat. X) Artist Album", "Song Artist", "Song"}));
+    // NetEase EAPI body, against a reference computed with Node's crypto from Lyricify's EapiHelper algorithm.
+    CHECK(dr::netease_eapi_body("/api/song/lyric/v1", {{"id", "1"}}) == "params=04AE33D34A93FE3EC22DA8FA305D290AB337D0FE5F36D211DE0D338CC6AA89D0E8744000D04B3D7A3D495AEE86A48DC4BA9A6E5CBA7E957EED8B6484EC4A40A958A1A8DBDEAC922FD61D5CFFB632AD85F1A74DF512BBC164ECEFA314B2112E14");
+
+    // Every provider, end to end. One song, each provider answering in its own format.
+    const dr::Json track = {{"id", "0123456789abcdef01234567"}, {"title", "晴天"}, {"artist", "周杰伦"}, {"album", "叶惠美"}, {"duration", 269.0}};
+    put(amll + "metadata/raw-lyrics-index.jsonl", entry("晴天", "周杰倫", "葉惠美", "600-1-ffff.ttml"));
+    put(amll + "raw-lyrics/600-1-ffff.ttml", "<tt xmlns=\"http://www.w3.org/ns/ttml\"><body><div><p begin=\"0\" end=\"1\">AMLL</p></div></body></tt>");
+    put("lrclib.net/api/search", R"J([{"id":7,"trackName":"晴天","artistName":"周杰伦","albumName":"叶惠美","duration":269,"instrumental":false,"syncedLyrics":"[00:01.00]LRCLIB","plainLyrics":"LRCLIB"}])J");
+    put("music.163.com/api/search/get/web", R"J({"code":200,"result":{"songs":[{"id":186016,"name":"晴天","artists":[{"name":"周杰伦"}],"album":{"name":"叶惠美"},"duration":269000},{"id":1,"name":"晴天 (Live)","artists":[{"name":"别人"}],"album":{"name":"x"},"duration":200000}]}})J");
+    put("interface3.music.163.com/eapi/song/lyric/v1", R"J({"code":200,"lrc":{"lyric":"[00:01.00]NetEase LRC"},"yrc":{"lyric":"[1000,1000](1000,1000,0)NetEase"}})J");
+    put("u.y.qq.com/cgi-bin/musicu.fcg", R"J({"req_1":{"data":{"body":{"song":{"list":[{"id":97773,"mid":"0039MnYb0qxYhV","name":"晴天","title":"晴天","singer":[{"name":"周杰伦"}],"album":{"name":"叶惠美"},"interval":269}]}}}}})J");
+    const auto qrc_xml = std::string("<?xml version=\"1.0\" encoding=\"utf-8\"?><QrcInfos><LyricInfo LyricCount=\"1\"><Lyric_1 LyricType=\"1\" LyricContent=\"[1000,1000]QQ(1000,1000)&#10;\"/></LyricInfo></QrcInfos>");
+    put("c.y.qq.com/qqmusic/fcgi-bin/lyric_download.fcg", "<!--<?xml version=\"1.0\" encoding=\"GB2312\" ?><QrcInfos><lyric><content><![CDATA[" + dr::encrypt_qrc(qrc_xml) + "]]></content></lyric></QrcInfos>-->");
+    put("mobilecdn.kugou.com/api/v3/search/song", R"J({"data":{"info":[{"hash":"ABCDEF","songname":"晴天","singername":"周杰伦","album_name":"叶惠美","duration":269}]}})J");
+    put("lyrics.kugou.com/search", R"J({"candidates":[{"id":"42","accesskey":"KEY"}]})J");
+    {
+        const std::string krc = "\xEF\xBB\xBF[1000,1000]<0,1000,0>Kugou";
+        uLongf size = compressBound(static_cast<uLong>(krc.size())); std::string packed(size, '\0');
+        compress(reinterpret_cast<Bytef *>(packed.data()), &size, reinterpret_cast<const Bytef *>(krc.data()), static_cast<uLong>(krc.size())); packed.resize(size);
+        static constexpr unsigned char key[] = {0x40, 0x47, 0x61, 0x77, 0x5e, 0x32, 0x74, 0x47, 0x51, 0x36, 0x31, 0x2d, 0xce, 0xd2, 0x6e, 0x69};
+        for (size_t i = 0; i < packed.size(); ++i) packed[i] = static_cast<char>(static_cast<unsigned char>(packed[i]) ^ key[i % 16]);
+        put("lyrics.kugou.com/download", dr::Json{{"content", dr::base64_encode("krc1" + packed)}}.dump());
+    }
+    // Apple Music: web-player token in a script referenced by the browse page, then the catalog API.
+    auto b64url = [](const std::string &json) { auto t = dr::base64_encode(json); std::replace(t.begin(), t.end(), '+', '-'); std::replace(t.begin(), t.end(), '/', '_'); while (!t.empty() && t.back() == '=') t.pop_back(); return t; };
+    const auto jwt = b64url("{\"alg\":\"ES256\",\"kid\":\"WebPlayKid\"}") + "." + b64url("{\"iss\":\"AMPWebPlay\",\"exp\":4102444800}") + ".sig";
+    const auto stale = b64url("{\"alg\":\"ES256\"}") + "." + b64url("{\"exp\":1}") + ".sig";
+    CHECK(dr::apple_pick_token("x=\"" + stale + "\";y=\"" + jwt + "\"", 1800000000) == jwt);
+    put("music.apple.com/us/browse", "<script type=\"module\" src=\"/assets/index-abc123.js\"></script>");
+    put("music.apple.com/assets/index-abc123.js", "const t=\"" + jwt + "\";");
+    put("amp-api.music.apple.com/v1/me/storefront", R"J({"data":[{"id":"cn","attributes":{"defaultLanguageTag":"zh-Hans-CN"}}]})J");
+    put("amp-api.music.apple.com/v1/catalog/cn/search", R"J({"results":{"songs":{"data":[{"id":"1234","attributes":{"name":"晴天","artistName":"周杰倫","albumName":"葉惠美","durationInMillis":269000}}]}}})J");
+    put("amp-api.music.apple.com/v1/catalog/cn/songs/1234", R"J({"data":[{"relationships":{"syllable-lyrics":{"data":[{"attributes":{"ttml":"<tt><body><p begin=\"0\" end=\"1\"><span begin=\"0\" end=\"1\">Apple</span></p></body></tt>"}}]}}}]})J");
+
+    dr::OnlineLyrics all(root / L"lyrics-all", dr::fixture_fetch(fixture), fold);
+    all.set_options({{"amll", "qq", "netease", "kugou", "lrclib", "apple"}, "", "user-token"});
+    auto results = all.search(track);
+    std::map<std::string, dr::LyricResult> by;
+    for (const auto &r : results) by[r.provider] = r;
+    CHECK(results.size() == 6);
+    CHECK(by["amll"].format == "ttml" && by["amll"].text.find("AMLL") != std::string::npos);
+    CHECK(by["lrclib"].format == "lrc" && by["lrclib"].text == "[00:01.00]LRCLIB");
+    CHECK(by["netease"].format == "yrc" && by["netease"].text.find("NetEase") != std::string::npos && by["netease"].title == "晴天");
+    CHECK(by["qq"].format == "qrc" && by["qq"].text == "[1000,1000]QQ(1000,1000)\n");
+    CHECK(by["kugou"].format == "krc" && by["kugou"].text == "[1000,1000]<0,1000,0>Kugou");
+    CHECK(by["apple"].format == "ttml" && by["apple"].text.find("Apple") != std::string::npos);
+    for (size_t i = 1; i < results.size(); ++i) CHECK(results[i - 1].score >= results[i].score);
+    CHECK(results.front().provider == "amll" || results.front().score > by["amll"].score); // word-level AMLL wins ties
+    // Cached: the next lookup works without any provider answering.
+    dr::fs::remove_all(fixture);
+    CHECK(all.search(track).size() == 6);
+    // Provider set changes invalidate the cache; disabled providers are not asked.
+    all.set_options({{"lrclib"}, "", ""});
+    CHECK(all.search(track).empty());
+    // A throttled provider (QQ's 2001) is a failure, not "no lyrics": others still answer and the
+    // cache entry is marked partial so it is retried soon.
+    {
+        auto throttled = root / L"fixture-throttled";
+        auto file = [&](const std::string &p, const std::string &body) { auto f = throttled / dr::from_text(p); dr::fs::create_directories(f.parent_path()); write(f, body); };
+        file("u.y.qq.com/cgi-bin/musicu.fcg", R"J({"code":0,"req_1":{"code":2001,"data":{"body":{"song":{"list":[]}}}}})J");
+        file("lrclib.net/api/search", R"J([{"id":7,"trackName":"晴天","artistName":"周杰伦","albumName":"叶惠美","duration":269,"syncedLyrics":"[00:01.00]x"}])J");
+        dr::OnlineLyrics partial(root / L"lyrics-partial", dr::fixture_fetch(throttled), fold);
+        partial.set_options({{"qq", "lrclib"}, "", ""});
+        const auto found = partial.search(track);
+        CHECK(found.size() == 1 && found[0].provider == "lrclib");
+        const auto cached = dr::Json::parse(dr::read_text(root / L"lyrics-partial" / L"results" / L"0123456789abcdef01234567.json"));
+        CHECK(cached["partial"] == true);
+    }
+    // Host allowlist: provider APIs, plus a configured AMLL mirror only.
+    CHECK(all.allowed_host("u.y.qq.com") && all.allowed_host("lrclib.net") && !all.allowed_host("evil.example"));
+    all.set_options({{"amll"}, "https://mirror.example/amll-ttml-db", ""});
+    CHECK(all.allowed_host("mirror.example"));
+    CHECK(!dr::OnlineLyrics::valid_base("http://mirror.example/x") && !dr::OnlineLyrics::valid_base("https://a.b/x?y=1"));
+
+    // Opt-in live check of the real providers (never part of CTest): DR_MUSIC_NETWORK_TEST=1.
+    if (char *flag = nullptr; _dupenv_s(&flag, nullptr, "DR_MUSIC_NETWORK_TEST") == 0 && flag) {
+        free(flag);
+        dr::OnlineLyrics *self = nullptr;
+        dr::OnlineLyrics live(root / L"lyrics-live", dr::winhttp_fetch([&](const std::string &host) { return self->allowed_host(host); }), fold);
+        self = &live;
+        const dr::TrackQuery song{"晴天", "周杰伦", "叶惠美", 269};
+        auto http = dr::winhttp_fetch([&](const std::string &host) { return live.allowed_host(host); });
+        auto report = [&](const char *name, auto &&body) {
+            try { auto r = body(); std::cout << "live " << name << ": " << (r ? r->title + " - " + r->artists + " [" + r->format + ", " + std::to_string(r->score) + "%, " + std::to_string(r->text.size()) + " bytes]" : std::string("no match")) << "\n"; }
+            catch (const std::exception &e) { std::cout << "live " << name << ": error " << e.what() << "\n"; }
+        };
+        report("qq", [&] { return dr::search_qq(http, live.matcher(), song); });
+        report("netease", [&] { return dr::search_netease(http, live.matcher(), song); });
+        report("kugou", [&] { return dr::search_kugou(http, live.matcher(), song); });
+        report("lrclib", [&] { return dr::search_lrclib(http, live.matcher(), song); });
+        report("amll", [&]() -> std::optional<dr::LyricResult> { auto m = live.find({{"title", "Idol"}, {"artist", "YOASOBI"}}); if (!m) return std::nullopt; return dr::LyricResult{"amll", m->title, m->artists, m->album, "ttml", live.fetch(m->file), "", 0, m->score}; });
+    }
 }
 // OpenCC folding: traditional text of any region becomes simplified; non-Han text is untouched.
 void chinese_test() {
@@ -299,7 +457,7 @@ int main() {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     auto root = dr::fs::temp_directory_path() / ("dr-music-native-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(dr::timestamp()));
     dr::fs::create_directories(root); int code = 0;
-    try { media_test(root); fonts_test(); chinese_test(); rescan_test(root); library_test(root); deferred_metadata_test(root); bulk_remove_test(root); recovery_test(root); caption_test(); caption_leave_test(); webview_caption_test(); std::cout << "PASS: native metadata/library/persistence/lyrics, system fonts and lyric typography settings, OpenCC simplified/traditional folding, rescan pruning of moved/deleted files, bounded media streaming, ranges, D2D caption hit tests, leave-message regression, WebView2 caption hit testing and switching\n"; }
+    try { media_test(root); fonts_test(); chinese_test(); rescan_test(root); lyric_crypto_test(); online_lyrics_test(root); library_test(root); deferred_metadata_test(root); bulk_remove_test(root); recovery_test(root); caption_test(); caption_leave_test(); webview_caption_test(); std::cout << "PASS: native metadata/library/persistence/lyrics, system fonts and lyric typography settings, OpenCC simplified/traditional folding, rescan pruning of moved/deleted files, online TTML matching, bounded media streaming, ranges, D2D caption hit tests, leave-message regression, WebView2 caption hit testing and switching\n"; }
     catch (const std::exception &e) { std::cerr << e.what() << '\n'; code = 1; }
     dr::fs::remove_all(root); CoUninitialize(); return code;
 }

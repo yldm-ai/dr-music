@@ -28,6 +28,8 @@ public:
     Json remove_folder(const std::string &folder);
     Json lyrics(const std::string &id) const;
     Json attach_lyrics(const std::string &id, const fs::path &file);
+    /** Which lyric source a track shows when several exist: "local", a provider id, or "" (automatic). */
+    Json set_lyric_preference(const std::string &id, const std::string &source);
     const fs::path &directory() const { return directory_; }
     static Json defaults();
 private:

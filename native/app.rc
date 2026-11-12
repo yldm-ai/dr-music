@@ -11,7 +11,7 @@ BEGIN
     BLOCK "040904b0"
     BEGIN
       VALUE "CompanyName", "suxiaofan\0"
-      VALUE "FileDescription", "DR Music - C++ / WebView2 local music player\0"
+      VALUE "FileDescription", "DR Music - C++ / WebView2 music player\0"
       VALUE "FileVersion", "0.2.0\0"
       VALUE "ProductName", "DR Music\0"
       VALUE "ProductVersion", "0.2.0\0"

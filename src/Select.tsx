@@ -2,7 +2,7 @@ import { useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown } from 'lucide-react';
 
-export function Select({ label, value, options, onChange }: { label: string; value: string; options: { value: string; label: string }[]; onChange: (value: string) => void }) {
+export function Select({ label, value, options, onChange }: { label: string; value: string; options: { value: string; label: string; style?: React.CSSProperties }[]; onChange: (value: string) => void }) {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLDivElement>(null);
@@ -35,7 +35,7 @@ export function Select({ label, value, options, onChange }: { label: string; val
   useLayoutEffect(() => { if (open) list.current?.querySelector(`[data-index="${active}"]`)?.scrollIntoView({ block: 'nearest' }); }, [active, open]);
   return <>
     <button ref={trigger} type="button" className="select-trigger" role="combobox" aria-label={label} aria-expanded={open} aria-controls={open ? id : undefined} aria-haspopup="listbox" onClick={() => { setActive(selected); setOpen(!open); }} onKeyDown={event => { if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(event.key)) { event.preventDefault(); event.stopPropagation(); setActive(selected); setOpen(true); } }}>
-      <span>{options[selected]?.label}</span><ChevronDown size={15}/>
+      <span style={options[selected]?.style}>{options[selected]?.label}</span><ChevronDown size={15}/>
     </button>
     {open && createPortal(<div ref={list} id={id} role="listbox" aria-label={label} tabIndex={-1} aria-activedescendant={`${id}-${active}`} className="select-popover" style={position} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget) && !trigger.current?.contains(event.relatedTarget)) setOpen(false); }} onKeyDown={event => {
       event.stopPropagation();
@@ -44,6 +44,6 @@ export function Select({ label, value, options, onChange }: { label: string; val
       else if (event.key === 'Home' || event.key === 'End') { event.preventDefault(); setActive(event.key === 'Home' ? 0 : options.length - 1); }
       else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onChange(options[active].value); close(); }
       else if (event.key.length === 1) { const index = options.findIndex(option => option.label.toLocaleLowerCase().startsWith(event.key.toLocaleLowerCase())); if (index >= 0) setActive(index); }
-    }}>{options.map((option, index) => <div key={option.value} id={`${id}-${index}`} data-index={index} role="option" aria-selected={option.value === value} className={active === index ? 'highlighted' : ''} onPointerMove={() => setActive(index)} onPointerDown={event => event.preventDefault()} onClick={() => { onChange(option.value); close(); }}><span>{option.label}</span>{option.value === value && <Check size={15}/>}</div>)}</div>, document.body)}
+    }}>{options.map((option, index) => <div key={option.value} id={`${id}-${index}`} data-index={index} role="option" aria-selected={option.value === value} className={active === index ? 'highlighted' : ''} onPointerMove={() => setActive(index)} onPointerDown={event => event.preventDefault()} onClick={() => { onChange(option.value); close(); }}><span style={option.style}>{option.label}</span>{option.value === value && <Check size={15}/>}</div>)}</div>, document.body)}
   </>;
 }

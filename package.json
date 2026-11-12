@@ -11,7 +11,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "start": "powershell -NoProfile -File scripts/build.ps1 -Run -SkipInstall",
-    "test": "tsx --test tests/lyrics.test.ts tests/queue.test.ts tests/virtual.test.ts tests/library.test.ts tests/playback.test.ts",
+    "test": "tsx --test tests/lyrics.test.ts tests/queue.test.ts tests/virtual.test.ts tests/library.test.ts tests/search.test.ts tests/playback.test.ts",
     "pack": "powershell -NoProfile -File scripts/build.ps1 -SkipInstall",
     "dist": "powershell -NoProfile -File scripts/build.ps1 -SkipInstall -Package",
     "notices": "node scripts/licenses.mjs",

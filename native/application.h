@@ -1,5 +1,6 @@
 #pragma once
 #include "library.h"
+#include "chinese.h"
 #include "window.h"
 #include "webview.h"
 #include "playback.h"
@@ -30,6 +31,7 @@ private:
     SystemMedia system_media_;
     Json media_track_;
     fs::path assets_;
+    ChineseText chinese_;
     unsigned debug_port_;
     std::vector<fs::path> imports_;
     std::string shell_;

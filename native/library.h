@@ -17,7 +17,9 @@ public:
     Json track(const std::string &id) const;
     fs::path audio_path(const std::string &id) const;
     std::shared_ptr<const CoverResource> cover_resource(const std::string &id, const std::string &revision = {}) const;
-    Json import_paths(const std::vector<fs::path> &inputs, std::function<void(Json)> progress = {}, std::stop_token stop = {});
+    // `prune_missing` (rescan): tracks under a fully read input folder whose files are gone are removed,
+    // with their favorites / playlist entries. Unreadable folders keep their tracks.
+    Json import_paths(const std::vector<fs::path> &inputs, std::function<void(Json)> progress = {}, std::stop_token stop = {}, bool prune_missing = false);
     Json pending_metadata() const;
     Json enrich_metadata(const Json &candidate);
     void flush_metadata();

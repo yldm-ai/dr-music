@@ -54,14 +54,47 @@ try {
   assert.equal((await page.evaluate(() => window.music.getLibrary())).tracks.length, 3);
   const searchField = page.locator('.search');
   const searchBefore = await searchField.evaluate(element => ({ border: getComputedStyle(element).borderColor, height: element.getBoundingClientRect().height }));
-  await page.getByRole('textbox', { name: '搜索本地音乐' }).focus();
+  await page.getByRole('textbox', { name: '搜索音乐' }).focus();
   await page.waitForTimeout(420);
   const searchFocused = await searchField.evaluate(element => ({ border: getComputedStyle(element).borderColor, shadow: getComputedStyle(element).boxShadow, height: element.getBoundingClientRect().height }));
   assert.notEqual(searchFocused.border, searchBefore.border);
   assert.notEqual(searchFocused.shadow, 'none');
   assert.equal(searchFocused.height, searchBefore.height);
-  await page.getByRole('textbox', { name: '搜索本地音乐' }).blur();
+  await page.getByRole('textbox', { name: '搜索音乐' }).blur();
   await page.screenshot({ path: path.join(root, 'library.png') });
+  // 简繁通搜: traditional input finds simplified titles only while the OpenCC-backed setting is on.
+  assert.equal((await page.evaluate(() => window.music.chineseStatus())).available, true);
+  assert.deepEqual(await page.evaluate(() => window.music.simplify(['寫給明天', 'Hello'])), ['写给明天', 'Hello']);
+  assert.ok((await page.evaluate(() => window.music.chineseQuery('後來'))).includes('后来'));
+  const search = page.getByRole('textbox', { name: '搜索音乐' });
+  const visibleRows = () => page.locator('.track-table .track-row:not(.table-head)').count();
+  await search.fill('寫給');
+  await page.getByRole('heading', { name: '还没有找到这首音乐' }).waitFor();
+  await search.fill('');
+  await page.getByRole('button', { name: /设置与关于/ }).click();
+  await page.getByRole('tab', { name: '音乐库', exact: true }).click();
+  const chineseSwitch = page.getByRole('switch', { name: '简繁通搜', exact: true });
+  assert.equal(await chineseSwitch.getAttribute('aria-checked'), 'false');
+  await chineseSwitch.click();
+  await page.waitForFunction(async () => (await window.music.getLibrary()).settings.chineseSearch === true);
+  assert.equal(await chineseSwitch.getAttribute('aria-checked'), 'true');
+  // The selected tab opens into the panel: nothing of the panel's top border shows beneath it.
+  const tabSeam = await page.evaluate(() => {
+    const tab = document.querySelector('.settings-tabs [aria-selected=true]').getBoundingClientRect();
+    const body = document.querySelector('.settings-body').getBoundingClientRect();
+    const hit = document.elementFromPoint(tab.left + tab.width / 2, body.top + .5);
+    return { coveredByTab: !!hit?.closest('[role=tab]') };
+  });
+  assert.deepEqual(tabSeam, { coveredByTab: true });
+  await page.screenshot({ path: path.join(root, 'settings-chinese-search.png') });
+  await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+  await search.fill('寫給');
+  await page.waitForFunction(() => [...document.querySelectorAll('.track-table .track-row:not(.table-head) strong')].map(e => e.textContent).join() === '写给明天');
+  await search.fill('午後');
+  await page.waitForFunction(() => document.querySelector('.track-table .track-row:not(.table-head) strong')?.textContent === '午后散步');
+  assert.equal(await visibleRows(), 1);
+  await search.fill('');
+  await search.blur();
   // The actual popover must show on hover and dismiss on keyboard input.
   await page.getByRole('button', { name: '新建歌单', exact: true }).hover();
   await page.getByRole('tooltip').filter({ hasText: '新建歌单' }).waitFor();
@@ -69,6 +102,7 @@ try {
   await page.screenshot({ path: path.join(root, 'tooltip.png') });
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => !document.getElementById('dr-hover-tip').matches(':popover-open'));
+  await page.mouse.move(4, 4);
   // Third-party/dynamic title attributes use the same drawn tip, including
   // changes while hovered and removal of a hovered element.
   await page.evaluate(() => {
@@ -91,12 +125,21 @@ try {
   await playlistName.press('Enter');
   assert.equal(await page.getByRole('dialog', { name: '新建歌单' }).isVisible(), true);
   await playlistName.fill('原生测试歌单');
+  await playlistName.focus();
+  const nameFocus = await playlistName.evaluate(input => ({ outline: getComputedStyle(input).outlineStyle, ring: getComputedStyle(input).boxShadow }));
+  assert.equal(nameFocus.outline, 'none', 'the playlist name field must not draw the global focus outline');
+  assert.notEqual(nameFocus.ring, 'none');
+  await page.waitForTimeout(200); await page.locator('form.small-modal').screenshot({ path: path.join(root, 'playlist-dialog-focus.png') });
+  assert.equal(await playlistName.evaluate(input => getComputedStyle(input).fontFamily.includes('Noto Sans SC')), true);
   await page.getByRole('button', { name: '保存歌单', exact: true }).click();
+  // Song menu: compact top-layer menu, playlists live in a submenu.
   await page.getByRole('button', { name: '午后散步 更多操作', exact: true }).click();
-  await page.locator('.song-menu').getByRole('button', { name: '原生测试歌单', exact: true }).click();
+  const songMenu = page.getByRole('menu', { name: '午后散步 歌曲菜单', exact: true });
+  await songMenu.getByRole('menuitem', { name: '添加到歌单', exact: true }).hover();
+  await page.getByRole('menu', { name: '添加到歌单', exact: true }).getByRole('menuitem', { name: '原生测试歌单', exact: true }).click();
+  await page.getByRole('menu').first().waitFor({ state: 'detached' });
   await page.getByRole('button', { name: /原生测试歌单 1/ }).click();
   await page.locator('.playlist-hero .playlist-cover').waitFor();
-  assert.equal(await page.locator('.playlist-page .library-footer').count(), 0);
   const playlistRow = page.locator('.track-row:not(.table-head)').first();
   await playlistRow.hover();
   await page.waitForTimeout(260);
@@ -104,12 +147,113 @@ try {
   assert.equal(await playlistRow.locator('.track-cover-overlay').evaluate(element => getComputedStyle(element).opacity), '1');
   await page.screenshot({ path: path.join(root, 'playlist.png') });
   await playlistRow.click({ button: 'right' });
-  await page.locator('.song-menu').getByRole('button', { name: '复制歌名', exact: true }).waitFor();
-  await page.locator('.song-menu').getByRole('button', { name: '复制歌名和歌手', exact: true }).waitFor();
+  const rowMenu = page.getByRole('menu', { name: '午后散步 歌曲菜单', exact: true });
+  await rowMenu.getByRole('menuitem', { name: '复制歌名', exact: true }).waitFor();
+  await rowMenu.getByRole('menuitem', { name: '复制歌名和歌手', exact: true }).waitFor();
+  // Keyboard: arrows move, ArrowRight opens the playlist submenu, ArrowLeft returns, Escape closes.
+  await page.keyboard.press('ArrowDown'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowRight');
+  await page.getByRole('menu', { name: '添加到歌单', exact: true }).waitFor();
+  await page.waitForTimeout(160); await page.screenshot({ path: path.join(root, 'context-menu.png') });
+  await page.keyboard.press('ArrowLeft');
+  await page.getByRole('menu', { name: '添加到歌单', exact: true }).waitFor({ state: 'detached' });
   await page.keyboard.press('Escape');
-  await page.locator('.song-menu').waitFor({ state: 'detached' });
+  await rowMenu.waitFor({ state: 'detached' });
+  assert.equal(await page.locator('.now-playing[data-open="true"]').count(), 0, 'Escape in the menu must not leak to global shortcuts');
+
+  // Folders: directories holding music inside the added folders appear in the sidebar as playlist-like pages.
+  // The folder section starts collapsed and toggles from its heading.
+  const folderToggle = page.locator('.folder-label .section-toggle');
+  assert.equal(await folderToggle.getAttribute('aria-expanded'), 'false');
+  assert.equal(await page.locator('nav[aria-label="文件夹"]').count(), 0);
+  await folderToggle.click();
+  await page.locator('nav[aria-label="文件夹"]').waitFor();
+  assert.equal(await folderToggle.getAttribute('aria-expanded'), 'true');
+  await folderToggle.click();
+  await page.locator('nav[aria-label="文件夹"]').waitFor({ state: 'detached' });
+  await folderToggle.click();
+  const folderLinks = page.locator('nav[aria-label="文件夹"] .nav-item');
+  const expectedFolders = await page.evaluate(async () => {
+    const library = await window.music.getLibrary();
+    const counts = new Map();
+    for (const track of library.tracks) { const dir = track.path.slice(0, track.path.lastIndexOf('\\')); counts.set(dir, (counts.get(dir) || 0) + 1); }
+    return [...counts].map(([dir, count]) => ({ name: dir.split('\\').pop(), count }));
+  });
+  assert.equal(await folderLinks.count(), expectedFolders.length);
+  const songsFolderInfo = expectedFolders.find(folder => folder.name === 'songs');
+  await folderLinks.filter({ hasText: 'songs' }).click();
+  await page.locator('.playlist-hero .eyebrow', { hasText: '文件夹' }).waitFor();
+  await page.waitForFunction(count => document.querySelectorAll('.track-table .track-row:not(.table-head)').length === count, songsFolderInfo.count);
+  assert.equal(await page.locator('.playlist-hero h1').innerText(), 'songs');
+  assert.match(await page.locator('.hero-path').innerText(), /songs$/);
+  assert.equal(await folderLinks.filter({ hasText: 'songs' }).getAttribute('class').then(c => c.includes('selected')), true);
+  await page.screenshot({ path: path.join(root, 'folder-page.png') });
+
+  // Search also matches folder names and offers them as shortcuts to the folder page.
+  await page.getByRole('button', { name: '音乐库 3', exact: true }).click();
+  await page.getByRole('textbox', { name: '搜索音乐' }).fill('song');
+  const folderResults = page.getByRole('group', { name: '匹配的文件夹' });
+  await folderResults.waitFor();
+  assert.equal(await folderResults.getByRole('button').count(), 1);
+  await page.waitForTimeout(700);
+  const folderOverlap = await page.evaluate(() => { const card = document.querySelector('.folder-results').getBoundingClientRect(); const head = document.querySelector('.track-table .table-head').getBoundingClientRect(); return head.top < card.bottom; });
+  assert.equal(folderOverlap, false, 'folder results must not overlap the song table');
+  await page.screenshot({ path: path.join(root, 'folder-search.png') });
+  await folderResults.getByRole('button', { name: '打开文件夹 songs', exact: true }).click();
+  await page.locator('.playlist-hero .eyebrow', { hasText: '文件夹' }).waitFor();
+  assert.equal(await page.getByRole('textbox', { name: '搜索音乐' }).inputValue(), '');
+  await page.getByRole('textbox', { name: '搜索音乐' }).fill('不存在的目录名');
+  await page.getByRole('group', { name: '匹配的文件夹' }).waitFor({ state: 'detached' });
+  await page.getByRole('textbox', { name: '搜索音乐' }).fill('');
+  // Multi-select: click, Ctrl+click and Shift+click, then batch-add through the selection bar.
+  await page.getByRole('button', { name: '音乐库 3', exact: true }).click();
+  const libraryRows = page.locator('.track-table .track-row:not(.table-head)');
+  await libraryRows.nth(0).locator('.album-cell').click();
+  assert.equal(await page.locator('.selection-bar').count(), 0, 'a single selected row should not show the batch bar');
+  await libraryRows.nth(2).locator('.album-cell').click({ modifiers: ['Control'] });
+  await page.locator('.selection-bar', { hasText: '2 首已选' }).waitFor();
+  await libraryRows.nth(1).locator('.album-cell').click({ modifiers: ['Shift'] });
+  await page.locator('.selection-bar', { hasText: '2 首已选' }).waitFor();
+  // The anchor stays on the Ctrl+clicked row, so Shift+click on the first row spans all three.
+  await libraryRows.nth(0).locator('.album-cell').click({ modifiers: ['Shift'] });
+  await page.locator('.selection-bar', { hasText: '3 首已选' }).waitFor();
+  assert.equal(await page.locator('.track-row.selected').count(), 3);
+  await libraryRows.nth(1).click({ button: 'right', position: { x: 600, y: 20 } });
+  const batchMenu = page.getByRole('menu', { name: '已选 3 首歌曲菜单', exact: true });
+  await batchMenu.waitFor();
+  const menuOnTop = await batchMenu.evaluate(menu => { const box = menu.getBoundingClientRect(); const hit = document.elementFromPoint(box.x + box.width / 2, box.y + 12); return menu.contains(hit); });
+  assert.equal(menuOnTop, true, 'context menu must sit on the top layer');
+  await page.keyboard.press('Escape');
+  await batchMenu.waitFor({ state: 'detached' });
+  // Menus close on scroll, so settle the sticky bar in view before opening one from it.
+  const barAdd = page.locator('.selection-bar').getByRole('button', { name: '添加到歌单', exact: true });
+  await barAdd.scrollIntoViewIfNeeded(); await page.waitForTimeout(80);
+  await barAdd.click();
+  await page.getByRole('menu', { name: '添加到歌单', exact: true }).getByRole('menuitem', { name: '原生测试歌单', exact: true }).click();
+  await page.waitForFunction(async () => (await window.music.getLibrary()).playlists[0].trackIds.length === 3);
+  await page.screenshot({ path: path.join(root, 'multi-select.png') });
+  await page.keyboard.press('Escape');
+  await page.locator('.selection-bar').waitFor({ state: 'detached' });
+
+  // Batch removal from the playlist restores the single-song playlist used below.
+  await page.getByRole('button', { name: /原生测试歌单 3/ }).click();
+  await page.locator('.playlist-hero .playlist-cover').waitFor();
+  await page.keyboard.press('Control+A');
+  await page.locator('.selection-bar', { hasText: '3 首已选' }).waitFor();
+  const keep = page.locator('.track-table .track-row:not(.table-head)').filter({ hasText: '午后散步' });
+  await keep.locator('.album-cell').click({ modifiers: ['Control'] });
+  await page.locator('.selection-bar', { hasText: '2 首已选' }).waitFor();
+  await page.locator('.selection-bar').getByRole('button', { name: '移出歌单', exact: true }).click();
+  await page.waitForFunction(async () => (await window.music.getLibrary()).playlists[0].trackIds.length === 1);
+  await page.locator('.track-row.selected').first().waitFor({ state: 'detached' }).catch(() => {});
+  assert.equal(await page.locator('.track-row.selected').count(), 0);
+  assert.equal(await playlistRow.locator('.row-wave').count(), 0);
   await page.getByRole('button', { name: '播放 午后散步', exact: true }).click();
   await page.getByRole('button', { name: '暂停', exact: true }).waitFor();
+  await playlistRow.locator('.row-wave[data-playing="true"]').waitFor();
+  await playlistRow.locator('.row-number-content').waitFor({ state: 'detached' });
+  await playlistRow.hover();
+  await page.getByRole('button', { name: '暂停 午后散步', exact: true }).waitFor();
   await page.waitForFunction(() => Number(document.querySelector('input[aria-label="播放进度"]').value) > .1);
   const nativePlaying = await page.evaluate(() => window.music.playback({ action: 'state', request: 0 }));
   assert.equal(nativePlaying.playing, true); assert.ok(nativePlaying.position > 0); assert.ok(nativePlaying.duration >= 15.9);
@@ -130,49 +274,45 @@ try {
     return { status: reply.status, size: (await reply.arrayBuffer()).byteLength, range: reply.headers.get('content-range') };
   });
   assert.equal(check.status, 206); assert.equal(check.size, 56); assert.match(check.range, /^bytes 44-99\//);
+  const volumeButton = page.getByRole('button', { name: '音量静音 / 恢复', exact: true });
   const volumeSlider = page.getByRole('slider', { name: '音量', exact: true });
-  const volumeBefore = await volumeSlider.evaluate(element => ({
-    box: element.getBoundingClientRect().toJSON(),
-    transform: getComputedStyle(element).transform,
-  }));
-  assert.ok((await volumeSlider.boundingBox()).width >= 100);
-  const initialVolume = Number(await volumeSlider.inputValue());
+  const volumeNow = slider => slider.evaluate(element => Number(element.getAttribute('aria-valuenow')));
+  assert.equal(await volumeSlider.count(), 0, 'volume slider should stay folded until hover');
+  await volumeButton.hover();
+  await volumeSlider.waitFor();
+  const barGeometry = await page.evaluate(() => {
+    const button = document.querySelector('.player-tools .volume-toggle').getBoundingClientRect();
+    const track = document.querySelector('.player-tools .volume-track').getBoundingClientRect();
+    return { buttonTop: button.top, trackBottom: track.bottom, trackWidth: track.width, trackHeight: track.height };
+  });
+  assert.ok(barGeometry.trackBottom <= barGeometry.buttonTop, 'player bar volume should unfold upward');
+  assert.ok(barGeometry.trackHeight > barGeometry.trackWidth * 3, 'player bar volume should be vertical');
+  const initialVolume = await volumeNow(volumeSlider);
   await volumeSlider.hover();
   await page.mouse.wheel(0, -100);
-  const increasedVolume = Math.min(1, Math.round((initialVolume + .05) * 100) / 100);
-  await page.waitForFunction(value => Math.abs(Number(document.querySelector('.player-tools .volume-slider').value) - value) < .001, increasedVolume);
-  assert.equal(await page.locator('.player-tools .volume-value').innerText(), `${Math.round(increasedVolume * 100)}%`);
+  const increasedVolume = Math.min(100, initialVolume + 1);
+  await page.waitForFunction(value => Number(document.querySelector('.player-tools .volume-track').getAttribute('aria-valuenow')) === value, increasedVolume);
+  assert.equal(await page.locator('.player-tools .volume-value').innerText(), `${increasedVolume}`);
   await page.mouse.wheel(0, 100);
-  await page.waitForFunction(value => Math.abs(Number(document.querySelector('.player-tools .volume-slider').value) - value) < .001, initialVolume);
-  await page.waitForTimeout(240);
-  const volumeHover = await volumeSlider.evaluate(element => {
-    return {
-      box: element.getBoundingClientRect().toJSON(),
-      transform: getComputedStyle(element).transform,
-      cursor: getComputedStyle(element).cursor,
-    };
-  });
-  const sliderThumbHoverStyle = await page.evaluate(() => {
-    const rule = [...document.styleSheets]
-      .flatMap(sheet => [...sheet.cssRules])
-      .find(rule => rule instanceof CSSStyleRule && rule.selectorText.includes('.volume-slider:hover::-webkit-slider-thumb'));
-    return { width: rule?.style.width, height: rule?.style.height, borderRadius: rule?.style.borderRadius };
-  });
-  for (const key of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(volumeHover.box[key] - volumeBefore.box[key]) < .5, `volume slider ${key} moved`);
-  assert.equal(volumeHover.transform, volumeBefore.transform);
-  assert.equal(volumeHover.cursor, 'pointer');
-  assert.deepEqual(sliderThumbHoverStyle, { width: '5px', height: '16px', borderRadius: '999px' });
-  const volumeValue = Number(await volumeSlider.inputValue());
-  const edgeX = volumeHover.box.x + 4 + (volumeHover.box.width - 8) * volumeValue + 2;
-  const edgeY = volumeHover.box.y + volumeHover.box.height - 1;
-  await page.mouse.move(edgeX, edgeY);
-  await page.waitForTimeout(220);
-  const volumeEdge = await volumeSlider.evaluate((element, point) => {
-    const hit = document.elementFromPoint(point.x, point.y);
-    return { hover: element.matches(':hover'), cursor: getComputedStyle(element).cursor, hit: hit === element || element.contains(hit) };
-  }, { x: edgeX, y: edgeY });
-  assert.deepEqual(volumeEdge, { hover: true, cursor: 'pointer', hit: true });
-  await page.screenshot({ path: path.join(root, 'volume-slider-hover.png') });
+  await page.waitForFunction(value => Number(document.querySelector('.player-tools .volume-track').getAttribute('aria-valuenow')) === value, initialVolume);
+  const trackBox = await volumeSlider.boundingBox();
+  await page.mouse.click(trackBox.x + trackBox.width / 2, trackBox.y + trackBox.height / 2);
+  assert.ok(Math.abs(await volumeNow(volumeSlider) - 50) <= 2, 'clicking the middle of the vertical track should set ~50%');
+  await page.waitForTimeout(80);
+  await page.screenshot({ path: path.join(root, 'volume-vertical.png') });
+  await volumeSlider.focus(); await page.keyboard.press('ArrowUp');
+  assert.ok(Math.abs(await volumeNow(volumeSlider) - 51) <= 2);
+  // Icon follows the level: muted → crossed speaker, any audible level keeps at least one wave.
+  const volumeIcon = () => page.locator('.player-tools .volume-toggle svg').getAttribute('class');
+  await page.keyboard.press('Home'); assert.match(await volumeIcon(), /lucide-volume-x/);
+  await page.keyboard.press('ArrowUp'); assert.match(await volumeIcon(), /lucide-volume1\b/);
+  await page.keyboard.press('End'); assert.match(await volumeIcon(), /lucide-volume2\b/);
+  await page.keyboard.press('Home'); for (let i = 0; i < 5; i++) await page.keyboard.press('PageUp'); await page.keyboard.press('ArrowUp');
+  assert.equal(await volumeNow(volumeSlider), 51);
+  assert.equal(await page.locator('.volume-meter').count(), 0);
+  await volumeSlider.blur();
+  await page.mouse.move(1, 1);
+  await volumeSlider.waitFor({ state: 'hidden' });
   await page.mouse.move(1, 1);
   const playerEntry = await page.evaluate(() => new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('player entry animation timed out')), 2000);
@@ -209,23 +349,43 @@ try {
     return transform === 'none' || Math.abs(new DOMMatrixReadOnly(transform).m42) < .5;
   });
   await page.waitForTimeout(120);
-  await page.getByLabel('调节播放页音量', { exact: true }).click();
+  const immersiveButton = page.getByRole('button', { name: '播放页音量静音 / 恢复', exact: true });
   const immersiveVolume = page.getByRole('slider', { name: '播放页音量', exact: true });
+  const transportEdge = await page.evaluate(() => {
+    const transport = document.querySelector('.now-left .transport').getBoundingClientRect();
+    const button = document.querySelector('.now-left .transport .volume-toggle').getBoundingClientRect();
+    const play = document.querySelector('.now-left .play-button').getBoundingClientRect();
+    return { right: transport.right - button.right, centered: Math.abs((play.left + play.right) / 2 - (transport.left + transport.right) / 2) };
+  });
+  assert.ok(transportEdge.right < 1, 'now playing volume should sit at the right edge of the transport row');
+  assert.ok(transportEdge.centered < 1, 'play button should stay centered');
+  assert.equal(await page.locator('.now-header-tools .volume-popover').count(), 0);
+  // A transient toast from the playlist step can cover the transport row; let it expire first.
+  await page.locator('.toast').waitFor({ state: 'detached', timeout: 8000 });
+  await immersiveButton.hover();
   await immersiveVolume.waitFor();
-  const immersiveBefore = Number(await immersiveVolume.inputValue());
+  const immersiveBox = await immersiveVolume.boundingBox();
+  assert.ok(immersiveBox.width > immersiveBox.height * 3, 'now playing volume should be horizontal');
+  const immersiveBefore = await volumeNow(immersiveVolume);
   await immersiveVolume.hover(); await page.mouse.wheel(0, -100);
-  const immersiveAfter = Math.min(1, Math.round((immersiveBefore + .05) * 100) / 100);
-  await page.waitForFunction(value => Math.abs(Number(document.querySelector('.now-volume-panel input').value) - value) < .001, immersiveAfter);
-  assert.ok(Math.abs(Number(await volumeSlider.inputValue()) - immersiveAfter) < .001);
-  assert.equal(await page.locator('.now-volume-panel output').innerText(), `${Math.round(immersiveAfter * 100)}%`);
-  await immersiveVolume.press('End'); await page.mouse.wheel(0, -100);
-  assert.equal(Number(await immersiveVolume.inputValue()), 1);
-  await immersiveVolume.press('Home'); await page.mouse.wheel(0, 100);
-  assert.equal(Number(await immersiveVolume.inputValue()), 0);
-  await page.getByRole('button', { name: '播放页音量静音 / 恢复', exact: true }).click();
-  await page.waitForFunction(() => Number(document.querySelector('.now-volume-panel input').value) > 0);
-  await immersiveVolume.press('Escape');
-  assert.equal(await page.locator('.now-volume').evaluate(element => element.open), false);
+  const immersiveAfter = Math.min(100, immersiveBefore + 1);
+  await page.waitForFunction(value => Number(document.querySelector('.now-left .volume-track').getAttribute('aria-valuenow')) === value, immersiveAfter);
+  assert.equal(Number(await page.locator('.player-tools .volume-track').getAttribute('aria-valuenow')), immersiveAfter);
+  assert.equal(await page.locator('.now-left .volume-value').innerText(), `${immersiveAfter}`);
+  await page.waitForTimeout(80);
+  await page.screenshot({ path: path.join(root, 'volume-horizontal.png') });
+  await immersiveVolume.focus();
+  await page.keyboard.press('End'); await page.mouse.wheel(0, -100);
+  assert.equal(await volumeNow(immersiveVolume), 100);
+  await page.keyboard.press('Home'); await page.mouse.wheel(0, 100);
+  assert.equal(await volumeNow(immersiveVolume), 0);
+  await immersiveButton.click();
+  await page.waitForFunction(() => Number(document.querySelector('.now-left .volume-track').getAttribute('aria-valuenow')) > 0);
+  await immersiveVolume.focus(); await page.keyboard.press('Escape');
+  assert.equal(await immersiveVolume.evaluate(element => element === document.activeElement), false);
+  assert.equal(await page.locator('.now-playing').getAttribute('data-open'), 'true', 'Escape on the volume slider should not close the player');
+  await page.mouse.move(1, 1);
+  await immersiveVolume.waitFor({ state: 'hidden' });
   assert.equal(await page.locator('.lyric-info').count(), 0);
   const positionClock = page.locator('.now-playing .progress-control span').first();
   const clockBefore = await positionClock.evaluate(element => {
@@ -403,6 +563,44 @@ try {
   await page.keyboard.press('End');
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'light');
+  // Lyric typography: system fonts come from the native host and restyle the mounted AMLL player.
+  const lyricStyle = () => page.evaluate(() => {
+    const player = getComputedStyle(document.querySelector('.amll-lyric-player'));
+    return { family: player.fontFamily, weight: player.fontWeight, size: parseFloat(player.fontSize) };
+  });
+  const lyricBefore = await lyricStyle();
+  const fontList = await page.evaluate(() => window.music.fonts());
+  assert.ok(fontList.length > 0 && fontList.some(font => font.family === 'Segoe UI'));
+  await page.waitForFunction(() => !document.querySelector('[aria-label="歌词字体"]')?.textContent.includes('正在读取'));
+  // The drawn Select closes on outside scrolling, so bring each trigger into view before opening it.
+  const pick = async (name, option) => {
+    const trigger = page.getByRole('combobox', { name, exact: true });
+    await trigger.scrollIntoViewIfNeeded(); await page.waitForTimeout(60);
+    await trigger.click();
+    await page.getByRole('option', { name: option, exact: true }).click();
+  };
+  await pick('歌词字体', 'Segoe UI');
+  await pick('歌词粗细', '粗 · 700');
+  await pick('歌词大小', '120%');
+  await page.waitForFunction(async () => {
+    const { settings } = await window.music.getLibrary();
+    return settings.lyricFont === 'Segoe UI' && settings.lyricWeight === 700 && settings.lyricScale === 1.2;
+  });
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.amll-lyric-player')).fontWeight === '700');
+  const lyricAfter = await lyricStyle();
+  assert.match(lyricAfter.family, /^"?Segoe UI"?,/);
+  assert.equal(lyricAfter.weight, '700');
+  assert.ok(Math.abs(lyricAfter.size / lyricBefore.size - 1.2) < .01, `lyric size ${lyricBefore.size} -> ${lyricAfter.size}`);
+  const preview = await page.getByLabel('歌词字体预览').evaluate(element => getComputedStyle(element.querySelector('span')).fontWeight);
+  assert.equal(preview, '700');
+  await page.screenshot({ path: path.join(root, 'lyric-typography-settings.png') });
+  for (const [name, option] of [['歌词字体', '默认 · 跟随应用'], ['歌词粗细', '默认'], ['歌词大小', '默认 · 100%']]) await pick(name, option);
+
+  await page.waitForFunction(async () => {
+    const { settings } = await window.music.getLibrary();
+    return settings.lyricFont === '' && settings.lyricWeight === 0 && settings.lyricScale === 1;
+  });
+  await page.waitForFunction(before => { const style = getComputedStyle(document.querySelector('.amll-lyric-player')); return style.fontWeight === before.weight && style.fontFamily === before.family && parseFloat(style.fontSize) === before.size; }, lyricBefore);
   await page.getByRole('tab', { name: '音乐库', exact: true }).click();
   await page.locator('.folder-list span').first().hover();
   await page.getByRole('tooltip').filter({ hasText: 'songs' }).waitFor();
@@ -528,7 +726,7 @@ try {
   assert.equal((await readFile(path.join(root, 'songs', '午后散步.wav'))).length > 44, true);
   await page.getByRole('button', { name: '关闭设置', exact: true }).click();
   await page.getByRole('button', { name: /播放队列/ }).click();
-  await page.waitForFunction(() => document.querySelector('.drawer-heading p')?.textContent === '0 首本地音乐');
+  await page.waitForFunction(() => document.querySelector('.drawer-heading p')?.textContent === '0 首音乐');
   console.log('PASS: real C++/WebView2 host, native scan and bridge, audio playback and Range stream, favorites/playlists, AMLL LRC click seeking, TTML rendering, rescan, theme/titlebar switching and persistence, native command validation and network isolation.');
   console.log(`Screenshots: ${root}`);
 } catch (error) {

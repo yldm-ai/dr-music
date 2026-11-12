@@ -9,7 +9,15 @@ import type { LyricFile } from './types';
 const smoothEase: [number, number, number, number] = [.22, 1, .36, 1];
 const textTransition = { duration: .36, ease: smoothEase } as const;
 
-export function Lyrics({ file, audio, offset, active, onSeek }: { file: LyricFile; audio: NativePlayback; offset: number; active: boolean; onSeek: (seconds: number) => void }) {
+export interface LyricTypography { font?: string; weight?: number; scale?: number }
+/** CSS custom properties consumed by .lyrics-shell; empty / 0 values fall back to the app defaults. */
+export const lyricTypographyStyle = ({ font, weight, scale }: LyricTypography) => ({
+  ...(font ? { '--dr-lyric-font': `"${font}", var(--font-ui)` } : {}),
+  ...(weight ? { '--dr-lyric-weight': String(weight) } : {}),
+  '--dr-lyric-scale': String(scale || 1),
+}) as React.CSSProperties;
+
+export function Lyrics({ file, audio, offset, active, onSeek, typography = {} }: { file: LyricFile; audio: NativePlayback; offset: number; active: boolean; onSeek: (seconds: number) => void; typography?: LyricTypography }) {
   const host = useRef<HTMLDivElement>(null);
   const [info, setInfo] = useState('');
   const [plain, setPlain] = useState('');
@@ -63,8 +71,9 @@ export function Lyrics({ file, audio, offset, active, onSeek }: { file: LyricFil
     };
     frame = requestAnimationFrame(tick);
     return () => { cancelAnimationFrame(frame); audio.removeEventListener('play', sync); audio.removeEventListener('pause', sync); audio.removeEventListener('seeking', seek); player.removeEventListener('line-click', click); player.dispose(); };
-  }, [file, audio, offset]);
-  return <div className="lyrics-shell">
+    // Font metrics change line heights, so rebuild AMLL's layout when typography changes.
+  }, [file, audio, offset, typography.font, typography.weight, typography.scale]);
+  return <div className="lyrics-shell" style={lyricTypographyStyle(typography)}>
     <motion.div className="lyrics-host" ref={host} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={textTransition}/>
     <AnimatePresence>
       {plain && <motion.div key={`${file.source}:${plain.slice(0, 24)}`} className="plain-lyrics" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={textTransition}>{plain}</motion.div>}

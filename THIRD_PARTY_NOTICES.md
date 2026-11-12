@@ -1,6 +1,6 @@
 # DR Music — 原项目与第三方声明
 
-DR Music 是 suxiaofan 的个人本地音乐播放器。当前宿主为独立实现的 C++20 / Win32 / WebView2，标题栏使用 Direct2D / DirectWrite；React 与 AMLL 作为打包网页运行。原作者的贡献及声明不因名称与技术栈变更而转移。
+DR Music 是 suxiaofan 的个人音乐播放器。当前宿主为独立实现的 C++20 / Win32 / WebView2，标题栏使用 Direct2D / DirectWrite；React 与 AMLL 作为打包网页运行。原作者的贡献及声明不因名称与技术栈变更而转移。
 
 ## MySpotify（原项目）
 
@@ -37,6 +37,7 @@ DR Music 是 suxiaofan 的个人本地音乐播放器。当前宿主为独立实
 - **miniaudio 0.11.26**：https://github.com/mackron/miniaudio 。David Reid 及贡献者，采用 Public Domain / MIT-0 双重许可；用于原生音频设备输出，许可证位于 `licenses/native/miniaudio-LICENSE`。
 - **FFmpeg 8.1.2**：https://ffmpeg.org/ 。本软件使用 FFmpeg 项目的 `avformat`、`avcodec`、`avutil`、`swresample` 动态库，采用 LGPL-2.1-or-later；构建未启用 GPL/nonfree 组件。只启用本地音频解封装与解码，不启用网络、编码器、视频解码或 FFmpeg 命令行程序。许可、对应源码压缩包、vcpkg 补丁和构建配方随分发保存在 `licenses/native/ffmpeg/`。构建配方基于 microsoft/vcpkg（MIT），保留其版权与许可。
 - **TagLib 2.3.2**：https://taglib.org/ / https://github.com/taglib/taglib 。本地元数据、封面与内嵌文本歌词读取。版权归 Scott Wheeler、TagLib 作者及贡献者；提供 LGPL-2.1 / MPL-1.1 双重许可，原文随应用保存在 `licenses/native/COPYING.LGPL` 和 `COPYING.MPL`。
+- **OpenCC 1.4.2**：https://github.com/BYVoid/OpenCC 。用于「简繁通搜」的繁体→简体转换（t2s、tw2s、tw2sp、hk2s 配置及其 .ocd2 词典，随应用位于 `opencc/`）。版权归 Carbo Kuo 及 OpenCC 贡献者，Apache License 2.0，原文随应用保存在 `licenses/native/OpenCC-LICENSE`。集成方式参考 `../dr-dict`。OpenCC 静态链接其内置依赖：marisa-trie 0.3.1（BSD-2-Clause OR LGPL-2.1-or-later，`licenses/native/marisa-COPYING.md`）、darts-clone 0.32h（BSD-2-Clause，`licenses/native/darts-clone-COPYING.md`）与 RapidJSON 1.1.0（MIT，版权归 THL A29 Limited / Tencent 及 Milo Yip）。
 - **zlib 1.4**：https://zlib.net/ 。用于 TagLib 解压压缩 ID3 标签；版权归 Jean-loup Gailly、Mark Adler 及贡献者，采用 zlib 许可证，原文随应用保存在 `licenses/native/zlib-LICENSE`。
 - **utfcpp**：TagLib 发行源码内含的 Unicode 支持库；原许可证收录于 `licenses/native/utfcpp-LICENSE`。
 - **nlohmann/json 3.12.0**：https://github.com/nlohmann/json 。Niels Lohmann 及贡献者，MIT，原文位于 `licenses/native/json-LICENSE.MIT`。
@@ -49,7 +50,7 @@ React / React DOM（MIT）、Motion / Framer Motion 14.12.0（MIT）、Lucide（
 
 ## 修改与分发
 
-- 2026-11-11，0.1.0：创建本地音乐播放器，移植歌词分词逻辑，接入 AMLL，新增音乐库、收藏、歌单和队列。最初采用的 Electron 宿主已在后续版本移除。
+- 2026-11-11，0.1.0：创建音乐播放器，移植歌词分词逻辑，接入 AMLL，新增音乐库、收藏、歌单和队列。最初采用的 Electron 宿主已在后续版本移除。
 - 2026-11-11，0.2.0：按项目所有者要求迁移为 C++ / WebView2。新增原生 D2D / 系统标题栏、TagLib 后端、原生文件选择、后台扫描、原子 JSON 存储和 Range 文件流，保留 0.1.0 索引兼容性。
 
 本项目按 AGPL-3.0-only 提供。分发时保留 LICENSE、原项目声明、适用的第三方许可及对应源代码；不要将原项目及第三方代码声明为独占原创。

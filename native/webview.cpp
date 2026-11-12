@@ -79,10 +79,12 @@ void WebView::create(HWND window, const fs::path &web_root, const fs::path &data
     window_ = window;
     debugging_ = debug_port != 0;
     auto options = Microsoft::WRL::Make<CoreWebView2EnvironmentOptions>();
-    if (debugging_) {
-        auto args = L"--remote-debugging-port=" + std::to_wstring(debug_port) + L" --remote-debugging-address=127.0.0.1";
-        options->put_AdditionalBrowserArguments(args.c_str());
-    }
+    // As in ../dr-reader/app/src/webview.cpp, keep composited scrollers in the
+    // main layer. Otherwise Chromium renders their Chinese text with greyscale
+    // antialiasing instead of ClearType, making the settings dialog look soft.
+    auto args = std::wstring(L"--disable-prefer-compositing-to-lcd-text");
+    if (debugging_) args += L" --remote-debugging-port=" + std::to_wstring(debug_port) + L" --remote-debugging-address=127.0.0.1";
+    options->put_AdditionalBrowserArguments(args.c_str());
     auto hr = CreateCoreWebView2EnvironmentWithOptions(nullptr, (data_root / L"webview-profile").c_str(), options.Get(),
         Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>([this, web_root](HRESULT result, ICoreWebView2Environment *env) -> HRESULT {
             if (FAILED(result) || !env) { fail(result, L"WebView2 初始化"); return S_OK; }

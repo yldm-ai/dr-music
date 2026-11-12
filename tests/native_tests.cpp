@@ -2,10 +2,14 @@
 #include "media.h"
 #include "window.h"
 #include "cover.h"
+#include "fonts.h"
+#include "chinese.h"
 #include <fileref.h>
 #include <tag.h>
 #include <tpropertymap.h>
+#include <algorithm>
 #include <fstream>
+#include <set>
 #include <iostream>
 #include <cstring>
 #include <windowsx.h>
@@ -21,6 +25,45 @@ void wave(const dr::fs::path &file) {
     word(20, 1, 2); word(22, 1, 2); word(24, rate, 4); word(28, rate * 2, 4); word(32, 2, 2); word(34, 16, 2); bytes.replace(36, 4, "data"); word(40, count, 4); write(file, bytes);
 }
 template<class F> bool throws(F f) { try { f(); return false; } catch (const std::exception &) { return true; } }
+// Rescan follows the disk: moved / deleted files leave the library (and its references),
+// while a plain import never prunes and an unreachable root keeps its tracks.
+void rescan_test(const dr::fs::path &root) {
+    auto music = root / L"rescan" / L"music"; dr::fs::create_directories(music / L"old");
+    wave(music / L"old" / L"a.wav"); wave(music / L"old" / L"b.wav"); wave(music / L"keep.wav");
+    dr::Library library(root / L"rescan-data"); library.load(); library.import_paths({music});
+    auto ids = library.snapshot()["tracks"]; CHECK(ids.size() == 3);
+    std::string a_id; for (const auto &t : ids) if (t["path"].get<std::string>().ends_with("a.wav")) a_id = t["id"];
+    library.update({{"favorites", {a_id}}, {"playlists", {{{"id", "p"}, {"name", "P"}, {"trackIds", {a_id}}}}}});
+    dr::fs::create_directories(music / L"new"); dr::fs::rename(music / L"old" / L"a.wav", music / L"new" / L"a.wav"); dr::fs::remove(music / L"old" / L"b.wav");
+    library.import_paths({music / L"new"}); CHECK(library.snapshot()["tracks"].size() == 4); // plain import adds, never prunes
+    auto result = library.import_paths({music}, {}, {}, true);
+    auto state = library.snapshot(); CHECK(result["removed"] == 2); CHECK(state["tracks"].size() == 2);
+    for (const auto &t : state["tracks"]) CHECK(t["path"].get<std::string>().find("\\old\\") == std::string::npos);
+    CHECK(state["favorites"].empty()); CHECK(state["playlists"][0]["trackIds"].empty());
+    dr::fs::remove_all(root / L"rescan" / L"music"); // the whole root is unreachable now
+    auto offline = library.import_paths({music}, {}, {}, true);
+    CHECK(offline["removed"] == 0); CHECK(library.snapshot()["tracks"].size() == 2);
+}
+// OpenCC folding: traditional text of any region becomes simplified; non-Han text is untouched.
+void chinese_test() {
+    dr::ChineseText chinese(DR_TEST_OPENCC_DIR); CHECK(chinese.available());
+    CHECK(chinese.simplify("後來") == "后来"); CHECK(chinese.simplify("劉若英 - 寫給明天") == "刘若英 - 写给明天");
+    CHECK(chinese.simplify("Hello, World") == "Hello, World"); CHECK(chinese.simplify("后来") == "后来");
+    auto forms = chinese.query_forms("軟體"); CHECK(forms.front() == "軟體");
+    CHECK(std::find(forms.begin(), forms.end(), "软件") != forms.end()); // Taiwan vocabulary through tw2sp
+    CHECK(chinese.query_forms("music").size() == 1);
+    CHECK(dr::has_han("abc 中")); CHECK(!dr::has_han("こんにちは abc"));
+    dr::ChineseText missing(dr::fs::temp_directory_path() / L"dr-music-no-opencc"); CHECK(!missing.available()); CHECK(missing.simplify("後來") == "後來");
+}
+// DirectWrite enumeration should list installed families once, with names safe for CSS.
+void fonts_test() {
+    auto fonts = dr::system_font_families(); CHECK(!fonts.empty());
+    std::set<std::string> families;
+    for (const auto &font : fonts) { CHECK(dr::valid_font_family(font.family)); CHECK(!font.display.empty()); CHECK(font.family.front() != '@'); CHECK(families.insert(font.family).second); }
+    CHECK(families.contains("Segoe UI"));
+    for (auto bad : {"", "a\"b", "a;b", "a}b", "a\\b", "url(x)", "a\nb"}) CHECK(!dr::valid_font_family(bad));
+    CHECK(dr::valid_font_family("Noto Sans SC")); CHECK(dr::valid_font_family("微软雅黑"));
+}
 // Range parsing and bounded streams must not leak bytes outside the response.
 void media_test(const dr::fs::path &root) {
     CHECK(dr::byte_range("bytes=10-19", 100)->start == 10); CHECK(dr::byte_range("bytes=90-", 100)->end == 99);
@@ -50,6 +93,16 @@ void library_test(const dr::fs::path &root) {
     dr::Library fresh(root / L"data"); fresh.load(); auto saved = fresh.snapshot(); CHECK(saved["favorites"].size() == 1); CHECK(saved["settings"]["volume"] == 1); CHECK(saved["settings"]["titleBar"] == "system");
     fresh.update({{"settings", {{"titleBar", "webview2"}}}});
     dr::Library web_settings(root / L"data"); web_settings.load(); CHECK(web_settings.snapshot()["settings"]["titleBar"] == "webview2");
+    // Lyric typography is persisted only when it is a safe font name, a CSS weight step and a bounded scale.
+    fresh.update({{"settings", {{"lyricFont", "Microsoft YaHei"}, {"lyricWeight", 700}, {"lyricScale", 1.234}}}});
+    fresh.update({{"settings", {{"lyricFont", "x\"; } body { color: red"}, {"lyricWeight", 650}, {"lyricScale", 9}}}});
+    dr::Library typography(root / L"data"); typography.load(); auto lyric = typography.snapshot()["settings"];
+    CHECK(lyric["lyricFont"] == "Microsoft YaHei"); CHECK(lyric["lyricWeight"] == 700); CHECK(lyric["lyricScale"].get<double>() == 1.6);
+    fresh.update({{"settings", {{"lyricFont", ""}, {"lyricWeight", 0}, {"lyricScale", 0.1}}}});
+    lyric = fresh.snapshot()["settings"]; CHECK(lyric["lyricFont"] == ""); CHECK(lyric["lyricWeight"] == 0); CHECK(lyric["lyricScale"].get<double>() == 0.7);
+    CHECK(fresh.snapshot()["settings"]["chineseSearch"] == false);
+    fresh.update({{"settings", {{"chineseSearch", true}}}}); fresh.update({{"settings", {{"chineseSearch", "no"}}}});
+    dr::Library chinese_setting(root / L"data"); chinese_setting.load(); CHECK(chinese_setting.snapshot()["settings"]["chineseSearch"] == true);
     CHECK(throws([&] { fresh.update({{"playlists", {{{"id", "x"}, {"name", ""}, {"trackIds", {id}}}}}}); }));
     fresh.import_paths({audio}); CHECK(fresh.snapshot()["tracks"].size() == 1);
     auto resource = dr::serve_media(fresh, L"https://media.dr-music.local/audio/" + dr::wide(id), "bytes=44-99", "GET");
@@ -246,7 +299,7 @@ int main() {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     auto root = dr::fs::temp_directory_path() / ("dr-music-native-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(dr::timestamp()));
     dr::fs::create_directories(root); int code = 0;
-    try { media_test(root); library_test(root); deferred_metadata_test(root); bulk_remove_test(root); recovery_test(root); caption_test(); caption_leave_test(); webview_caption_test(); std::cout << "PASS: native metadata/library/persistence/lyrics, bounded media streaming, ranges, D2D caption hit tests, leave-message regression, WebView2 caption hit testing and switching\n"; }
+    try { media_test(root); fonts_test(); chinese_test(); rescan_test(root); library_test(root); deferred_metadata_test(root); bulk_remove_test(root); recovery_test(root); caption_test(); caption_leave_test(); webview_caption_test(); std::cout << "PASS: native metadata/library/persistence/lyrics, system fonts and lyric typography settings, OpenCC simplified/traditional folding, rescan pruning of moved/deleted files, bounded media streaming, ranges, D2D caption hit tests, leave-message regression, WebView2 caption hit testing and switching\n"; }
     catch (const std::exception &e) { std::cerr << e.what() << '\n'; code = 1; }
     dr::fs::remove_all(root); CoUninitialize(); return code;
 }

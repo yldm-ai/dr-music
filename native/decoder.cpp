@@ -93,7 +93,7 @@ struct AudioDecoder::Impl {
 };
 AudioDecoder::AudioDecoder(const fs::path &file) : impl_(std::make_unique<Impl>()) {
     auto &p = *impl_; _wfopen_s(&p.file, file.c_str(), L"rb");
-    if (!p.file) throw std::runtime_error("无法打开本地音频文件");
+    if (!p.file) throw std::runtime_error("无法打开音频文件");
     auto buffer = static_cast<unsigned char *>(av_malloc(32768)); if (!buffer) throw std::bad_alloc();
     p.io = avio_alloc_context(buffer, 32768, 0, p.file, Impl::read_file, nullptr, Impl::seek_file);
     if (!p.io) { av_free(buffer); throw std::bad_alloc(); }

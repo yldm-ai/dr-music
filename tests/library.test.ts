@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { withoutFolder, withMetadata } from '../src/lib/library';
+import { withoutFolder, withMetadata, musicFolders } from '../src/lib/library';
 import type { Library, Track } from '../src/types';
 
 const track = (id: string, path: string): Track => ({ id, path, title: id, artist: '', album: '', duration: 0, format: 'WAV', addedAt: 0, metadataPending: true, metadataRevision: 1 });
@@ -33,4 +33,19 @@ test('metadata updates preserve user edits and cannot resurrect removed or newer
   assert.equal(withMetadata(withoutFolder(before, 'C:\\Music'), [update]).tracks.length, 2);
   before.tracks[0].metadataRevision = 2;
   assert.equal(withMetadata(before, [update]).tracks[0].title, 'a');
+});
+
+test('music folders list directories that directly hold tracks inside added folders, ordered and disambiguated', () => {
+  const base = library();
+  const data: Library = { ...base, folders: ['C:\\Music', 'E:\\Other'], tracks: [
+    track('a10', 'C:\\Music\\Album\\10 Ten.wav'), track('a2', 'C:\\Music\\Album\\2 Two.wav'), track('root', 'C:\\Music\\root.wav'),
+    track('cd', 'C:\\Music\\Live\\Disc 1\\x.wav'), track('cd2', 'C:\\Music\\Studio\\Disc 1\\y.wav'),
+    track('other', 'E:\\Other\\z.wav'), track('loose', 'D:\\single.wav'),
+  ] };
+  const folders = musicFolders(data);
+  assert.deepEqual(folders.map(f => f.path), ['C:\\Music', 'C:\\Music\\Album', 'C:\\Music\\Live\\Disc 1', 'C:\\Music\\Studio\\Disc 1', 'E:\\Other']);
+  assert.deepEqual(folders.map(f => f.name), ['Music', 'Album', 'Live / Disc 1', 'Studio / Disc 1', 'Other']);
+  assert.deepEqual(folders[1].trackIds, ['a2', 'a10']);
+  assert.ok(folders.every(f => !f.trackIds.includes('loose')));
+  assert.equal(folders[4].root, 'E:\\Other');
 });

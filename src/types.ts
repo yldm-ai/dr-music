@@ -7,10 +7,11 @@ export interface Track {
   coverRevision?: number; coverHash?: string; coverSource?: string; coverError?: string;
 }
 export interface Playlist { id: string; name: string; trackIds: string[] }
-export interface Settings { volume: number; repeat: 'off' | 'all' | 'one'; shuffle: boolean; lyricOffset: number; theme: 'dark' | 'light'; titleBar: 'direct2d' | 'system' | 'webview2' }
+export interface Settings { volume: number; repeat: 'off' | 'all' | 'one'; shuffle: boolean; lyricOffset: number; theme: 'dark' | 'light'; titleBar: 'direct2d' | 'system' | 'webview2'; lyricFont?: string; lyricWeight?: number; lyricScale?: number; chineseSearch?: boolean }
+export interface FontFamily { family: string; name: string }
 export interface Library { version: number; tracks: Track[]; folders: string[]; favorites: string[]; playlists: Playlist[]; settings: Settings; notice?: string }
 export interface LyricFile { text: string; format: string; source: string }
-export interface ImportResult { library: Library; imported: number; warnings: string[] }
+export interface ImportResult { library: Library; imported: number; removed?: number; warnings: string[] }
 export interface Progress { done: number; total: number; name: string }
 export interface PlaybackState { id: string; position: number; duration: number; playing: boolean; ended: boolean; volume: number; error: string; request: number; serial: number; backend?: string }
 export interface PlaybackCommand { action: 'play' | 'pause' | 'stop' | 'seek' | 'volume' | 'state'; request: number; id?: string; position?: number; volume?: number }
@@ -31,6 +32,10 @@ declare global {
       reveal(id: string): Promise<void>;
       openData(): Promise<void>;
       notices(): Promise<string>;
+      fonts(): Promise<FontFamily[]>;
+      chineseStatus(): Promise<{ available: boolean }>;
+      simplify(texts: string[]): Promise<string[]>;
+      chineseQuery(query: string): Promise<string[]>;
       captionLayout(data: { caption: CaptionRect; minimize: CaptionRect; maximize: CaptionRect; close: CaptionRect; dpr: number }): Promise<void>;
       windowCommand(command: 'minimize' | 'maximize' | 'close'): Promise<void>;
       appearance(data: { theme: string; dimmed: boolean }): Promise<void>;

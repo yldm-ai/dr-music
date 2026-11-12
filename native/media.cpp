@@ -33,7 +33,7 @@ class FileSlice final : public IStream {
 public:
     FileSlice(fs::path file, uint64_t offset, uint64_t length) : file_(std::move(file)), offset_(offset), length_(length) {
         handle_ = CreateFileW(file_.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (handle_ == INVALID_HANDLE_VALUE) throw std::runtime_error("无法读取本地音频文件");
+        if (handle_ == INVALID_HANDLE_VALUE) throw std::runtime_error("无法读取音频文件");
     }
     ~FileSlice() { if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_); }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **result) override {

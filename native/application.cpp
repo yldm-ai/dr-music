@@ -1,4 +1,5 @@
 #include "application.h"
+#include "fonts.h"
 #include <cmath>
 #include <shobjidl.h>
 #include <shlobj.h>
@@ -6,7 +7,7 @@
 namespace dr {
 using Microsoft::WRL::ComPtr;
 Application::Application(fs::path data, fs::path assets, unsigned debug_port, std::vector<fs::path> imports, const std::string &shell)
-    : library_(std::move(data)), assets_(std::move(assets)), debug_port_(debug_port), imports_(std::move(imports)), shell_(shell) {
+    : library_(std::move(data)), assets_(std::move(assets)), chinese_(assets_.parent_path() / L"opencc"), debug_port_(debug_port), imports_(std::move(imports)), shell_(shell) {
     library_.load();
     worker_ = std::jthread([this](std::stop_token stop) {
         while (true) {
@@ -89,10 +90,10 @@ std::vector<fs::path> Application::choose_files(const std::string &kind) {
     if (kind == "folder") flags |= FOS_PICKFOLDERS;
     dialog->SetOptions(flags);
     const COMDLG_FILTERSPEC audio[]{{L"音频文件", L"*.mp3;*.flac;*.wav;*.m4a;*.aac;*.ogg;*.opus;*.webm;*.mp4"}};
-    const COMDLG_FILTERSPEC lyrics[]{{L"本地歌词", L"*.ttml;*.yrc;*.lrc;*.txt"}};
+    const COMDLG_FILTERSPEC lyrics[]{{L"歌词文件", L"*.ttml;*.yrc;*.lrc;*.txt"}};
     if (kind == "files") dialog->SetFileTypes(1, audio);
     if (kind == "lyrics") dialog->SetFileTypes(1, lyrics);
-    dialog->SetTitle(kind == "folder" ? L"选择音乐文件夹" : kind == "lyrics" ? L"选择本地歌词" : L"选择音乐文件");
+    dialog->SetTitle(kind == "folder" ? L"选择音乐文件夹" : kind == "lyrics" ? L"选择歌词文件" : L"选择音乐文件");
     auto hr = dialog->Show(window_.handle());
     if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED)) return {};
     if (FAILED(hr)) throw std::runtime_error("文件选择器打开失败");
@@ -155,9 +156,9 @@ void Application::receive(const Json &request) {
                 for (const auto &p : state["folders"]) inputs.push_back(from_text(p));
             }
             importing_ = true;
-            enqueue([this, id, inputs](std::stop_token stop) {
+            enqueue([this, id, inputs, rescan = method == "library:rescan"](std::stop_token stop) {
                 try {
-                    auto result = library_.import_paths(inputs, [this](Json p) { if (!closing_) window_.post([this, p] { if (!closing_) webview_.send({{"event", "library:progress"}, {"data", p}}); }); }, stop);
+                    auto result = library_.import_paths(inputs, [this](Json p) { if (!closing_) window_.post([this, p] { if (!closing_) webview_.send({{"event", "library:progress"}, {"data", p}}); }); }, stop, rescan);
                     auto pending = std::move(result["pending"]); result.erase("pending");
                     reply(id, std::move(result));
                     schedule_metadata(std::move(pending));
@@ -199,6 +200,23 @@ void Application::receive(const Json &request) {
                 }
                 else if (method == "lyrics:get") reply(id, library_.lyrics(params.at("id").get<std::string>()));
                 else if (method == "app:notices") reply(id, read_text(assets_.parent_path() / L"THIRD_PARTY_NOTICES.md"));
+                else if (method == "chinese:status") reply(id, {{"available", chinese_.available()}});
+                else if (method == "chinese:simplify") {
+                    // Folds track text for simplified/traditional search; bounded so a page cannot pin the worker.
+                    const auto &texts = params.at("texts");
+                    if (!texts.is_array() || texts.size() > 100000) throw std::runtime_error("无效的简繁转换请求");
+                    Json result = Json::array();
+                    for (const auto &text : texts) {
+                        if (!text.is_string() || text.get_ref<const std::string &>().size() > 4096) throw std::runtime_error("无效的简繁转换请求");
+                        result.push_back(chinese_.simplify(text.get<std::string>()));
+                    }
+                    reply(id, result);
+                } else if (method == "chinese:query") {
+                    const auto query = params.at("query").get<std::string>();
+                    if (query.size() > 512) throw std::runtime_error("搜索内容过长");
+                    reply(id, chinese_.query_forms(query));
+                }
+                else if (method == "app:fonts") { Json fonts = Json::array(); for (const auto &font : system_font_families()) fonts.push_back({{"family", font.family}, {"name", font.display}}); reply(id, fonts); }
                 else throw std::runtime_error("不支持的原生命令");
             } catch (const std::exception &e) { reject(id, e.what()); }
         });

@@ -1,10 +1,12 @@
 #include "library.h"
 #include "cover.h"
+#include "fonts.h"
 #include <fileref.h>
 #include <tag.h>
 #include <tpropertymap.h>
 #include <tvariant.h>
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <map>
 #include <set>
@@ -44,7 +46,7 @@ Json filtered_ids(const Json &values, const std::set<std::string> &valid) {
 }
 Json Library::defaults() {
     return {{"version", 1}, {"tracks", Json::array()}, {"folders", Json::array()}, {"favorites", Json::array()}, {"playlists", Json::array()},
-        {"settings", {{"volume", 0.7}, {"repeat", "off"}, {"shuffle", false}, {"lyricOffset", 0}, {"theme", "dark"}, {"titleBar", "direct2d"}}}};
+        {"settings", {{"volume", 0.7}, {"repeat", "off"}, {"shuffle", false}, {"lyricOffset", 0}, {"theme", "dark"}, {"titleBar", "direct2d"}, {"lyricFont", ""}, {"lyricWeight", 0}, {"lyricScale", 1}, {"chineseSearch", false}}}};
 }
 Library::Library(fs::path directory) : directory_(std::move(directory)), state_(defaults()) {}
 Json Library::load() {
@@ -124,11 +126,12 @@ std::shared_ptr<const CoverResource> Library::cover_resource(const std::string &
     cover_bytes_.put(id, data, data->bytes.size() + 128);
     return data;
 }
-Json Library::import_paths(const std::vector<fs::path> &inputs, std::function<void(Json)> progress, std::stop_token stop) {
+Json Library::import_paths(const std::vector<fs::path> &inputs, std::function<void(Json)> progress, std::stop_token stop, bool prune_missing) {
     cover_cache_.clear_directories();
     auto before = snapshot();
     std::map<std::string, fs::path> files;
     std::set<std::string> visited, roots;
+    std::vector<std::string> walked, unreadable; // stored path keys of read roots / folders that failed to list
     for (const auto &root : before["folders"]) roots.insert(root.get<std::string>());
     Json warnings = Json::array();
     size_t discovered = 0;
@@ -152,14 +155,14 @@ Json Library::import_paths(const std::vector<fs::path> &inputs, std::function<vo
                     progress({{"done", discovered}, {"total", 0}, {"name", path_text(input.filename())}}); last_progress = now;
                 }
             }
-        } catch (const fs::filesystem_error &) { warnings.push_back("无法访问：" + path_text(input)); }
+        } catch (const fs::filesystem_error &) { warnings.push_back("无法访问：" + path_text(input)); unreadable.push_back(stored_path_key(input)); }
     };
     for (const auto &input : inputs) {
         try {
             const auto real = fs::canonical(input);
             const auto attributes = GetFileAttributesW(real.c_str());
             if (attributes == INVALID_FILE_ATTRIBUTES) { warnings.push_back("无法访问：" + path_text(input)); continue; }
-            if (attributes & FILE_ATTRIBUTE_DIRECTORY) roots.insert(path_text(real));
+            if (attributes & FILE_ATTRIBUTE_DIRECTORY) { roots.insert(path_text(real)); walked.push_back(stored_path_key(real)); }
             walk(real, attributes);
         } catch (const fs::filesystem_error &) { warnings.push_back("无法访问：" + path_text(input)); }
     }
@@ -185,15 +188,34 @@ Json Library::import_paths(const std::vector<fs::path> &inputs, std::function<vo
         pending.push_back({{"id", id}, {"revision", metadata_revision_}});
         tracks[id] = std::move(t);
     }
+    // Rescan drops tracks whose files moved or were deleted, but only below folders that were read in
+    // full: an unplugged drive or an unreadable subfolder must not empty the library.
+    auto under = [](const std::string &key, const std::vector<std::string> &prefixes) {
+        return std::any_of(prefixes.begin(), prefixes.end(), [&](const std::string &p) { return key == p || key.starts_with(p.ends_with('\\') ? p : p + '\\'); });
+    };
+    std::unordered_set<std::string> removed;
+    if (prune_missing) {
+        for (auto it = tracks.begin(); it != tracks.end();) {
+            const auto key = stored_path_key(from_text(it->second["path"]));
+            if (!files.contains(key) && under(key, walked) && !under(key, unreadable)) { removed.insert(it->first); it = tracks.erase(it); }
+            else ++it;
+        }
+    }
     {
         std::lock_guard lock(mutex_);
         auto next = state_; next["tracks"] = Json::array();
         for (auto &[id, t] : tracks) next["tracks"].push_back(std::move(t));
         next["folders"] = roots;
+        if (!removed.empty()) {
+            auto prune = [&](Json &values) { values.erase(std::remove_if(values.begin(), values.end(), [&](const Json &v) { return removed.contains(v.get<std::string>()); }), values.end()); };
+            prune(next["favorites"]); for (auto &playlist : next["playlists"]) prune(playlist["trackIds"]);
+            for (const auto &id : removed) { cover_bytes_.erase(id); lyric_cache_.erase(id); }
+        }
         write_atomic(directory_ / L"library.json", next.dump(2, ' ', false, Json::error_handler_t::replace));
         state_ = std::move(next); rebuild_index_locked();
     }
-    return {{"library", snapshot()}, {"imported", files.size()}, {"warnings", warnings}, {"pending", pending}};
+    if (!removed.empty()) { cover_cache_.clear(); std::error_code error; for (const auto &id : removed) fs::remove(directory_ / (id + ".cover"), error); }
+    return {{"library", snapshot()}, {"imported", files.size()}, {"removed", removed.size()}, {"warnings", warnings}, {"pending", pending}};
 }
 Json Library::pending_metadata() const {
     std::lock_guard lock(mutex_); Json pending = Json::array();
@@ -316,6 +338,11 @@ Json Library::update(const Json &patch) {
         if (s.contains("volume") && s["volume"].is_number()) target["volume"] = std::clamp(s["volume"].get<double>(), 0.0, 1.0);
         if (s.contains("lyricOffset") && s["lyricOffset"].is_number()) target["lyricOffset"] = std::clamp(s["lyricOffset"].get<double>(), -30000.0, 30000.0);
         if (s.contains("shuffle") && s["shuffle"].is_boolean()) target["shuffle"] = s["shuffle"];
+        if (s.contains("chineseSearch") && s["chineseSearch"].is_boolean()) target["chineseSearch"] = s["chineseSearch"];
+        // Lyric typography: "" / 0 mean "follow the app default".
+        if (s.contains("lyricFont") && s["lyricFont"].is_string()) { auto font = s["lyricFont"].get<std::string>(); if (font.empty() || valid_font_family(font)) target["lyricFont"] = font; }
+        if (s.contains("lyricWeight") && s["lyricWeight"].is_number_integer()) { auto weight = s["lyricWeight"].get<int>(); if (weight == 0 || (weight >= 100 && weight <= 900 && weight % 100 == 0)) target["lyricWeight"] = weight; }
+        if (s.contains("lyricScale") && s["lyricScale"].is_number() && std::isfinite(s["lyricScale"].get<double>())) target["lyricScale"] = std::clamp(std::round(s["lyricScale"].get<double>() * 100) / 100, 0.7, 1.6);
         for (const auto &[key, choices] : std::map<std::string, std::set<std::string>>{{"repeat", {"off", "all", "one"}}, {"theme", {"dark", "light"}}, {"titleBar", {"direct2d", "system", "webview2"}}})
             if (s.contains(key) && s[key].is_string() && choices.contains(s[key].get<std::string>())) target[key] = s[key];
     }

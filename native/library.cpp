@@ -63,7 +63,7 @@ void enable_new_providers(Json &settings, const Json &saved) {
 }
 Json Library::defaults() {
     return {{"version", 1}, {"tracks", Json::array()}, {"folders", Json::array()}, {"favorites", Json::array()}, {"playlists", Json::array()},
-        {"settings", {{"volume", 0.7}, {"repeat", "off"}, {"shuffle", false}, {"lyricOffset", 0}, {"theme", "dark"}, {"titleBar", "direct2d"}, {"lyricFont", ""}, {"lyricWeight", 0}, {"lyricScale", 1}, {"chineseSearch", false}, {"onlineLyrics", true}, {"lyricProviders", OnlineLyrics::provider_ids()}, {"lyricProvidersSeen", OnlineLyrics::provider_ids()}, {"amllMirror", ""}}}};
+        {"settings", {{"volume", 0.7}, {"repeat", "off"}, {"shuffle", false}, {"lyricOffset", 0}, {"theme", "dark"}, {"titleBar", "direct2d"}, {"lyricFont", ""}, {"lyricWeight", 0}, {"lyricScale", 1}, {"chineseSearch", false}, {"lyricScript", "o"}, {"lyricVariant", "t"}, {"onlineLyrics", true}, {"lyricProviders", OnlineLyrics::provider_ids()}, {"lyricProvidersSeen", OnlineLyrics::provider_ids()}, {"amllMirror", ""}}}};
 }
 Library::Library(fs::path directory) : directory_(std::move(directory)), state_(defaults()) {}
 Json Library::load() {
@@ -354,6 +354,9 @@ Json Library::update(const Json &patch) {
     if (patch.contains("settings") && patch["settings"].is_object()) {
         const auto &s = patch["settings"]; auto &target = next["settings"];
         if (s.contains("volume") && s["volume"].is_number()) target["volume"] = std::clamp(s["volume"].get<double>(), 0.0, 1.0);
+        // 原 / 简 / 繁 for lyrics, and the traditional standard 繁 uses (kept while 原 / 简 is shown).
+        if (s.contains("lyricScript") && s["lyricScript"].is_string()) { const auto v = s["lyricScript"].get<std::string>(); if (v == "o" || v == "s" || v == "t") target["lyricScript"] = v; }
+        if (s.contains("lyricVariant") && s["lyricVariant"].is_string()) { const auto v = s["lyricVariant"].get<std::string>(); if (v == "t" || v == "tw" || v == "twp" || v == "hk") target["lyricVariant"] = v; }
         if (s.contains("lyricOffset") && s["lyricOffset"].is_number()) target["lyricOffset"] = std::clamp(s["lyricOffset"].get<double>(), -30000.0, 30000.0);
         if (s.contains("shuffle") && s["shuffle"].is_boolean()) target["shuffle"] = s["shuffle"];
         if (s.contains("chineseSearch") && s["chineseSearch"].is_boolean()) target["chineseSearch"] = s["chineseSearch"];

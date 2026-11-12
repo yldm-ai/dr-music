@@ -72,6 +72,7 @@ window.music = Object.freeze({
   chineseStatus: () => call('chinese:status'),
   simplify: (texts: string[]) => call('chinese:simplify', { texts }),
   chineseQuery: (query: string) => call('chinese:query', { query }),
+  chineseConvert: (text: string, script: 's' | 't', variant: string) => call('chinese:convert', { text, script, variant }),
   captionLayout: (data: CaptionLayout) => call('window:caption-layout', data),
   windowCommand: (command: 'minimize' | 'maximize' | 'close') => call('window:command', { command }),
   appearance: (data: { theme: string; dimmed: boolean }) => call('window:appearance', data),

@@ -46,11 +46,11 @@ set(ENABLE_BENCHMARK OFF CACHE BOOL "" FORCE)
 set(BUILD_OPENCC_JIEBA_PLUGIN OFF CACHE BOOL "" FORCE)
 set(OPENCC_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(opencc)
-# Only the traditional→simplified chains are needed; configs and dictionaries sit side by side in
+# Traditional→simplified chains fold search text; simplified→traditional ones write lyrics in 繁. Configs and dictionaries sit side by side in
 # bin/<config>/opencc because a config names its dictionaries relative to its own folder.
 set(DR_OPENCC_DIR "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/opencc")
 set(DR_OPENCC_COPY "")
-foreach(config t2s tw2s tw2sp hk2s)
+foreach(config t2s tw2s tw2sp hk2s s2t s2tw s2twp s2hk)
   list(APPEND DR_OPENCC_COPY "${opencc_SOURCE_DIR}/data/config/${config}.json")
 endforeach()
 add_custom_target(dr-music-opencc-data

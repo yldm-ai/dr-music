@@ -215,6 +215,12 @@ void chinese_test() {
     auto forms = chinese.query_forms("軟體"); CHECK(forms.front() == "軟體");
     CHECK(std::find(forms.begin(), forms.end(), "软件") != forms.end()); // Taiwan vocabulary through tw2sp
     CHECK(chinese.query_forms("music").size() == 1);
+    // 原 / 简 / 繁 for lyrics: markup and timestamps pass through, standards differ in vocabulary.
+    CHECK(chinese.convert_script("[00:01.00]测试歌词", "t", "t") == "[00:01.00]測試歌詞");
+    CHECK(chinese.convert_script("<span begin=\"1\">后来</span>", "t", "hk") == "<span begin=\"1\">後來</span>");
+    CHECK(chinese.convert_script("软件", "t", "twp") == "軟體"); CHECK(chinese.convert_script("软件", "t", "tw") == "軟件");
+    CHECK(chinese.convert_script("劉若英 - 寫給明天", "s", "t") == "刘若英 - 写给明天");
+    CHECK(chinese.convert_script("后来", "o", "t") == "后来"); CHECK(chinese.convert_script("Hello", "t", "t") == "Hello");
     CHECK(dr::has_han("abc 中")); CHECK(!dr::has_han("こんにちは abc"));
     dr::ChineseText missing(dr::fs::temp_directory_path() / L"dr-music-no-opencc"); CHECK(!missing.available()); CHECK(missing.simplify("後來") == "後來");
 }

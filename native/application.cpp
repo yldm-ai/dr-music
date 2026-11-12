@@ -288,6 +288,12 @@ void Application::receive(const Json &request) {
                         result.push_back(chinese_.simplify(text.get<std::string>()));
                     }
                     reply(id, result);
+                } else if (method == "chinese:convert") {
+                    // 原 / 简 / 繁 for the lyric being shown: one lyric file (TTML, LRC, …) per call.
+                    const auto text = params.at("text").get<std::string>(), script = params.at("script").get<std::string>(), variant = params.value("variant", "t");
+                    if (text.size() > 8 * 1024 * 1024 || (script != "s" && script != "t") || (variant != "t" && variant != "tw" && variant != "twp" && variant != "hk"))
+                        throw std::runtime_error("无效的简繁转换请求");
+                    reply(id, chinese_.convert_script(text, script, variant));
                 } else if (method == "chinese:query") {
                     const auto query = params.at("query").get<std::string>();
                     if (query.size() > 512) throw std::runtime_error("搜索内容过长");

@@ -56,6 +56,14 @@ std::string ChineseText::simplify(const std::string &text) {
     return has_han(text) ? convert("t2s", text) : text;
 }
 
+// Same configs as ChineseVariants::convert_html in ../dr-dict/engine/src/chinese.cpp.
+std::string ChineseText::convert_script(const std::string &text, const std::string &script, const std::string &variant) {
+    if (!has_han(text)) return text;
+    if (script == "s") return convert("t2s", text);
+    if (script == "t") return convert(variant == "tw" ? "s2tw" : variant == "twp" ? "s2twp" : variant == "hk" ? "s2hk" : "s2t", text);
+    return text;
+}
+
 std::vector<std::string> ChineseText::query_forms(const std::string &query) {
     std::vector<std::string> forms{query};
     if (!has_han(query) || query.size() > 512) return forms;

@@ -9,7 +9,7 @@ export interface Track {
   lyricPreference?: string;
 }
 export interface Playlist { id: string; name: string; trackIds: string[] }
-export interface Settings { volume: number; repeat: 'off' | 'all' | 'one'; shuffle: boolean; lyricOffset: number; theme: 'dark' | 'light'; titleBar: 'direct2d' | 'system' | 'webview2'; lyricFont?: string; lyricWeight?: number; lyricScale?: number; chineseSearch?: boolean; onlineLyrics?: boolean; lyricProviders?: string[]; amllMirror?: string }
+export interface Settings { volume: number; repeat: 'off' | 'all' | 'one'; shuffle: boolean; lyricOffset: number; theme: 'dark' | 'light'; titleBar: 'direct2d' | 'system' | 'webview2'; lyricFont?: string; lyricWeight?: number; lyricScale?: number; chineseSearch?: boolean; lyricScript?: 'o' | 's' | 't'; lyricVariant?: 't' | 'tw' | 'twp' | 'hk'; onlineLyrics?: boolean; lyricProviders?: string[]; amllMirror?: string }
 export interface FontFamily { family: string; name: string }
 export interface Library { version: number; tracks: Track[]; folders: string[]; favorites: string[]; playlists: Playlist[]; settings: Settings; notice?: string }
 export interface LyricFile { text: string; format: string; source: string }
@@ -42,6 +42,7 @@ declare global {
       notices(): Promise<string>;
       fonts(): Promise<FontFamily[]>;
       chineseStatus(): Promise<{ available: boolean }>;
+      chineseConvert(text: string, script: 's' | 't', variant: string): Promise<string>;
       simplify(texts: string[]): Promise<string[]>;
       chineseQuery(query: string): Promise<string[]>;
       captionLayout(data: { caption: CaptionRect; minimize: CaptionRect; maximize: CaptionRect; close: CaptionRect; dpr: number }): Promise<void>;

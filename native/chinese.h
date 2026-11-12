@@ -28,6 +28,12 @@ public:
     std::string simplify(const std::string &text);
     /** Distinct simplified writings of a search query, starting with the query itself. */
     std::vector<std::string> query_forms(const std::string &query);
+    /**
+     * Writes `text` in simplified ("s") or traditional ("t") characters, as dr-dict's 原 / 简 / 繁
+     * switch does; `variant` picks the traditional standard: "t" (OpenCC), "tw", "twp" (Taiwan
+     * vocabulary) or "hk". Any other script returns the text as written.
+     */
+    std::string convert_script(const std::string &text, const std::string &script, const std::string &variant);
 private:
     std::string convert(const std::string &config, const std::string &text);
     fs::path dir_;

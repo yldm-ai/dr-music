@@ -466,3 +466,11 @@ button,input,select{transition:background-color .24s cubic-bezier(.22,1,.36,1),c
 .settings-field input{flex:1;min-width:0;height:34px;padding:0 11px;background:var(--input);border:1px solid var(--line);border-radius:7px;color:var(--text);font-size:13px;transition:border-color .16s ease,background-color .16s ease,box-shadow .16s ease}
 .settings-field input:focus,.settings-field input:focus-visible{outline:none;border-color:color-mix(in srgb,var(--accent) 65%,var(--line));background:color-mix(in srgb,var(--input) 96%,var(--accent));box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 8%,transparent)}
 .settings-field .secondary-button{height:34px;padding:0 14px;font-size:13px}
+
+/* 原 | 简 | 繁 ▾ in the lyric toolbar, after ../dr-dict's script switch; the pressed one is the writing shown. */
+.lyric-toolbar .script-switch{display:inline-flex;align-items:center;gap:2px;margin-right:6px}
+.lyric-toolbar .script-option{width:26px;height:24px;padding:0;border-radius:5px;font-size:12.5px;line-height:24px;color:#ffffff73;transition:background-color .16s ease,color .16s ease}
+.lyric-toolbar .script-option:hover{background:#ffffff14;color:#ffffffd0}
+.lyric-toolbar .script-option[aria-pressed=true]{background:#ffffff1f;color:#fff;font-weight:500}
+.lyric-toolbar .script-more{display:grid;place-items:center;width:16px;height:24px;margin-left:-2px;padding:0;border-radius:4px;color:#ffffff73;transition:background-color .16s ease,color .16s ease}
+.lyric-toolbar .script-more:hover,.lyric-toolbar .script-more[aria-expanded=true]{background:#ffffff14;color:#fff}

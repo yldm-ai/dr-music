@@ -24,6 +24,8 @@ const pressTransition: Transition = { duration: .2, ease: smoothEase };
 const playTransition = { type: 'spring', stiffness: 340, damping: 32, mass: .78 } as const;
 const layoutTransition = { type: 'spring', stiffness: 250, damping: 30, mass: .9 } as const;
 const QUEUE_ROW_HEIGHT = 60;
+// Traditional standards for the lyric 繁 button (same choices as ../dr-dict).
+const TRADITIONAL_NAMES = { t: '繁体（OpenCC 标准）', tw: '台湾正体', twp: '台湾正体及台湾用词', hk: '香港繁体' } as const;
 const QUEUE_OVERSCAN = 4;
 type MotionButtonProps = React.ComponentProps<typeof motion.button>;
 
@@ -412,6 +414,24 @@ export function App() {
   const [chineseAvailable, setChineseAvailable] = useState(false);
   useEffect(() => { window.music?.chineseStatus().then(status => setChineseAvailable(status.available)).catch(() => setChineseAvailable(false)); }, []);
   const chineseSearch = chineseAvailable && !!settings?.chineseSearch;
+  // 原 / 简 / 繁 for the lyric shown (as ../dr-dict's script switch): the whole lyric file is
+  // converted natively by OpenCC; markup and timestamps carry no Han characters, so they stay intact.
+  const lyricScript = chineseAvailable ? settings?.lyricScript || 'o' : 'o';
+  const lyricVariant = settings?.lyricVariant || 't';
+  const lyricHasHan = useMemo(() => !!lyric.file && hasHan(lyric.file.text), [lyric.file]);
+  const [scripted, setScripted] = useState<{ key: string; source: string; text: string }>();
+  const scriptKey = lyric.file ? `${lyricScript}:${lyricVariant}:${lyric.file.text}` : '';
+  useEffect(() => {
+    if (!lyric.file || !lyricHasHan || lyricScript === 'o' || scripted?.key === scriptKey) return;
+    let live = true;
+    const key = scriptKey, source = lyric.file.text;
+    window.music.chineseConvert(lyric.file.text, lyricScript, lyricVariant).then(text => { if (live) setScripted({ key, source, text }); }).catch(() => {});
+    return () => { live = false; };
+  }, [scriptKey, lyricHasHan]);
+  // While 简 ⇄ 繁 converts, the previous conversion of the same lyric stays up (no flash of 原).
+  const scriptedText = lyric.file && lyricScript !== 'o' && scripted?.source === lyric.file.text ? scripted.text : undefined;
+  const shownLyric = useMemo(() => lyric.file && scriptedText !== undefined ? { ...lyric.file, text: scriptedText } : lyric.file, [lyric.file, scriptedText]);
+  const [scriptMenu, setScriptMenu] = useState<{ x: number; y: number }>();
   const folded = useRef(new Map<string, { key: string; text: string }>());
   const [foldedVersion, setFoldedVersion] = useState(0);
   useEffect(() => {
@@ -810,6 +830,10 @@ export function App() {
         { label: '重新搜索在线歌词', icon: RefreshCw, disabled: settings?.onlineLyrics === false || lookingOnline, onSelect: () => loadOnlineLyrics(current.id, true) },
         { label: '关联本地歌词…', icon: Plus, onSelect: () => void attachLyrics() },
       ]}/>}
+      {scriptMenu && <ContextMenu label="繁体标准" point={scriptMenu} onClose={() => setScriptMenu(undefined)} items={[
+        { kind: 'header', label: '繁体标准' },
+        ...(Object.keys(TRADITIONAL_NAMES) as (keyof typeof TRADITIONAL_NAMES)[]).map((variant): MenuItem => ({ label: TRADITIONAL_NAMES[variant], checked: lyricScript === 't' && lyricVariant === variant, onSelect: () => setSettings({ lyricScript: 't', lyricVariant: variant }) })),
+      ]}/>}
       <motion.footer className="player-bar" layout="position">
         <div className="player-track">
           <AnimatePresence mode="wait" initial={false}>
@@ -844,12 +868,13 @@ export function App() {
             <div className="now-right">
               <AnimatePresence mode="wait" initial={false}>
                 <motion.div key={lyric.file ? `lyrics:${current.id}:${lyric.source}:${lyric.file.source}` : `empty:${current.id}:${lyricLoading || lookingOnline}`} className="lyric-content" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={textTransition}>
-                  {lyric.file ? <Lyrics file={lyric.file} audio={audio} offset={settings?.lyricOffset || 0} active={nowPlaying} onSeek={seek} typography={{ font: settings?.lyricFont, weight: settings?.lyricWeight, scale: settings?.lyricScale }}/> : <div className="no-lyrics"><AudioLines size={38}/><h3>{lyricLoading ? '正在读取歌词' : lookingOnline ? '正在查找在线歌词' : '让文字也跟着旋律'}</h3><p>自动读取歌曲旁的同名歌词文件{settings?.onlineLyrics !== false ? '，没有时从 AMLL TTML DB 查找' : ''}<br/>也可以手动关联 LRC、TTML、YRC 或 TXT</p><PressableButton className="secondary-button" onClick={() => void attachLyrics()}><Plus size={16}/>关联歌词</PressableButton></div>}
+                  {shownLyric ? <Lyrics file={shownLyric} audio={audio} offset={settings?.lyricOffset || 0} active={nowPlaying} onSeek={seek} typography={{ font: settings?.lyricFont, weight: settings?.lyricWeight, scale: settings?.lyricScale }}/> : <div className="no-lyrics"><AudioLines size={38}/><h3>{lyricLoading ? '正在读取歌词' : lookingOnline ? '正在查找在线歌词' : '让文字也跟着旋律'}</h3><p>自动读取歌曲旁的同名歌词文件{settings?.onlineLyrics !== false ? '，没有时从 AMLL TTML DB 查找' : ''}<br/>也可以手动关联 LRC、TTML、YRC 或 TXT</p><PressableButton className="secondary-button" onClick={() => void attachLyrics()}><Plus size={16}/>关联歌词</PressableButton></div>}
                 </motion.div>
               </AnimatePresence>
               <div className="lyric-toolbar">
                 {(() => { const online = lyric.source && lyric.source !== 'local' ? lyric.results.find(r => r.provider === lyric.source) : undefined; return <PressableButton className="text-button" data-tooltip={online ? `${online.source} · ${online.title} - ${online.artists}（匹配 ${online.score}%）` : undefined} onClick={() => void attachLyrics()}>{online ? <Globe size={15}/> : <FileMusic size={15}/>}{online ? online.source : lyricFile.source || '选择歌词'}</PressableButton>; })()}
                 <div>
+                  {lyricHasHan && chineseAvailable && <div className="script-switch" role="group" aria-label="歌词写法">{(['o', 's', 't'] as const).map(script => <button key={script} type="button" className="script-option" aria-pressed={lyricScript === script} data-tooltip={script === 'o' ? '歌词原文' : script === 's' ? '转成简体' : `转成${TRADITIONAL_NAMES[lyricVariant]}`} onClick={() => setSettings({ lyricScript: script })}>{script === 'o' ? '原' : script === 's' ? '简' : '繁'}</button>)}<button type="button" className="script-more" aria-label="选择繁体标准" aria-haspopup="menu" aria-expanded={!!scriptMenu} onClick={event => { const box = event.currentTarget.getBoundingClientRect(); setScriptMenu(scriptMenu ? undefined : { x: box.left, y: box.top - 6 }); }}><ChevronDown size={12}/></button></div>}
                   {(lyric.switchable || settings?.onlineLyrics !== false) && <button type="button" className="lyric-source-button" aria-haspopup="menu" aria-expanded={!!lyricMenu} aria-label="歌词来源" onClick={event => { const box = event.currentTarget.getBoundingClientRect(); setLyricMenu(lyricMenu ? undefined : { x: box.left, y: box.top - 6 }); }}>{lookingOnline ? '查找中…' : lyric.results.length ? `${lyric.results.length + (lyricFile.text ? 1 : 0)} 个来源` : '来源'}<ChevronDown size={13}/></button>}
                   <PressableButton data-tooltip="歌词延后 0.5 秒" onClick={() => setSettings({ lyricOffset: Math.max(-30000, (settings?.lyricOffset || 0) - 500) })}>−</PressableButton>
                   <motion.span data-tooltip="正值让歌词提前显示" key={settings?.lyricOffset || 0} initial={{ opacity: .55, y: 1 }} animate={{ opacity: 1, y: 0 }} transition={quickTextTransition}>偏移 {((settings?.lyricOffset || 0) / 1000).toFixed(1)}s</motion.span>

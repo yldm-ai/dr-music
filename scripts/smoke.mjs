@@ -618,6 +618,23 @@ try {
   sources = await openSources();
   await sources.getByRole('menuitem', { name: '本地歌词', exact: true }).click();
   await lyricText('测试歌词第一句');
+  // 原 / 简 / 繁: the lyric is rewritten by OpenCC, the choice and traditional standard persist.
+  const scriptSwitch = page.getByRole('group', { name: '歌词写法', exact: true });
+  await page.locator('.lyric-toolbar').hover();
+  assert.equal(await scriptSwitch.getByRole('button', { name: '原', exact: true }).getAttribute('aria-pressed'), 'true');
+  await scriptSwitch.getByRole('button', { name: '繁', exact: true }).click();
+  await lyricText('測試歌詞第一句');
+  await page.waitForFunction(async () => (await window.music.getLibrary()).settings.lyricScript === 't');
+  await page.waitForTimeout(150); await page.screenshot({ path: path.join(root, 'lyric-script.png') });
+  await page.locator('.lyric-toolbar').hover();
+  await page.getByRole('button', { name: '选择繁体标准', exact: true }).click();
+  await page.getByRole('menu', { name: '繁体标准', exact: true }).getByRole('menuitem', { name: '香港繁体', exact: true }).click();
+  await page.waitForFunction(async () => { const s = (await window.music.getLibrary()).settings; return s.lyricScript === 't' && s.lyricVariant === 'hk'; });
+  await lyricText('測試歌詞第一句');
+  await page.locator('.lyric-toolbar').hover();
+  await scriptSwitch.getByRole('button', { name: '原', exact: true }).click();
+  await lyricText('测试歌词第一句');
+  await page.waitForFunction(async () => (await window.music.getLibrary()).settings.lyricScript === 'o');
   await page.keyboard.press('Escape');
   // Disabling one provider drops it from the sources.
   await page.getByRole('button', { name: /设置与关于/ }).click();

@@ -1,4 +1,5 @@
 #include "library.h"
+#include "cover.h"
 #include <fileref.h>
 #include <tag.h>
 #include <tpropertymap.h>
@@ -9,11 +10,29 @@
 #include <set>
 #include <unordered_set>
 #include <chrono>
+#include <charconv>
 namespace dr {
 namespace {
 const std::set<std::string> audio_extensions{ ".mp3", ".flac", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".webm", ".mp4" };
 const std::set<std::string> lyric_extensions{ ".ttml", ".yrc", ".lrc", ".txt" };
-std::string string_or(const TagLib::String &text, const std::string &fallback) { return text.isEmpty() ? fallback : text.to8Bit(true); }
+std::string string_or(const TagLib::String &text, const std::string &fallback) {
+    const auto trimmed = text.stripWhiteSpace();
+    return trimmed.isEmpty() ? fallback : trimmed.to8Bit(true);
+}
+std::string property_text(const TagLib::PropertyMap &properties, const char *key) {
+    std::string result;
+    for (const auto &value : properties.value(key)) {
+        const auto text = string_or(value, "");
+        if (!text.empty()) { if (!result.empty()) result += " / "; result += text; }
+    }
+    return result;
+}
+unsigned property_number(const TagLib::PropertyMap &properties, const char *key) {
+    const auto text = property_text(properties, key);
+    unsigned value = 0;
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+    return error == std::errc{} && end != text.data() ? value : 0;
+}
 Json filtered_ids(const Json &values, const std::set<std::string> &valid) {
     Json out = Json::array(); std::set<std::string> seen;
     for (const auto &value : values) if (value.is_string()) {
@@ -47,6 +66,15 @@ Json Library::load() {
         state_ = defaults(); state_["notice"] = "音乐库文件损坏，原文件已备份到 " + name + "。请重新导入音乐。";
     }
     rebuild_index_locked();
+    // Revisit existing libraries once after the parser changes, preserving
+    // cached display information while the normal background queue repairs it.
+    for (auto &track : state_["tracks"]) {
+        if (track.value("metadataParserVersion", 0U) != metadata_parser_version &&
+            !track.value("metadataPending", false)) {
+            track["metadataPending"] = true;
+            track["metadataRevision"] = ++metadata_revision_;
+        }
+    }
     return state_;
 }
 void Library::rebuild_index_locked() {
@@ -153,32 +181,35 @@ Json Library::enrich_metadata(const Json &candidate) {
         if (!t.value("metadataPending", false) || t["metadataRevision"] != candidate.at("revision")) return nullptr;
     }
     const auto file = from_text(t["path"]);
-    TagLib::ByteVector cover;
-    std::string cover_mime;
+    TagLib::FileRef ref;
+    t.erase("metadataError");
     try {
         t["size"] = fs::file_size(file);
         // Fast duration estimates avoid a full audio scan. Playback obtains
         // the exact duration from the media element when the track is opened.
-        TagLib::FileRef ref(file.c_str(), true, TagLib::AudioProperties::Fast);
+        ref = TagLib::FileRef(file.c_str(), true, TagLib::AudioProperties::Fast);
         if (ref.isNull()) throw std::runtime_error("无法读取音频标签");
         if (auto tag = ref.tag()) {
             t["title"] = string_or(tag->title(), path_text(file.stem()));
             t["artist"] = string_or(tag->artist(), "未知艺术家"); t["album"] = string_or(tag->album(), "未知专辑");
         }
         if (auto p = ref.audioProperties()) { t["duration"] = p->lengthInMilliseconds() / 1000.0; t["sampleRate"] = p->sampleRate(); t["bitrate"] = p->bitrate() * 1000; }
-        t.erase("embedded"); t.erase("metadataError");
         const auto properties = ref.properties();
-        if (properties.contains("LYRICS")) t["embedded"] = properties["LYRICS"].toString("\n").to8Bit(true);
-        const auto pictures = ref.complexProperties("PICTURE");
-        if (!pictures.isEmpty()) {
-            const auto picture = pictures.front();
-            const auto mime = picture["mimeType"].toString().to8Bit(true);
-            auto data = picture["data"].toByteVector();
-            if ((mime == "image/jpeg" || mime == "image/png" || mime == "image/webp") && data.size() <= 20 * 1024 * 1024) {
-                cover = std::move(data); cover_mime = mime;
-            }
+        const auto album_artist = property_text(properties, "ALBUMARTIST");
+        const auto artists = property_text(properties, "ARTIST");
+        if (!album_artist.empty()) t["albumArtist"] = album_artist; else t.erase("albumArtist");
+        if (!artists.empty()) t["artist"] = artists;
+        else if (t.value("artist", "未知艺术家") == "未知艺术家" && !album_artist.empty()) t["artist"] = album_artist;
+        for (const auto &[field, key] : std::vector<std::pair<const char *, const char *>>{
+                {"trackNumber", "TRACKNUMBER"}, {"discNumber", "DISCNUMBER"}, {"year", "DATE"}}) {
+            const auto value = property_number(properties, key);
+            if (value) t[field] = value; else t.erase(field);
         }
-    } catch (const std::exception &) { t["metadataError"] = "无法读取标签，已保留文件名信息"; }
+        t.erase("embedded");
+        if (properties.contains("LYRICS")) t["embedded"] = properties["LYRICS"].toString("\n").to8Bit(true);
+    } catch (const std::exception &error) { t["metadataError"] = "无法读取标签，已保留已有信息：" + std::string(error.what()); }
+    // A tag failure must not prevent finding a local external cover.
+    const auto cover = find_cover(file, ref.isNull() ? nullptr : &ref);
     std::lock_guard lock(mutex_);
     const auto found = track_index_.find(id);
     if (found == track_index_.end()) return nullptr;
@@ -187,14 +218,20 @@ Json Library::enrich_metadata(const Json &candidate) {
     // A removal or a newer import invalidates old work before it can write a
     // cover or put a track back. Keep lyrics attached during the read as well.
     if (current.contains("lyricPath")) t["lyricPath"] = current["lyricPath"];
-    if (!cover_mime.empty()) {
-        std::ofstream out(directory_ / (id + ".cover"), std::ios::binary);
-        out.write(cover.data(), cover.size());
-        if (out) t["cover"] = cover_mime;
+    if (cover.image) {
+        try {
+            write_atomic(directory_ / (id + ".cover"), cover.image->bytes);
+            t["cover"] = cover.image->mime; t["coverSource"] = cover.image->source;
+            t["coverRevision"] = t["metadataRevision"];
+            t.erase("coverError");
+        } catch (const std::exception &error) { t["coverError"] = "无法缓存封面：" + std::string(error.what()); }
+    } else if (!cover.error.empty()) {
+        t["coverError"] = cover.error;
     } else if (!t.contains("metadataError")) {
         if (t.contains("cover")) { std::error_code error; fs::remove(directory_ / (id + ".cover"), error); }
-        t.erase("cover");
+        for (auto field : {"cover", "coverSource", "coverRevision", "coverError"}) t.erase(field);
     }
+    t["metadataParserVersion"] = metadata_parser_version;
     t["metadataPending"] = false; current = t; metadata_dirty_ = true;
     return t;
 }

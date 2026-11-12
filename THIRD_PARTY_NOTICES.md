@@ -34,7 +34,8 @@ DR Music 是 suxiaofan 的个人本地音乐播放器。当前宿主为独立实
 
 ## C++ / Windows 依赖
 
-- **TagLib 2.1.1**：https://taglib.org/ / https://github.com/taglib/taglib 。本地元数据、封面与内嵌文本歌词读取。版权归 Scott Wheeler、TagLib 作者及贡献者；提供 LGPL-2.1 / MPL-1.1 双重许可，原文随应用保存在 `licenses/native/COPYING.LGPL` 和 `COPYING.MPL`。
+- **TagLib 2.3.2**：https://taglib.org/ / https://github.com/taglib/taglib 。本地元数据、封面与内嵌文本歌词读取。版权归 Scott Wheeler、TagLib 作者及贡献者；提供 LGPL-2.1 / MPL-1.1 双重许可，原文随应用保存在 `licenses/native/COPYING.LGPL` 和 `COPYING.MPL`。
+- **zlib 1.4**：https://zlib.net/ 。用于 TagLib 解压压缩 ID3 标签；版权归 Jean-loup Gailly、Mark Adler 及贡献者，采用 zlib 许可证，原文随应用保存在 `licenses/native/zlib-LICENSE`。
 - **utfcpp**：TagLib 发行源码内含的 Unicode 支持库；原许可证收录于 `licenses/native/utfcpp-LICENSE`。
 - **nlohmann/json 3.12.0**：https://github.com/nlohmann/json 。Niels Lohmann 及贡献者，MIT，原文位于 `licenses/native/json-LICENSE.MIT`。
 - **Microsoft WebView2 SDK 1.0.2903.40**：https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.2903.40 。静态 loader 和 SDK，适用 Microsoft 原始许可，位于 `licenses/native/WebView2-LICENSE.txt`。运行时使用用户系统安装的 Microsoft Edge WebView2 Evergreen Runtime，本应用不重新打包 Chromium。

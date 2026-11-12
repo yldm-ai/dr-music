@@ -19,11 +19,12 @@ suxiaofan 的完全本地音乐播放器。**C++20 / Win32 原生宿主 + WebVie
 
 编译输出：`build/bin/Release/dr-music.exe`。请保留旁边的 `web/`、`licenses/`、`LICENSE` 与声明文件。打包输出：`release/DR-Music-0.2.0-Windows-x64.zip`，解压后运行 `dr-music.exe`。
 
-首次构建需要下载 npm 依赖及固定版本的 C++ 依赖（nlohmann/json 3.12.0、TagLib 2.1.1、WebView2 SDK 1.0.2903.40）。构建好的应用不需要联网；系统 WebView2 Runtime 的安装与维护由 Windows/Edge 管理。
+首次构建需要下载 npm 依赖及固定版本的 C++ 依赖（nlohmann/json 3.12.0、TagLib 2.3.2、zlib 1.4、WebView2 SDK 1.0.2903.40）。构建好的应用不需要联网；系统 WebView2 Runtime 的安装与维护由 Windows/Edge 管理。
 
 ## 功能
 
 - 文件夹递归扫描与本地音频导入：先按文件名加入歌曲并允许播放，C++ / TagLib 在后台分批补齐标签、时长、音质、封面和内嵌歌词。后台读取期间仍可移除目录或修改设置，中断后下次启动会继续补齐。
+- 元数据支持压缩 ID3 标签、多艺术家、专辑艺术家及曲目/碟片序号。封面优先读取有效的内嵌正面图片，再尝试歌曲同目录的同名图片、cover、folder、front、album 图片；由 C++ 识别内容并生成最长边 1024 的 PNG 缓存（系统缺少 WebP 解码器时保留通过容器检查的 WebP）。旧音乐库在升级后后台重新解析一次，无需重新导入。
 - 搜索、排序、专辑与艺术家浏览、收藏、新建 / 重命名 / 删除歌单。
 - 播放 / 暂停、切歌、音量、进度定位、随机与循环、播放队列、下一首播放。
 - AMLL 歌词滚动与逐字高亮，点击歌词跳转、本地歌词关联与全局时间偏移。

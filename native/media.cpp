@@ -101,15 +101,25 @@ MediaResponse serve_media(const Library &library, const std::wstring &uri, const
     try {
         const std::wstring origin = L"https://media.dr-music.local/";
         if (!uri.starts_with(origin) || (method != "GET" && method != "HEAD")) return response;
-        auto route = utf8(uri.substr(origin.size())); auto slash = route.find('/');
+        auto route = utf8(uri.substr(origin.size()));
+        std::string revision;
+        if (const auto query = route.find('?'); query != std::string::npos) {
+            revision = route.substr(query + 1); route.resize(query);
+            if (!revision.starts_with("v=") || revision.size() <= 2 || revision.size() > 22 ||
+                revision.find_first_not_of("0123456789", 2) != std::string::npos) return response;
+            revision.erase(0, 2);
+        }
+        auto slash = route.find('/');
         if (slash == std::string::npos) return response;
         auto kind = route.substr(0, slash), id = route.substr(slash + 1);
         if ((kind != "audio" && kind != "cover") || id.size() != 24 || id.find_first_not_of("0123456789abcdef") != std::string::npos) return response;
         auto t = library.track(id); fs::path file; std::string mime;
         if (kind == "cover") {
             if (!t.contains("cover")) return response;
+            if (!revision.empty() && revision != std::to_string(t.value("coverRevision", 0ULL))) return response;
             file = library.directory() / (id + ".cover"); mime = t["cover"].get<std::string>();
         } else {
+            if (!revision.empty()) return response;
             file = from_text(t["path"]);
             const std::map<std::string, std::string> types{{".mp3", "audio/mpeg"}, {".flac", "audio/flac"}, {".wav", "audio/wav"}, {".m4a", "audio/mp4"}, {".mp4", "audio/mp4"}, {".aac", "audio/aac"}, {".ogg", "audio/ogg"}, {".opus", "audio/ogg"}, {".webm", "audio/webm"}};
             auto ext = lower(path_text(file.extension())); mime = types.contains(ext) ? types.at(ext) : "application/octet-stream";

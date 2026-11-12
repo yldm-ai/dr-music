@@ -10,7 +10,7 @@ import { Lyrics } from './Lyrics';
 import { Select } from './Select';
 import { onCaptionButton, onWindowState } from './bridge';
 
-const media = (track: Track, kind = 'audio') => `https://media.dr-music.local/${kind}/${track.id}`;
+const media = (track: Track, kind = 'audio') => `https://media.dr-music.local/${kind}/${track.id}${kind === 'cover' && track.coverRevision !== undefined ? `?v=${track.coverRevision}` : ''}`;
 const smoothEase: [number, number, number, number] = [.22, 1, .36, 1];
 const textTransition: Transition = { duration: .36, ease: smoothEase };
 const quickTextTransition: Transition = { duration: .24, ease: smoothEase };
@@ -37,12 +37,12 @@ function NavButton({ selected = false, children, className = '', ...props }: Omi
 }
 
 function Cover({ track, className = '', enableLayout = true, loadImage = true }: { track?: Track; className?: string; enableLayout?: boolean; loadImage?: boolean }) {
-  const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [track?.id, track?.cover]);
+  const [failedSource, setFailedSource] = useState<string>();
+  const source = track?.cover ? media(track, 'cover') : undefined;
   return <motion.div layout={enableLayout ? 'position' : false} initial={false} className={`cover ${className}`} style={{ '--cover-hue': String(parseInt(track?.id.slice(0, 3) || '320', 16) % 360) } as React.CSSProperties}>
     <AnimatePresence mode="sync" initial={false}>
-      {track?.cover && !failed && loadImage
-        ? <motion.img key={`${track.id}:cover`} src={media(track, 'cover')} alt={`${track.album} 封面`} loading="lazy" decoding="async" initial={{ opacity: 0, scale: 1.08 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: .96 }} transition={{ duration: .24 }} onError={() => setFailed(true)}/>
+      {track && source && failedSource !== source && loadImage
+        ? <motion.img key={source} src={source} alt={`${track.album} 封面`} loading="lazy" decoding="async" initial={{ opacity: 0, scale: 1.08 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: .96 }} transition={{ duration: .24 }} onError={() => setFailedSource(source)}/>
         : <motion.span key={`${track?.id || 'empty'}:fallback`} className="cover-fallback" initial={{ opacity: 0, rotate: -8 }} animate={{ opacity: 1, rotate: 0 }} exit={{ opacity: 0, rotate: 8 }} transition={{ duration: .22 }}><span className="record"><i/></span><Music2 className="cover-note"/></motion.span>}
     </AnimatePresence>
   </motion.div>;

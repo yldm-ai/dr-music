@@ -3,6 +3,8 @@ export interface Track {
   duration: number; format: string; addedAt: number; cover?: string;
   sampleRate?: number; bitrate?: number; size?: number;
   metadataPending?: boolean; metadataRevision?: number; metadataError?: string;
+  albumArtist?: string; trackNumber?: number; discNumber?: number; year?: number;
+  coverRevision?: number; coverSource?: string; coverError?: string;
 }
 export interface Playlist { id: string; name: string; trackIds: string[] }
 export interface Settings { volume: number; repeat: 'off' | 'all' | 'one'; shuffle: boolean; lyricOffset: number; theme: 'dark' | 'light'; titleBar: 'direct2d' | 'system' | 'webview2' }

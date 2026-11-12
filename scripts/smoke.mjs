@@ -15,6 +15,16 @@ wav.write('RIFF', 0); wav.writeUInt32LE(36 + bytes, 4); wav.write('WAVEfmt ', 8)
 wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22); wav.writeUInt32LE(rate, 24); wav.writeUInt32LE(rate * 2, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write('data', 36); wav.writeUInt32LE(bytes, 40);
 for (let i = 0; i < bytes / 2; i++) wav.writeInt16LE(Math.round(Math.sin(i * 2 * Math.PI * 220 / rate) * 100), 44 + i * 2);
 for (const name of ['午后散步', '夜色温柔', '写给明天']) await writeFile(path.join(root, 'songs', `${name}.wav`), wav);
+function coverBitmap(rgb) {
+  const image = Buffer.alloc(70);
+  image.write('BM'); image.writeUInt32LE(image.length, 2); image.writeUInt32LE(54, 10);
+  image.writeUInt32LE(40, 14); image.writeInt32LE(2, 18); image.writeInt32LE(2, 22);
+  image.writeUInt16LE(1, 26); image.writeUInt16LE(24, 28); image.writeUInt32LE(16, 34);
+  for (const offset of [54, 57, 62, 65]) image.writeUIntLE(rgb, offset, 3);
+  return image;
+}
+// Deliberately mismatched extension: native decoding must inspect the content.
+await writeFile(path.join(root, 'songs', 'folder.jpg'), coverBitmap(0x123456));
 await writeFile(path.join(root, 'songs', '午后散步.lrc'), '[00:00.00]测试歌词第一句\n[00:04.00]测试歌词第二句\n[00:08.00]测试歌词第三句\n[00:12.00]最后一句');
 await writeFile(path.join(root, 'songs', '夜色温柔.ttml'), '<tt xmlns="http://www.w3.org/ns/ttml"><body><div><p begin="00:01.000" end="00:03.000"><span begin="00:01.000" end="00:02.000">你好</span><span begin="00:02.000" end="00:03.000">世界</span></p></div></body></tt>');
 const server = createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening'); const port = server.address().port; await new Promise(resolve => server.close(resolve));
@@ -36,6 +46,9 @@ try {
   await page.waitForURL('https://app.dr-music.local/index.html');
   await page.getByRole('button', { name: '播放 午后散步', exact: true }).waitFor();
   await page.waitForFunction(async () => (await window.music.getLibrary()).tracks.every(track => !track.metadataPending));
+  const initialArtwork = (await page.evaluate(() => window.music.getLibrary())).tracks;
+  assert.equal(initialArtwork.every(track => track.cover === 'image/png' && track.coverSource === 'folder.jpg'), true);
+  await page.waitForFunction(() => Array.from(document.querySelectorAll('.track-row img')).filter(img => img.complete && img.naturalWidth === 2).length >= 3);
   assert.equal(await page.title(), 'DR Music');
   assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()), '#ec4141');
   assert.equal((await page.evaluate(() => window.music.getLibrary())).tracks.length, 3);
@@ -384,6 +397,12 @@ try {
   await page.getByRole('combobox', { name: '原生标题栏', exact: true }).click();
   await page.getByRole('option', { name: 'Direct2D 自绘', exact: true }).click();
   await page.getByRole('tab', { name: '音乐库', exact: true }).click();
+  // A previous image error must not suppress a repaired cover with the same MIME.
+  const failedArtworkSource = await page.locator('.track-row img').first().evaluate(img => {
+    const source = img.src; img.dispatchEvent(new Event('error')); return source;
+  });
+  await page.waitForFunction(source => !Array.from(document.querySelectorAll('.track-row img')).some(img => img.src === source), failedArtworkSource);
+  await writeFile(path.join(root, 'songs', 'folder.jpg'), coverBitmap(0xabcdef));
   await page.evaluate(() => {
     const original = window.music;
     window.__metadataEvents = [];
@@ -399,8 +418,11 @@ try {
   assert.equal(await page.evaluate(() => window.__quickImport.library.tracks.every(track => track.metadataPending)), true);
   await page.waitForFunction(() => new Set(window.__metadataEvents.filter(track => !track.metadataPending).map(track => track.id)).size === 3);
   await page.waitForFunction(async () => (await window.music.getLibrary()).tracks.every(track => !track.metadataPending));
+  const refreshedArtwork = (await page.evaluate(() => window.music.getLibrary())).tracks;
+  assert.equal(refreshedArtwork.every(track => track.coverRevision !== initialArtwork.find(old => old.id === track.id).coverRevision), true);
   assert.equal((await page.evaluate(() => window.music.getLibrary())).folders.length, 1);
   await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+  await page.waitForFunction(tracks => tracks.every(track => Array.from(document.querySelectorAll('.track-row img')).some(img => img.src.endsWith(`${track.id}?v=${track.coverRevision}`) && img.complete && img.naturalWidth === 2)), refreshedArtwork);
   const security = await page.evaluate(async () => {
     let blocked = false; try { await fetch('https://example.com'); } catch { blocked = true; }
     const id = 987654;

@@ -20,15 +20,25 @@ FetchContent_MakeAvailable(json)
 set(BUILD_BINDINGS OFF CACHE BOOL "" FORCE)
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-set(WITH_ZLIB OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(taglib URL https://taglib.org/releases/taglib-2.1.1.tar.gz DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+set(ZLIB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(ZLIB_BUILD_STATIC ON CACHE BOOL "" FORCE)
+set(ZLIB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(zlib URL https://zlib.net/fossils/zlib-1.4.tar.gz
+  URL_HASH SHA256=02dd159783677a749c04adbdd02b55b8a2bcc7e054f51b76b549199a916ad584
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE OVERRIDE_FIND_PACKAGE)
+FetchContent_MakeAvailable(zlib)
+add_library(ZLIB::ZLIB ALIAS zlibstatic)
+set(WITH_ZLIB ON CACHE BOOL "" FORCE)
+FetchContent_Declare(taglib URL https://taglib.org/releases/taglib-2.3.2.tar.gz
+  URL_HASH SHA256=3ca2d8afaa7f1cf7f6ed10e511ebc368bfacd6dcaa3dbfa690b89e502e8963dc
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(taglib)
 # Same pinned SDK and static loader pattern as ../dr-dict/app/CMakeLists.txt.
 FetchContent_Declare(webview2 URL https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/1.0.2903.40 DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(webview2)
-add_library(dr_music_core STATIC native/common.cpp native/library.cpp native/media.cpp)
+add_library(dr_music_core STATIC native/common.cpp native/library.cpp native/media.cpp native/cover.cpp)
 target_include_directories(dr_music_core PUBLIC native "${taglib_SOURCE_DIR}/taglib" "${taglib_SOURCE_DIR}/taglib/toolkit" "${taglib_BINARY_DIR}" "${taglib_BINARY_DIR}/taglib")
-target_link_libraries(dr_music_core PUBLIC nlohmann_json::nlohmann_json tag bcrypt ole32 shlwapi)
+target_link_libraries(dr_music_core PUBLIC nlohmann_json::nlohmann_json tag bcrypt ole32 shlwapi windowscodecs)
 add_library(dr_music_shell STATIC native/window.cpp)
 target_include_directories(dr_music_shell PUBLIC native)
 target_link_libraries(dr_music_shell PUBLIC d2d1 dwrite dwmapi user32 gdi32)
@@ -54,6 +64,7 @@ add_custom_target(dr-music-assets
   COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:dr-music>/licenses/native"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${json_SOURCE_DIR}/LICENSE.MIT" "$<TARGET_FILE_DIR:dr-music>/licenses/native/json-LICENSE.MIT"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${taglib_SOURCE_DIR}/COPYING.LGPL" "${taglib_SOURCE_DIR}/COPYING.MPL" "$<TARGET_FILE_DIR:dr-music>/licenses/native"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${zlib_SOURCE_DIR}/LICENSE" "$<TARGET_FILE_DIR:dr-music>/licenses/native/zlib-LICENSE"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${taglib_SOURCE_DIR}/3rdparty/utfcpp/LICENSE" "$<TARGET_FILE_DIR:dr-music>/licenses/native/utfcpp-LICENSE"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${webview2_SOURCE_DIR}/LICENSE.txt" "$<TARGET_FILE_DIR:dr-music>/licenses/native/WebView2-LICENSE.txt"
   DEPENDS "${CMAKE_BINARY_DIR}/frontend.stamp" VERBATIM)
@@ -62,6 +73,9 @@ if(BUILD_TESTING)
   add_executable(dr-music-tests tests/native_tests.cpp)
   target_link_libraries(dr-music-tests PRIVATE dr_music_core dr_music_shell)
   add_test(NAME native-library-media-and-caption COMMAND dr-music-tests)
+  add_executable(dr-music-metadata-tests tests/metadata_tests.cpp)
+  target_link_libraries(dr-music-metadata-tests PRIVATE dr_music_core)
+  add_test(NAME native-metadata-and-covers COMMAND dr-music-metadata-tests)
   add_test(NAME frontend-lyrics-and-queue COMMAND "${DR_NPM}" test)
   set_tests_properties(frontend-lyrics-and-queue PROPERTIES WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 endif()

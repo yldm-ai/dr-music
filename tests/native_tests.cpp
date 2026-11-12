@@ -1,6 +1,7 @@
 #include "library.h"
 #include "media.h"
 #include "window.h"
+#include "cover.h"
 #include <fileref.h>
 #include <tag.h>
 #include <tpropertymap.h>
@@ -118,11 +119,11 @@ void bulk_remove_test(const dr::fs::path &root) {
     dr::Json ids = dr::Json::array();
     for (int i = 0; i < 10000; ++i) {
         const auto id = std::to_string(i); ids.push_back(id);
-        state["tracks"].push_back({{"id", id}, {"path", dr::path_text(songs / L"nested" / (id + ".wav"))}});
+        state["tracks"].push_back({{"id", id}, {"path", dr::path_text(songs / L"nested" / (id + ".wav"))}, {"metadataParserVersion", dr::metadata_parser_version}});
     }
     for (const auto &[id, file] : std::vector<std::pair<std::string, dr::fs::path>>{
             {"sibling", root / L"offline-songs-other" / L"keep.wav"}, {"single", root / L"single.wav"}}) {
-        state["tracks"].push_back({{"id", id}, {"path", dr::path_text(file)}}); ids.push_back(id);
+        state["tracks"].push_back({{"id", id}, {"path", dr::path_text(file)}, {"metadataParserVersion", dr::metadata_parser_version}}); ids.push_back(id);
     }
     state["favorites"] = ids;
     for (int i = 0; i < 6; ++i) state["playlists"].push_back({{"id", std::to_string(i)}, {"name", "Bulk"}, {"trackIds", ids}});

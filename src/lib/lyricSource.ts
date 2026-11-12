@@ -3,6 +3,7 @@ import type { LyricFile, OnlineLyricResult } from '../types';
 /** Online lyric providers, in the order settings list them (ids match native/online_lyrics.cpp). */
 export const LYRIC_PROVIDERS = [
   { id: 'amll', name: 'AMLL TTML DB', hint: '逐词 TTML 歌词库（CC0）' },
+  { id: 'lrcred', name: 'lrc.red', hint: '社区逐词 TTML 歌词库（原 BiniLyrics，Better Lyrics 同款）' },
   { id: 'qq', name: 'QQ 音乐', hint: '逐字 QRC 歌词' },
   { id: 'netease', name: '网易云音乐', hint: '逐字 YRC 或逐行歌词' },
   { id: 'kugou', name: '酷狗音乐', hint: '逐字 KRC 歌词' },

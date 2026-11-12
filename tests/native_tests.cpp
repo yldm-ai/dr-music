@@ -132,6 +132,9 @@ void online_lyrics_test(const dr::fs::path &root) {
         for (size_t i = 0; i < packed.size(); ++i) packed[i] = static_cast<char>(static_cast<unsigned char>(packed[i]) ^ key[i % 16]);
         put("lyrics.kugou.com/download", dr::Json{{"content", dr::base64_encode("krc1" + packed)}}.dump());
     }
+    // lrc.red: the best hit has no lyric (404), so the next recording's TTML is used; bad ISRCs are skipped.
+    put("lrc.red/search.json", R"J({"hits":[{"isrc":"../../x","title":"晴天","artist":"周杰伦","album":"葉惠美","duration":269.7},{"isrc":"TWK970300503","title":"晴天","artist":"周杰伦","album":"葉惠美","duration":269.7},{"isrc":"TWK970300504","title":"晴天","artist":"周杰伦","album":"叶惠美","duration":269.7},{"isrc":"TWK970400804","title":"晴天 (Live)","artist":"周杰伦","duration":299.4}],"next":null})J");
+    put("lrc.red/s/TWK970300504.ttml", "<tt xmlns=\"http://www.w3.org/ns/ttml\"><body><div><p begin=\"0\" end=\"1\"><span begin=\"0\" end=\"1\">lrc.red</span></p></div></body></tt>");
     // Apple Music: web-player token in a script referenced by the browse page, then the catalog API.
     auto b64url = [](const std::string &json) { auto t = dr::base64_encode(json); std::replace(t.begin(), t.end(), '+', '-'); std::replace(t.begin(), t.end(), '/', '_'); while (!t.empty() && t.back() == '=') t.pop_back(); return t; };
     const auto jwt = b64url("{\"alg\":\"ES256\",\"kid\":\"WebPlayKid\"}") + "." + b64url("{\"iss\":\"AMPWebPlay\",\"exp\":4102444800}") + ".sig";
@@ -144,22 +147,23 @@ void online_lyrics_test(const dr::fs::path &root) {
     put("amp-api.music.apple.com/v1/catalog/cn/songs/1234", R"J({"data":[{"relationships":{"syllable-lyrics":{"data":[{"attributes":{"ttml":"<tt><body><p begin=\"0\" end=\"1\"><span begin=\"0\" end=\"1\">Apple</span></p></body></tt>"}}]}}}]})J");
 
     dr::OnlineLyrics all(root / L"lyrics-all", dr::fixture_fetch(fixture), fold);
-    all.set_options({{"amll", "qq", "netease", "kugou", "lrclib", "apple"}, "", "user-token"});
+    all.set_options({{"amll", "lrcred", "qq", "netease", "kugou", "lrclib", "apple"}, "", "user-token"});
     auto results = all.search(track);
     std::map<std::string, dr::LyricResult> by;
     for (const auto &r : results) by[r.provider] = r;
-    CHECK(results.size() == 6);
+    CHECK(results.size() == 7);
     CHECK(by["amll"].format == "ttml" && by["amll"].text.find("AMLL") != std::string::npos);
     CHECK(by["lrclib"].format == "lrc" && by["lrclib"].text == "[00:01.00]LRCLIB");
     CHECK(by["netease"].format == "yrc" && by["netease"].text.find("NetEase") != std::string::npos && by["netease"].title == "晴天");
     CHECK(by["qq"].format == "qrc" && by["qq"].text == "[1000,1000]QQ(1000,1000)\n");
     CHECK(by["kugou"].format == "krc" && by["kugou"].text == "[1000,1000]<0,1000,0>Kugou");
     CHECK(by["apple"].format == "ttml" && by["apple"].text.find("Apple") != std::string::npos);
+    CHECK(by["lrcred"].format == "ttml" && by["lrcred"].text.find("lrc.red") != std::string::npos && by["lrcred"].reference == "https://lrc.red/s/TWK970300504.ttml");
     for (size_t i = 1; i < results.size(); ++i) CHECK(results[i - 1].score >= results[i].score);
     CHECK(results.front().provider == "amll" || results.front().score > by["amll"].score); // word-level AMLL wins ties
     // Cached: the next lookup works without any provider answering.
     dr::fs::remove_all(fixture);
-    CHECK(all.search(track).size() == 6);
+    CHECK(all.search(track).size() == 7);
     // Provider set changes invalidate the cache; disabled providers are not asked.
     all.set_options({{"lrclib"}, "", ""});
     CHECK(all.search(track).empty());
@@ -178,7 +182,7 @@ void online_lyrics_test(const dr::fs::path &root) {
         CHECK(cached["partial"] == true);
     }
     // Host allowlist: provider APIs, plus a configured AMLL mirror only.
-    CHECK(all.allowed_host("u.y.qq.com") && all.allowed_host("lrclib.net") && !all.allowed_host("evil.example"));
+    CHECK(all.allowed_host("u.y.qq.com") && all.allowed_host("lrclib.net") && all.allowed_host("lrc.red") && !all.allowed_host("evil.example"));
     all.set_options({{"amll"}, "https://mirror.example/amll-ttml-db", ""});
     CHECK(all.allowed_host("mirror.example"));
     CHECK(!dr::OnlineLyrics::valid_base("http://mirror.example/x") && !dr::OnlineLyrics::valid_base("https://a.b/x?y=1"));
@@ -199,6 +203,7 @@ void online_lyrics_test(const dr::fs::path &root) {
         report("netease", [&] { return dr::search_netease(http, live.matcher(), song); });
         report("kugou", [&] { return dr::search_kugou(http, live.matcher(), song); });
         report("lrclib", [&] { return dr::search_lrclib(http, live.matcher(), song); });
+        report("lrcred", [&] { return dr::search_lrcred(http, live.matcher(), song); });
         report("amll", [&]() -> std::optional<dr::LyricResult> { auto m = live.find({{"title", "Idol"}, {"artist", "YOASOBI"}}); if (!m) return std::nullopt; return dr::LyricResult{"amll", m->title, m->artists, m->album, "ttml", live.fetch(m->file), "", 0, m->score}; });
     }
 }
@@ -363,6 +368,15 @@ void recovery_test(const dr::fs::path &root) {
     for (const auto &p : dr::fs::directory_iterator(data)) if (p.path().filename().wstring().starts_with(L"library.corrupt-")) { CHECK(dr::read_text(p.path()) == "{broken"); backup = true; }
     CHECK(backup); library.update({{"settings", {{"volume", .4}}}}); CHECK(dr::Json::parse(dr::read_text(data / L"library.json"))["version"] == 1);
 }
+// Lyric providers added in a later version start enabled; ones the user switched off stay off.
+void provider_upgrade_test(const dr::fs::path &root) {
+    auto data = root / L"provider-upgrade"; dr::fs::create_directory(data);
+    auto saved = dr::Library::defaults(); saved["settings"]["lyricProviders"] = {"lrclib", "qq"}; saved["settings"].erase("lyricProvidersSeen");
+    write(data / L"library.json", saved.dump());
+    dr::Library legacy(data); CHECK(legacy.load()["settings"]["lyricProviders"] == dr::Json({"lrcred", "qq", "lrclib"}));
+    legacy.update({{"settings", {{"lyricProviders", {"lrclib"}}}}});
+    dr::Library later(data); CHECK(later.load()["settings"]["lyricProviders"] == dr::Json({"lrclib"}));
+}
 // Native hit testing, maximization and caption mode switching stay outside WebView2.
 void check_cloaked(HWND hwnd) {
     DWORD cloaked = 0;
@@ -457,7 +471,7 @@ int main() {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     auto root = dr::fs::temp_directory_path() / ("dr-music-native-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(dr::timestamp()));
     dr::fs::create_directories(root); int code = 0;
-    try { media_test(root); fonts_test(); chinese_test(); rescan_test(root); lyric_crypto_test(); online_lyrics_test(root); library_test(root); deferred_metadata_test(root); bulk_remove_test(root); recovery_test(root); caption_test(); caption_leave_test(); webview_caption_test(); std::cout << "PASS: native metadata/library/persistence/lyrics, system fonts and lyric typography settings, OpenCC simplified/traditional folding, rescan pruning of moved/deleted files, online TTML matching, bounded media streaming, ranges, D2D caption hit tests, leave-message regression, WebView2 caption hit testing and switching\n"; }
+    try { media_test(root); fonts_test(); chinese_test(); rescan_test(root); lyric_crypto_test(); online_lyrics_test(root); library_test(root); deferred_metadata_test(root); bulk_remove_test(root); recovery_test(root); provider_upgrade_test(root); caption_test(); caption_leave_test(); webview_caption_test(); std::cout << "PASS: native metadata/library/persistence/lyrics, system fonts and lyric typography settings, OpenCC simplified/traditional folding, rescan pruning of moved/deleted files, online TTML matching, bounded media streaming, ranges, D2D caption hit tests, leave-message regression, WebView2 caption hit testing and switching\n"; }
     catch (const std::exception &e) { std::cerr << e.what() << '\n'; code = 1; }
     dr::fs::remove_all(root); CoUninitialize(); return code;
 }

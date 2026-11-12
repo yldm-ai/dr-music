@@ -29,7 +29,7 @@ suxiaofan 的个人音乐播放器。**C++20 / Win32 原生宿主 + WebView2 + D
 - 侧边栏「文件夹」按目录整理已添加文件夹中的歌曲；歌曲列表支持多选与批量操作。
 - 播放 / 暂停、切歌、音量、进度定位、随机与循环、播放队列、下一首播放。
 - AMLL 歌词滚动与逐字高亮，点击歌词跳转、歌词文件关联与全局时间偏移。
-- 可选「在线歌词」（移植自 BetterLyrics / Lyricify）：歌曲没有歌词时同时查询 AMLL TTML DB、QQ 音乐、网易云音乐、酷狗音乐、LRCLIB 与 Apple Music（需自己的 media-user-token），按标题 / 歌手 / 专辑 / 时长匹配度选用最佳结果并缓存；播放页右下角可在所有来源间切换，选择按歌曲保存。
+- 可选「在线歌词」（移植自 BetterLyrics / Lyricify）：歌曲没有歌词时同时查询 AMLL TTML DB、lrc.red（原 BiniLyrics，Better Lyrics 扩展所用的社区 TTML 歌词库）、QQ 音乐、网易云音乐、酷狗音乐、LRCLIB 与 Apple Music（需自己的 media-user-token），按标题 / 歌手 / 专辑 / 时长匹配度选用最佳结果并缓存；播放页右下角可在所有来源间切换，选择按歌曲保存。
 - 深浅色主题。默认 Direct2D 原生自绘标题栏，可在「设置与关于 → 外观 → 原生标题栏」切换 WebView2 沉浸式标题栏或 Windows 系统标题栏，选择会保存。
 - 网页界面与 D2D 标题栏统一首选 Noto Sans SC，依次回退至 Noto Sans CJK SC、微软雅黑、微软雅黑 UI 和 Segoe UI；使用本机已安装的字体。
 - 原生标题栏支持拖动、双击最大化、最小化 / 最大化 / 还原 / 关闭、边缘缩放、DPI 变化。Direct2D 模式的最大化按钮保留 `HTMAXBUTTON` 命中语义，供系统 Snap Layouts 使用。
@@ -37,7 +37,7 @@ suxiaofan 的个人音乐播放器。**C++20 / Win32 原生宿主 + WebView2 + D
 - 页面、列表、歌曲切换、播放状态、菜单、队列与弹窗使用 Motion 弹簧和进出场动画，并遵循系统的减少动态效果设置；强调色采用网易云音乐风格红色。
 - 磁盘文件选择、文件定位、数据目录、索引保存均由 C++ 调用 Windows API。移除文件夹后界面立即清理该目录及子目录的歌曲、收藏/歌单引用、队列和受影响的播放/歌词；保存失败时恢复音乐库。只删除索引与缓存封面，不删除音频。损坏索引会先备份。
 
-应用不包含账号、Spotify API/DRM、在线曲库、遥测或自动更新。唯一的联网功能是可在设置中关闭（也可逐个关闭歌词源）的「在线歌词」：由 C++ 宿主只访问各歌词源的接口地址（raw.githubusercontent.com 或自定义的 AMLL TTML DB 镜像、QQ 音乐、网易云音乐、酷狗音乐、lrclib.net、Apple Music），不跟随重定向，结果缓存在数据目录；页面本身仍不能联网。Apple Music 令牌用 Windows 数据保护（DPAPI）加密保存在本机。前端 CSP 和宿主资源过滤只允许打包页面与本地媒体虚拟主机；主机名是 WebView2 本地映射，不是远程服务。
+应用不包含账号、Spotify API/DRM、在线曲库、遥测或自动更新。唯一的联网功能是可在设置中关闭（也可逐个关闭歌词源）的「在线歌词」：由 C++ 宿主只访问各歌词源的接口地址（raw.githubusercontent.com 或自定义的 AMLL TTML DB 镜像、lrc.red、QQ 音乐、网易云音乐、酷狗音乐、lrclib.net、Apple Music），不跟随重定向，结果缓存在数据目录；页面本身仍不能联网。Apple Music 令牌用 Windows 数据保护（DPAPI）加密保存在本机。前端 CSP 和宿主资源过滤只允许打包页面与本地媒体虚拟主机；主机名是 WebView2 本地映射，不是远程服务。
 
 ## 音频与歌词
 

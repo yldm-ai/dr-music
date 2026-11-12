@@ -41,6 +41,7 @@ DR Music 是 suxiaofan 的个人音乐播放器。当前宿主为独立实现的
 - **AMLL TTML DB**：https://github.com/amll-dev/amll-ttml-db 。「在线歌词」从该库在线获取逐词 TTML 歌词（运行时下载，不随应用分发），歌词数据采用 CC0 1.0 Universal。
 - **BetterLyrics**（GPL-3.0）：https://github.com/jayfunc/BetterLyrics 。在线歌词的整体设计参考其 `LyricsSearchService` / `MetadataComparer` / `Providers/AppleMusic`：各歌词源并行查询，读取全部标题、艺术家、专辑别名，按标题 30%、艺术家 30%、专辑 10%、时长 30% 的 Jaro-Winkler 加权评分选用最佳结果，无标签歌曲按文件名词序指纹匹配，Apple Music 使用网页播放器令牌与用户自己的 media-user-token。本项目为独立的 C++ 实现。
 - **Lyricify Lyrics Helper**（Apache-2.0）：https://github.com/WXRIW/Lyricify-Lyrics-Helper （BetterLyrics 使用的 jayfunc 分支）。QQ 音乐、网易云音乐、酷狗音乐、LRCLIB 的请求方式与解码逻辑移植自其 `Providers/Web/*` 与 `Decrypter/*`，其中 QQ 音乐 QRC 所用的非标准 Triple-DES（`DESHelper`）、KRC 的 XOR 密钥、网易云 EAPI 的加密流程逐行移植到 `native/lyric_crypto.cpp` / `native/lyric_providers.cpp`。许可原文随应用保存在 `licenses/Lyricify-Lyrics-Helper-LICENSE.txt`。
+- **Better Lyrics**（GPL-3.0）：https://github.com/better-lyrics/better-lyrics 。其 BiniLyrics 歌词源来自社区 TTML 歌词库 lrc.red（https://lrc.red ，原 BiniLyrics）；本项目直接调用 lrc.red 的公开接口（`/search.json` 与 `/s/<ISRC>.ttml`），未复制 Better Lyrics 代码。
 - **zlib 1.4**：https://zlib.net/ 。用于 TagLib 解压压缩 ID3 标签；版权归 Jean-loup Gailly、Mark Adler 及贡献者，采用 zlib 许可证，原文随应用保存在 `licenses/native/zlib-LICENSE`。
 - **utfcpp**：TagLib 发行源码内含的 Unicode 支持库；原许可证收录于 `licenses/native/utfcpp-LICENSE`。
 - **nlohmann/json 3.12.0**：https://github.com/nlohmann/json 。Niels Lohmann 及贡献者，MIT，原文位于 `licenses/native/json-LICENSE.MIT`。

@@ -37,6 +37,10 @@ await writeFile(path.join(amll, 'raw-lyrics', '1700000000000-1-aaaa.ttml'), ttml
 await writeFile(path.join(amll, 'raw-lyrics', '1700000000000-1-bbbb.ttml'), ttml('午后在线歌词'));
 await mkdir(path.join(lyricsRoot, 'lrclib.net', 'api'), { recursive: true });
 await writeFile(path.join(lyricsRoot, 'lrclib.net', 'api', 'search'), JSON.stringify([{ id: 9, trackName: '午后散步', artistName: '在线歌手', albumName: '', duration: 16, instrumental: false, syncedLyrics: '[00:00.50]LRCLIB 午后\n[00:06.00]LRCLIB 第二句', plainLyrics: '' }]));
+// lrc.red answers in its own TTML dialect: lrc: attributes and transliterations inside <head>.
+await mkdir(path.join(lyricsRoot, 'lrc.red', 's'), { recursive: true });
+await writeFile(path.join(lyricsRoot, 'lrc.red', 'search.json'), JSON.stringify({ hits: [{ isrc: 'CNA000000001', title: '午后散步', artist: '在线歌手', album: '', duration: 16 }], next: null }));
+await writeFile(path.join(lyricsRoot, 'lrc.red', 's', 'CNA000000001.ttml'), '<tt xmlns="http://www.w3.org/ns/ttml" xmlns:lrc="http://lrc.red/lyric-ttml-internal" xmlns:ttm="http://www.w3.org/ns/ttml#metadata" lrc:timing="Word" xml:lang="zh-Hans"><head><metadata><ttm:agent type="person" xml:id="v1"/><sourceMetadata xmlns="http://lrc.red/lyric-ttml-internal"><transliterations><transliteration xml:lang="zh-Latn-pinyin"><text for="L1"><span xmlns="http://www.w3.org/ns/ttml" begin="0.5" end="6">wu hou</span></text></transliteration></transliterations></sourceMetadata></metadata></head><body dur="0:16.000"><div begin="0.5" end="12" lrc:songPart="Verse"><p begin="0.5" end="6" lrc:key="L1" ttm:agent="v1"><span begin="0.5" end="3">lrc.red </span><span begin="3" end="6">午后</span></p><p begin="6" end="12" lrc:key="L2" ttm:agent="v1"><span begin="6" end="12">lrc.red 第二句</span></p></div></body></tt>');
 await writeFile(path.join(root, 'songs', '午后散步.lrc'), '[00:00.00]测试歌词第一句\n[00:04.00]测试歌词第二句\n[00:08.00]测试歌词第三句\n[00:12.00]最后一句');
 await writeFile(path.join(root, 'songs', '夜色温柔.ttml'), '<tt xmlns="http://www.w3.org/ns/ttml"><body><div><p begin="00:01.000" end="00:03.000"><span begin="00:01.000" end="00:02.000">你好</span><span begin="00:02.000" end="00:03.000">世界</span></p></div></body></tt>');
 const server = createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening'); const port = server.address().port; await new Promise(resolve => server.close(resolve));
@@ -593,16 +597,20 @@ try {
   await page.getByRole('button', { name: '打开歌词播放页', exact: true }).click();
   await lyricText('测试歌词第一句');
   const openSources = async () => { await page.locator('.lyric-toolbar').hover(); await page.getByRole('button', { name: '歌词来源', exact: true }).click(); return page.getByRole('menu', { name: '歌词来源', exact: true }); };
-  await page.waitForFunction(() => document.querySelector('.lyric-source-button')?.textContent.includes('3 个来源'));
+  await page.waitForFunction(() => document.querySelector('.lyric-source-button')?.textContent.includes('4 个来源'));
   let sources = await openSources();
   const sourceItems = await sources.getByRole('menuitem').evaluateAll(items => items.map(item => item.getAttribute('aria-label')));
   assert.equal(sourceItems[0], '本地歌词');
-  assert.deepEqual(sourceItems.slice(1, 3).sort(), ['AMLL TTML DB', 'LRCLIB']); // ordered by match score
-  assert.deepEqual(sourceItems.slice(3), ['重新搜索在线歌词', '关联本地歌词…']);
+  assert.deepEqual(sourceItems.slice(1, 4).sort(), ['AMLL TTML DB', 'LRCLIB', 'lrc.red']); // ordered by match score
+  assert.deepEqual(sourceItems.slice(4), ['重新搜索在线歌词', '关联本地歌词…']);
   await page.waitForTimeout(150); await page.screenshot({ path: path.join(root, 'lyric-sources.png') });
   await sources.getByRole('menuitem', { name: 'LRCLIB', exact: true }).click();
   await lyricText('LRCLIB 午后');
   await page.waitForFunction(async () => (await window.music.getLibrary()).tracks.find(t => t.title === '午后散步').lyricPreference === 'lrclib');
+  sources = await openSources();
+  await sources.getByRole('menuitem', { name: 'lrc.red', exact: true }).click();
+  await lyricText('lrc.red 第二句');
+  await page.waitForFunction(async () => (await window.music.getLibrary()).tracks.find(t => t.title === '午后散步').lyricPreference === 'lrcred');
   sources = await openSources();
   await sources.getByRole('menuitem', { name: 'AMLL TTML DB', exact: true }).click();
   await lyricText('午后在线歌词');
@@ -618,7 +626,7 @@ try {
   assert.equal(await lrclibSwitch.getAttribute('aria-checked'), 'true');
   await lrclibSwitch.scrollIntoViewIfNeeded(); await lrclibSwitch.click();
   await page.waitForFunction(async () => !(await window.music.getLibrary()).settings.lyricProviders.includes('lrclib'));
-  assert.deepEqual(await page.evaluate(async () => { const t = (await window.music.getLibrary()).tracks.find(x => x.title === '午后散步'); return (await window.music.onlineLyrics(t.id)).map(r => r.provider); }), ['amll']);
+  assert.deepEqual(await page.evaluate(async () => { const t = (await window.music.getLibrary()).tracks.find(x => x.title === '午后散步'); return (await window.music.onlineLyrics(t.id)).map(r => r.provider).sort(); }), ['amll', 'lrcred']);
   await lrclibSwitch.click();
   await page.waitForFunction(async () => (await window.music.getLibrary()).settings.lyricProviders.includes('lrclib'));
   assert.equal((await page.evaluate(() => window.music.lyricsStatus())).appleToken, false);

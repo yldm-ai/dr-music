@@ -44,10 +44,26 @@ Json filtered_ids(const Json &values, const std::set<std::string> &valid) {
     }
     return out;
 }
+/**
+ * Providers added after the user last saved their selection start enabled (as in BetterLyrics'
+ * mergePreferredProviders); ones they switched off stay off. Libraries from before
+ * "lyricProvidersSeen" existed had seen the first six providers.
+ */
+void enable_new_providers(Json &settings, const Json &saved) {
+    const auto &known = OnlineLyrics::provider_ids();
+    Json seen = saved.contains("lyricProvidersSeen") && saved["lyricProvidersSeen"].is_array() ? saved["lyricProvidersSeen"]
+        : Json{"amll", "qq", "netease", "kugou", "lrclib", "apple"};
+    Json enabled = settings["lyricProviders"].is_array() ? settings["lyricProviders"] : Json::array();
+    Json providers = Json::array();
+    for (const auto &id : known)
+        if (std::find(enabled.begin(), enabled.end(), Json(id)) != enabled.end() || std::find(seen.begin(), seen.end(), Json(id)) == seen.end()) providers.push_back(id);
+    settings["lyricProviders"] = providers;
+    settings["lyricProvidersSeen"] = known;
+}
 }
 Json Library::defaults() {
     return {{"version", 1}, {"tracks", Json::array()}, {"folders", Json::array()}, {"favorites", Json::array()}, {"playlists", Json::array()},
-        {"settings", {{"volume", 0.7}, {"repeat", "off"}, {"shuffle", false}, {"lyricOffset", 0}, {"theme", "dark"}, {"titleBar", "direct2d"}, {"lyricFont", ""}, {"lyricWeight", 0}, {"lyricScale", 1}, {"chineseSearch", false}, {"onlineLyrics", true}, {"lyricProviders", OnlineLyrics::provider_ids()}, {"amllMirror", ""}}}};
+        {"settings", {{"volume", 0.7}, {"repeat", "off"}, {"shuffle", false}, {"lyricOffset", 0}, {"theme", "dark"}, {"titleBar", "direct2d"}, {"lyricFont", ""}, {"lyricWeight", 0}, {"lyricScale", 1}, {"chineseSearch", false}, {"onlineLyrics", true}, {"lyricProviders", OnlineLyrics::provider_ids()}, {"lyricProvidersSeen", OnlineLyrics::provider_ids()}, {"amllMirror", ""}}}};
 }
 Library::Library(fs::path directory) : directory_(std::move(directory)), state_(defaults()) {}
 Json Library::load() {
@@ -63,6 +79,7 @@ Json Library::load() {
         for (auto &track : saved["tracks"]) if (!track.is_object() || !track.contains("id") || !track["id"].is_string() || !track.contains("path") || !track["path"].is_string()) throw std::runtime_error("歌曲记录无效");
         if (!saved.contains("settings") || !saved["settings"].is_object()) throw std::runtime_error("音乐库设置无效");
         auto settings = defaults()["settings"]; settings.update(saved["settings"]);
+        enable_new_providers(settings, saved["settings"]);
         saved["settings"] = settings; state_ = std::move(saved);
     } catch (const std::exception &) {
         auto name = "library.corrupt-" + std::to_string(timestamp()) + ".json";

@@ -223,6 +223,45 @@ std::optional<LyricResult> search_lrclib(const HttpFetch &fetch, const LyricMatc
     return std::nullopt;
 }
 
+// ---- lrc.red (formerly BiniLyrics; https://binimum.org) -----------------------------------------
+// The community TTML catalog behind Better Lyrics' "BiniLyrics" source: /search.json?q= → hits keyed
+// by ISRC, then /s/<ISRC>.ttml (word or line timed; 404 when the recording has no lyric).
+std::optional<LyricResult> search_lrcred(const HttpFetch &fetch, const LyricMatcher &matcher, const TrackQuery &track) {
+    const HttpRequest base{"GET", "", {{"User-Agent", "DR Music 0.2 (local music player)"}, {"Accept", "application/json"}}};
+    auto valid_isrc = [](const std::string &isrc) {
+        return isrc.size() == 12 && std::all_of(isrc.begin(), isrc.end(), [](unsigned char c) { return std::isupper(c) || std::isdigit(c); });
+    };
+    // "title artist", then the bare title (the catalog searches titles; albums only add noise).
+    auto terms = search_terms(track);
+    if (terms.size() > 2) terms.erase(terms.begin());
+    for (const auto &term : terms) {
+        auto request = base; request.url = "https://lrc.red/search.json?q=" + url_encode(term);
+        const auto json = parse(fetch(request));
+        const auto &hits = path(json, {"hits"});
+        if (!hits.is_array() || hits.empty()) continue;
+        // Best first; a recording without lyrics answers 404, so fall through to the next candidate.
+        std::vector<std::pair<int, const Json *>> ranked;
+        for (const auto &hit : hits) {
+            if (!valid_isrc(str(hit, "isrc"))) continue;
+            if (int s = matcher.score(track, {{str(hit, "title")}, split_artists(str(hit, "artist")), {str(hit, "album")}, number(hit, "duration")}))
+                ranked.emplace_back(s, &hit);
+        }
+        std::stable_sort(ranked.begin(), ranked.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
+        for (size_t i = 0; i < ranked.size() && i < 3; ++i) {
+            const auto &hit = *ranked[i].second;
+            const auto url = "https://lrc.red/s/" + str(hit, "isrc") + ".ttml";
+            auto lyric = base; lyric.url = url; lyric.headers = {{"User-Agent", "DR Music 0.2 (local music player)"}}; lyric.limit = 4 * 1024 * 1024;
+            const auto response = fetch(lyric);
+            if (response.status == 404) continue;
+            if (response.status != 200) throw std::runtime_error("lrc.red HTTP " + std::to_string(response.status));
+            if (response.body.find("<tt") == std::string::npos || response.body.find("<p") == std::string::npos) continue;
+            return LyricResult{"lrcred", str(hit, "title"), str(hit, "artist"), str(hit, "album"), "ttml", response.body, url, number(hit, "duration"), ranked[i].first};
+        }
+        if (!ranked.empty()) return std::nullopt;
+    }
+    return std::nullopt;
+}
+
 // ---- NetEase Cloud Music -------------------------------------------------------------------------
 std::string netease_eapi_body(const std::string &api_path, const Json &data) {
     // Lyricify EapiHelper.EApi: md5("nobody{url}use{json}md5forencrypt"), AES-128-ECB with "e82ckenh8dichen8".

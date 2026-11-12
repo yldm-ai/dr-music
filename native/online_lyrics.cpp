@@ -11,7 +11,7 @@ constexpr auto kPartialResultAge = std::chrono::hours(1); // some provider faile
 constexpr size_t kIndexLimit = 32 * 1024 * 1024, kLyricLimit = 4 * 1024 * 1024;
 // Provider API hosts (BetterLyrics / Lyricify endpoints); nothing else is reachable.
 const std::set<std::string> kProviderHosts = {
-    "raw.githubusercontent.com", "lrclib.net",
+    "raw.githubusercontent.com", "lrclib.net", "lrc.red",
     "music.163.com", "interface.music.163.com", "interface3.music.163.com",
     "u.y.qq.com", "c.y.qq.com",
     "mobilecdn.kugou.com", "lyrics.kugou.com",
@@ -19,7 +19,7 @@ const std::set<std::string> kProviderHosts = {
 };
 // Word-level formats first when scores tie.
 int priority(const std::string &provider) {
-    static const std::vector<std::string> order = {"amll", "apple", "qq", "netease", "kugou", "lrclib"};
+    static const std::vector<std::string> order = {"amll", "lrcred", "apple", "qq", "netease", "kugou", "lrclib"};
     return static_cast<int>(std::find(order.begin(), order.end(), provider) - order.begin());
 }
 Json to_json(const LyricResult &r) {
@@ -33,7 +33,7 @@ LyricResult from_json(const Json &j) {
 }
 
 const std::vector<std::string> &OnlineLyrics::provider_ids() {
-    static const std::vector<std::string> ids = {"amll", "qq", "netease", "kugou", "lrclib", "apple"};
+    static const std::vector<std::string> ids = {"amll", "lrcred", "qq", "netease", "kugou", "lrclib", "apple"};
     return ids;
 }
 
@@ -182,6 +182,7 @@ std::vector<LyricResult> OnlineLyrics::search(const Json &track, bool refresh) {
     run("netease", [&] { return search_netease(fetch_, matcher_, query); });
     run("kugou", [&] { return search_kugou(fetch_, matcher_, query); });
     run("lrclib", [&] { return search_lrclib(fetch_, matcher_, query); });
+    run("lrcred", [&] { return search_lrcred(fetch_, matcher_, query); });
     if (!options.apple_token.empty()) run("apple", [&] { return apple_.search(fetch_, matcher_, query, options.apple_token); });
     std::vector<LyricResult> results;
     bool failed = false;

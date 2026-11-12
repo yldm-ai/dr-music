@@ -48,6 +48,8 @@ std::optional<LyricResult> search_lrclib(const HttpFetch &fetch, const LyricMatc
 std::optional<LyricResult> search_netease(const HttpFetch &fetch, const LyricMatcher &matcher, const TrackQuery &track);
 std::optional<LyricResult> search_qq(const HttpFetch &fetch, const LyricMatcher &matcher, const TrackQuery &track);
 std::optional<LyricResult> search_kugou(const HttpFetch &fetch, const LyricMatcher &matcher, const TrackQuery &track);
+/** lrc.red (formerly BiniLyrics), the community TTML catalog Better Lyrics streams as "BiniLyrics". */
+std::optional<LyricResult> search_lrcred(const HttpFetch &fetch, const LyricMatcher &matcher, const TrackQuery &track);
 
 /** NetEase EAPI request body ("params=…") for a /api/… path, as Lyricify's EapiHelper builds it. */
 std::string netease_eapi_body(const std::string &api_path, const Json &data);

@@ -12,7 +12,9 @@ namespace dr {
 // ../dr-dict/ui/{include/dr/window.h,src/window.cpp}; music-specific host.
 class Window {
 public:
-    bool create(HINSTANCE instance, bool direct2d, bool dark);
+    // Cloaking keeps native window behavior available to tests without
+    // presenting their temporary shells on the desktop.
+    bool create(HINSTANCE instance, bool direct2d, bool dark, bool cloaked = false);
     HWND handle() const { return hwnd_; }
     RECT content_bounds() const;
     void set_style(bool direct2d, bool webview = false);

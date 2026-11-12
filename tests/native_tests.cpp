@@ -8,6 +8,7 @@
 #include <iostream>
 #include <cstring>
 #include <windowsx.h>
+#include <dwmapi.h>
 #define CHECK(value) do { if (!(value)) throw std::runtime_error("Check failed at line " + std::to_string(__LINE__) + ": " #value); } while (false)
 namespace {
 void write(const dr::fs::path &file, const std::string &text) { std::ofstream out(file, std::ios::binary); out.write(text.data(), text.size()); }
@@ -65,13 +66,19 @@ void recovery_test(const dr::fs::path &root) {
     CHECK(backup); library.update({{"settings", {{"volume", .4}}}}); CHECK(dr::Json::parse(dr::read_text(data / L"library.json"))["version"] == 1);
 }
 // Native hit testing, maximization and caption mode switching stay outside WebView2.
+void check_cloaked(HWND hwnd) {
+    DWORD cloaked = 0;
+    CHECK(SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))));
+    CHECK(cloaked & DWM_CLOAKED_APP);
+}
 void caption_test() {
-    dr::Window window; CHECK(window.create(GetModuleHandleW(nullptr), true, true)); auto hwnd = window.handle();
+    dr::Window window; CHECK(window.create(GetModuleHandleW(nullptr), true, true, true)); auto hwnd = window.handle();
+    check_cloaked(hwnd);
     auto bounds = window.content_bounds(); CHECK(bounds.top > 0);
     auto hit = [&](int x, int y) { POINT p{x, y}; ClientToScreen(hwnd, &p); return SendMessageW(hwnd, WM_NCHITTEST, 0, MAKELPARAM(p.x, p.y)); };
     const auto width = MulDiv(46, GetDpiForWindow(hwnd), 96); CHECK(hit(80, bounds.top / 2) == HTCAPTION);
     CHECK(hit(bounds.right - width * 3 / 2, bounds.top / 2) == HTMAXBUTTON); CHECK(hit(bounds.right - width / 2, bounds.top / 2) == HTCLIENT);
-    SendMessageW(hwnd, WM_SYSCOMMAND, SC_MAXIMIZE, 0); CHECK(IsZoomed(hwnd)); SendMessageW(hwnd, WM_SYSCOMMAND, SC_RESTORE, 0); CHECK(!IsZoomed(hwnd));
+    SendMessageW(hwnd, WM_SYSCOMMAND, SC_MAXIMIZE, 0); CHECK(IsZoomed(hwnd)); check_cloaked(hwnd); SendMessageW(hwnd, WM_SYSCOMMAND, SC_RESTORE, 0); CHECK(!IsZoomed(hwnd));
     window.set_style(false); CHECK(window.content_bounds().top == 0);
     window.set_style(false, true); CHECK(window.content_bounds().top == 0);
     window.set_style(true); CHECK(window.content_bounds().top > 0);
@@ -81,12 +88,13 @@ void caption_test() {
     SendMessageW(hwnd, WM_TIMER, 43, 0);
     CHECK(tip == L"最大化"); CHECK(anchor.right - anchor.left == width);
     window.set_appearance(false, true); CHECK(tip.empty());
-    window.set_appearance(false, false); wchar_t title[100]{}; GetWindowTextW(hwnd, title, 100); CHECK(std::wstring(title) == L"DR Music"); DestroyWindow(hwnd);
+    window.set_appearance(false, false); check_cloaked(hwnd); wchar_t title[100]{}; GetWindowTextW(hwnd, title, 100); CHECK(std::wstring(title) == L"DR Music"); DestroyWindow(hwnd);
 }
 // Re-arming a leave notification outside a window previously created an
 // endless posted-message loop that starved WM_PAINT after maximizing.
 void caption_leave_test() {
-    dr::Window window; CHECK(window.create(GetModuleHandleW(nullptr), true, true)); auto hwnd = window.handle();
+    dr::Window window; CHECK(window.create(GetModuleHandleW(nullptr), true, true, true)); auto hwnd = window.handle();
+    check_cloaked(hwnd);
     ShowWindow(hwnd, SW_HIDE);
     MSG message{};
     while (PeekMessageW(&message, hwnd, WM_MOUSELEAVE, WM_MOUSELEAVE, PM_REMOVE)) {}
@@ -102,8 +110,9 @@ void caption_leave_test() {
 // the caption rectangles, and the host turns the maximize button into a real
 // non-client HTMAXBUTTON so Windows 11 Snap Layouts works without an overlay.
 void webview_caption_test() {
-    dr::Window window; CHECK(window.create(GetModuleHandleW(nullptr), false, true));
+    dr::Window window; CHECK(window.create(GetModuleHandleW(nullptr), false, true, true));
     window.set_style(false, true); auto hwnd = window.handle();
+    check_cloaked(hwnd);
     CHECK(window.content_bounds().top == 0);
     CHECK(FindWindowExW(hwnd, nullptr, L"DRMusic.CaptionHitTest", nullptr) == nullptr);
     RECT client{}; GetClientRect(hwnd, &client);
@@ -140,6 +149,7 @@ void webview_caption_test() {
     MSG message{};
     while (PeekMessageW(&message, hwnd, WM_SYSCOMMAND, WM_SYSCOMMAND, PM_REMOVE)) DispatchMessageW(&message);
     CHECK(IsZoomed(hwnd));
+    check_cloaked(hwnd);
     SendMessageW(hwnd, WM_SYSCOMMAND, SC_RESTORE, 0); CHECK(!IsZoomed(hwnd));
     SendMessageW(hwnd, WM_NCMOUSELEAVE, 0, 0); CHECK(events.back() == L"leave");
     DestroyWindow(hwnd);

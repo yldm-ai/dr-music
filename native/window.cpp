@@ -11,7 +11,7 @@ int Window::caption_height() const {
     const int border = GetSystemMetricsForDpi(SM_CYFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
     return std::max<int>(scale(32), -frame.top - (IsZoomed(hwnd_) ? border : 0));
 }
-bool Window::create(HINSTANCE instance, bool direct2d, bool dark) {
+bool Window::create(HINSTANCE instance, bool direct2d, bool dark, bool cloaked) {
     direct2d_ = direct2d; dark_ = dark;
     WNDCLASSEXW wc{sizeof(wc)}; wc.hInstance = instance; wc.lpfnWndProc = procedure;
     wc.lpszClassName = L"DRMusic.NativeShell"; wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -34,6 +34,12 @@ bool Window::create(HINSTANCE instance, bool direct2d, bool dark) {
     caption_ = CreateWindowExW(WS_EX_NOACTIVATE, caption_class.lpszClassName, L"", WS_CHILD,
         0, 0, 0, 0, hwnd_, nullptr, instance, this);
     if (!caption_) { DestroyWindow(hwnd_); return false; }
+    if (cloaked) {
+        const BOOL cloak = TRUE;
+        if (FAILED(DwmSetWindowAttribute(hwnd_, DWMWA_CLOAK, &cloak, sizeof(cloak)))) {
+            DestroyWindow(hwnd_); return false;
+        }
+    }
     apply_frame(); set_appearance(dark, false);
     layout_caption();
     ShowWindow(hwnd_, SW_SHOW); UpdateWindow(hwnd_); return true;

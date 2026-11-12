@@ -249,3 +249,19 @@ button,input,select{transition:background-color .24s cubic-bezier(.22,1,.36,1),c
   body,.app-shell,.sidebar,.main-content,.player-bar,.now-playing,.modal,.queue-drawer,.song-menu,.search,.folder-list,.toast,
   button,input,select,.lyrics-host .dr-lyric-line{transition:none!important}
 }
+
+/* Reserve the lyric tools' space so revealing them never moves the lyrics. */
+.lyric-toolbar{opacity:0;transition:opacity .18s ease}
+.lyric-toolbar:hover,.lyric-toolbar:focus-within{opacity:1}
+@media(hover:none){.lyric-toolbar{opacity:1}}
+.volume-control{display:flex;align-items:center;gap:8px;min-width:0}
+.volume-control .volume-slider{width:120px;min-width:90px;flex:1;margin:0}
+.volume-value{width:38px;flex-shrink:0;text-align:right;font-size:12px;font-variant-numeric:tabular-nums;color:var(--muted)}
+.player-bar{grid-template-columns:minmax(180px,1fr) minmax(250px,1.25fr) minmax(290px,1fr);gap:20px}
+.now-header-tools{display:flex;align-items:center;gap:12px}
+.now-volume{position:relative}
+.now-volume>summary{list-style:none;cursor:pointer}
+.now-volume>summary::-webkit-details-marker{display:none}
+.now-volume-panel{position:absolute;right:0;top:calc(100% + 10px);padding:14px;background:#24212b;border:1px solid #ffffff26;border-radius:12px;box-shadow:0 12px 32px #0005;z-index:2;width:250px}
+.now-volume-panel .volume-slider{width:130px}
+@media(max-width:1100px){.player-bar{grid-template-columns:minmax(150px,1fr) minmax(210px,1.15fr) minmax(270px,1fr);gap:12px}.volume-control{gap:5px}.volume-control .volume-slider{width:100px;min-width:90px}.player-tools .tool-divider{margin:0 3px}}

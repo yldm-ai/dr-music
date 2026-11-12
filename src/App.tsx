@@ -1,4 +1,5 @@
 import { NativePlayback } from './playback';
+import { VolumeControl } from './VolumeControl';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion, MotionConfig, type Transition } from 'motion/react';
 import { Music2, Library as LibraryIcon, Heart, Disc3, Mic2, FolderPlus, Plus, Search, Play, Pause, SkipBack, SkipForward, Shuffle, Repeat, Repeat1, Volume2, VolumeX, ListMusic, Maximize2, ChevronDown, ChevronLeft, Settings2, MoreHorizontal, FolderOpen, RefreshCw, X, Check, FileMusic, ArrowUpRight, Headphones, Trash2, Pencil, ListPlus, AudioLines } from 'lucide-react';
@@ -590,8 +591,7 @@ export function App() {
         </div>
         <div className="player-center">{renderTransport()}{renderProgress()}</div>
         <div className="player-tools">
-          <IconButton icon={settings?.volume === 0 ? VolumeX : Volume2} label="静音 / 恢复音量" onClick={() => setSettings({ volume: settings?.volume ? 0 : 0.7 })}/>
-          <input className="volume-slider" aria-label="音量" type="range" min="0" max="1" step="0.01" value={settings?.volume ?? 0.7} onChange={e => setSettings({ volume: Number(e.target.value) })} style={{ '--progress': `${(settings?.volume ?? 0.7) * 100}%` } as React.CSSProperties}/>
+          <VolumeControl value={settings?.volume ?? .7} onChange={volume => setSettings({ volume })}/>
           <span className="tool-divider"/>
           <IconButton icon={ListMusic} label="播放队列" active={queueOpen} onClick={toggleQueue}/>
           <IconButton icon={Maximize2} label="打开歌词播放页" disabled={!current} onClick={() => setNowPlaying(true)}/>
@@ -600,7 +600,10 @@ export function App() {
 
       {current && <section className="now-playing" data-open={nowPlaying ? 'true' : 'false'} aria-label="正在播放" aria-hidden={!nowPlaying} inert={!nowPlaying}>
           <div className="now-bg"><AnimatePresence mode="popLayout" initial={false}>{current.cover && <motion.img key={current.id} src={media(current, 'cover')} alt="" initial={{ opacity: 0, scale: 1.05 }} animate={{ opacity: .7, scale: 1 }} exit={{ opacity: 0, scale: .98 }} transition={{ duration: .58, ease: smoothEase }}/>}</AnimatePresence></div>
-          <header><IconButton icon={ChevronDown} label="收起播放页" onClick={() => setNowPlaying(false)}/><IconButton icon={ListMusic} label="播放队列" onClick={toggleQueue}/></header>
+          <header><IconButton icon={ChevronDown} label="收起播放页" onClick={() => setNowPlaying(false)}/><div className="now-header-tools"><details className="now-volume" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); event.currentTarget.open = false; event.currentTarget.querySelector('summary')?.focus(); } }}>
+            <summary className="icon-button" aria-label="调节播放页音量" data-tooltip="调节音量">{settings?.volume === 0 ? <VolumeX size={19}/> : <Volume2 size={19}/>}</summary>
+            <div className="now-volume-panel"><VolumeControl label="播放页音量" value={settings?.volume ?? .7} onChange={volume => setSettings({ volume })}/></div>
+          </details><IconButton icon={ListMusic} label="播放队列" onClick={toggleQueue}/></div></header>
           <div className="now-layout">
             <AnimatePresence mode="wait" initial={false}>
               <motion.div key={current.id} className="now-left" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={textTransition}>

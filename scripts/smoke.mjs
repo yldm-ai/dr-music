@@ -135,7 +135,15 @@ try {
     box: element.getBoundingClientRect().toJSON(),
     transform: getComputedStyle(element).transform,
   }));
+  assert.ok((await volumeSlider.boundingBox()).width >= 100);
+  const initialVolume = Number(await volumeSlider.inputValue());
   await volumeSlider.hover();
+  await page.mouse.wheel(0, -100);
+  const increasedVolume = Math.min(1, Math.round((initialVolume + .05) * 100) / 100);
+  await page.waitForFunction(value => Math.abs(Number(document.querySelector('.player-tools .volume-slider').value) - value) < .001, increasedVolume);
+  assert.equal(await page.locator('.player-tools .volume-value').innerText(), `${Math.round(increasedVolume * 100)}%`);
+  await page.mouse.wheel(0, 100);
+  await page.waitForFunction(value => Math.abs(Number(document.querySelector('.player-tools .volume-slider').value) - value) < .001, initialVolume);
   await page.waitForTimeout(240);
   const volumeHover = await volumeSlider.evaluate(element => {
     return {
@@ -201,6 +209,24 @@ try {
     return transform === 'none' || Math.abs(new DOMMatrixReadOnly(transform).m42) < .5;
   });
   await page.waitForTimeout(120);
+  await page.getByLabel('调节播放页音量', { exact: true }).click();
+  const immersiveVolume = page.getByRole('slider', { name: '播放页音量', exact: true });
+  await immersiveVolume.waitFor();
+  const immersiveBefore = Number(await immersiveVolume.inputValue());
+  await immersiveVolume.hover(); await page.mouse.wheel(0, -100);
+  const immersiveAfter = Math.min(1, Math.round((immersiveBefore + .05) * 100) / 100);
+  await page.waitForFunction(value => Math.abs(Number(document.querySelector('.now-volume-panel input').value) - value) < .001, immersiveAfter);
+  assert.ok(Math.abs(Number(await volumeSlider.inputValue()) - immersiveAfter) < .001);
+  assert.equal(await page.locator('.now-volume-panel output').innerText(), `${Math.round(immersiveAfter * 100)}%`);
+  await immersiveVolume.press('End'); await page.mouse.wheel(0, -100);
+  assert.equal(Number(await immersiveVolume.inputValue()), 1);
+  await immersiveVolume.press('Home'); await page.mouse.wheel(0, 100);
+  assert.equal(Number(await immersiveVolume.inputValue()), 0);
+  await page.getByRole('button', { name: '播放页音量静音 / 恢复', exact: true }).click();
+  await page.waitForFunction(() => Number(document.querySelector('.now-volume-panel input').value) > 0);
+  await immersiveVolume.press('Escape');
+  assert.equal(await page.locator('.now-volume').evaluate(element => element.open), false);
+  assert.equal(await page.locator('.lyric-info').count(), 0);
   const positionClock = page.locator('.now-playing .progress-control span').first();
   const clockBefore = await positionClock.evaluate(element => {
     element.dataset.stableClock = 'true';
@@ -266,7 +292,9 @@ try {
     opacity: getComputedStyle(element).opacity,
     transform: getComputedStyle(element).transform,
   }));
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.lyric-toolbar')).opacity === '0');
   await textButton.hover();
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.lyric-toolbar')).opacity === '1');
   await page.waitForTimeout(280);
   const textButtonAfter = await textButton.evaluate(element => ({
     box: element.getBoundingClientRect().toJSON(),
@@ -281,6 +309,11 @@ try {
   assert.equal(textButtonAfter.opacity, textButtonBefore.opacity);
   assert.notEqual(textButtonAfter.color, textButtonBefore.color);
 
+  await page.mouse.move(1, 1);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.lyric-toolbar')).opacity === '0');
+  await textButton.focus();
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.lyric-toolbar')).opacity === '1');
+  await textButton.blur();
   const playButton = page.locator('.now-playing .play-button');
   await playButton.hover();
   await page.waitForTimeout(180);
@@ -355,7 +388,6 @@ try {
   await page.getByRole('button', { name: '音乐库 3', exact: true }).click();
   await page.getByRole('button', { name: '播放 夜色温柔', exact: true }).click();
   await page.getByRole('button', { name: '打开歌词播放页', exact: true }).click();
-  await page.getByText('逐字时间轴', { exact: true }).waitFor();
   await page.waitForFunction(() => document.querySelector('.amll-lyric-player')?.textContent.includes('你好世界'));
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: /设置与关于/ }).click();

@@ -8,7 +8,6 @@ import type { LyricFile } from './types';
 
 const smoothEase: [number, number, number, number] = [.22, 1, .36, 1];
 const textTransition = { duration: .36, ease: smoothEase } as const;
-const quickTextTransition = { duration: .24, ease: smoothEase } as const;
 
 export function Lyrics({ file, audio, offset, active, onSeek }: { file: LyricFile; audio: NativePlayback; offset: number; active: boolean; onSeek: (seconds: number) => void }) {
   const host = useRef<HTMLDivElement>(null);
@@ -22,7 +21,7 @@ export function Lyrics({ file, audio, offset, active, onSeek }: { file: LyricFil
     try { parsed = parseLyrics(file, audio.duration * 1000); }
     catch (error) { setInfo(String(error)); setPlain(''); return; }
     setPlain(parsed.plain);
-    setInfo(parsed.estimated ? '逐行歌词 · 字词时间为估算' : parsed.lines.length ? '逐字时间轴' : '');
+    setInfo('');
     if (!parsed.lines.length) return;
     const player = new LyricPlayer();
     player.setAlignPosition(0.38);
@@ -69,7 +68,7 @@ export function Lyrics({ file, audio, offset, active, onSeek }: { file: LyricFil
     <motion.div className="lyrics-host" ref={host} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={textTransition}/>
     <AnimatePresence>
       {plain && <motion.div key={`${file.source}:${plain.slice(0, 24)}`} className="plain-lyrics" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={textTransition}>{plain}</motion.div>}
-      {info && <motion.span key={info} className="lyric-info" initial={{ opacity: 0, y: 2 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -2 }} transition={quickTextTransition}>{info}</motion.span>}
+      {info && <span className="lyric-info" role="status">{info}</span>}
     </AnimatePresence>
   </div>;
 }

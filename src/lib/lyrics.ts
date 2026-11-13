@@ -23,23 +23,31 @@ function withRoman(line: LyricLine, roman: string[]): LyricLine {
   if (parts.length === line.words.length && parts.length > 1) return { ...line, words: line.words.map((word, i) => ({ ...word, romanWord: parts[i] })) };
   return { ...line, romanLyric: roman.join('').replace(/\s+/g, ' ').trim() };
 }
-/** Kugou's [language:…] tag: base64 JSON whose type-0 entry is the romanization, a word list per lyric line. */
-function krcRoman(text: string): string[][] | undefined {
+/** A translation for a line ("//" is NetEase's mark for a line left untranslated). */
+function withTranslation(line: LyricLine, parts: string[]): LyricLine {
+  const text = parts.join('').replace(/\s+/g, ' ').trim();
+  return text && text !== '//' ? { ...line, translatedLyric: text } : line;
+}
+/**
+ * Kugou's [language:…] tag: base64 JSON with a word list per lyric line, type 0 the romanization
+ * and type 1 the translation.
+ */
+function krcLanguage(text: string, type: 0 | 1): string[][] | undefined {
   const tag = /^\[language:([A-Za-z0-9+/=]+)\]/m.exec(text);
   if (!tag) return undefined;
   try {
     const json = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(tag[1]), c => c.charCodeAt(0))));
-    const roman = (json?.content as { type?: number; lyricContent?: unknown }[] | undefined)?.find(c => c?.type === 0)?.lyricContent;
-    return Array.isArray(roman) ? roman.map(line => Array.isArray(line) ? line.map(String) : []) : undefined;
+    const content = (json?.content as { type?: number; lyricContent?: unknown }[] | undefined)?.find(c => c?.type === type)?.lyricContent;
+    return Array.isArray(content) ? content.map(line => Array.isArray(line) ? line.map(String) : []) : undefined;
   } catch { return undefined; }
 }
 /**
  * Kugou KRC (decrypted natively): "[lineStart,lineDuration]<offset,duration,0>word…", word offsets
  * relative to the line start. Metadata lines such as [ar:…] are skipped; [language:…] carries the
- * romanization (kept as romanWord / romanLyric).
+ * romanization (kept as romanWord / romanLyric) and the translation.
  */
 export function parseKrc(text: string): LyricLine[] {
-  const roman = krcRoman(text);
+  const roman = krcLanguage(text, 0), translation = krcLanguage(text, 1);
   const lines: LyricLine[] = [];
   for (const raw of text.split(/\r?\n/)) {
     const head = /^\[(\d+),(\d+)\](.*)$/.exec(raw.trim());
@@ -50,20 +58,22 @@ export function parseKrc(text: string): LyricLine[] {
       if (m[3]) words.push({ word: m[3], startTime: start + Number(m[1]), endTime: start + Number(m[1]) + Number(m[2]) });
     if (!words.length && head[3].trim()) words.push({ word: head[3], startTime: start, endTime: start + duration });
     const line: LyricLine = { words, translatedLyric: '', romanLyric: '', startTime: start, endTime: start + duration, isBG: false, isDuet: false };
-    const parts = roman?.[lines.length];
-    lines.push(parts ? withRoman(line, parts) : line);
+    const parts = roman?.[lines.length], translated = translation?.[lines.length];
+    const withParts = parts ? withRoman(line, parts) : line;
+    lines.push(translated ? withTranslation(withParts, translated) : withParts);
   }
   return lines;
 }
 /**
- * The provider's separate romanization file (NetEase romalrc as LRC, QQ Music contentroma as QRC),
- * attached to the lyric line starting at the same time (within a second; LRC and word timing differ a little).
+ * A provider's separate romanization or translation file (NetEase romalrc / tlyric, QQ Music
+ * contentroma / contentts; LRC or QRC), attached to the lyric line starting at the same time
+ * (within a second; LRC and word timing differ a little).
  */
-function attachRoman(lines: LyricLine[], text: string, format: string): LyricLine[] {
-  let roman: LyricLine[];
-  try { roman = format === 'qrc' ? parseQrc(text) : parseLrcLike(text).lines; } catch { return lines; }
+function attachByTime(lines: LyricLine[], text: string, format: string, attach: (line: LyricLine, parts: string[]) => LyricLine): LyricLine[] {
+  let extra: LyricLine[];
+  try { extra = format === 'qrc' ? parseQrc(text) : parseLrcLike(text).lines; } catch { return lines; }
   const out = [...lines], used = new Set<number>();
-  for (const r of roman) {
+  for (const r of extra) {
     if (!r.words.some(w => w.word.trim())) continue;
     let best = -1;
     out.forEach((line, i) => {
@@ -72,7 +82,7 @@ function attachRoman(lines: LyricLine[], text: string, format: string): LyricLin
     });
     if (best < 0) continue;
     used.add(best);
-    out[best] = withRoman(out[best], r.words.map(w => w.word));
+    out[best] = attach(out[best], r.words.map(w => w.word));
   }
   return out;
 }
@@ -145,6 +155,7 @@ export function parseLyrics(file: LyricFile, durationMs: number): { lines: Lyric
     return { ...line, startTime, endTime: Math.max(startTime, line.endTime), words: line.words.map(w => ({ ...w, startTime: Math.max(0, w.startTime), endTime: Math.max(0, w.startTime, w.endTime) })) };
   });
   if (!lines.length) throw new Error('没有识别到有效的时间轴歌词，请检查文件格式。');
-  if (file.roman && file.romanFormat) lines = attachRoman(lines, file.roman, file.romanFormat);
+  if (file.roman && file.romanFormat) lines = attachByTime(lines, file.roman, file.romanFormat, withRoman);
+  if (file.translation && file.translationFormat) lines = attachByTime(lines, file.translation, file.translationFormat, withTranslation);
   return { lines, plain: '', estimated };
 }

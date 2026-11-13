@@ -317,6 +317,8 @@ std::optional<LyricResult> search_netease(const HttpFetch &fetch, const LyricMat
     LyricResult result{"netease", best.item.name, best.item.artists, best.item.album, format, text, "https://music.163.com/song?id=" + best.item.id, best.item.duration, best.score};
     // Romanization written by NetEase's lyric contributors (Japanese / Korean / Cantonese songs), timed like the LRC.
     if (auto roman = str(path(lyric, {"romalrc"}), "lyric"); roman.find('[') != std::string::npos) { result.roman = std::move(roman); result.roman_format = "lrc"; }
+    // The translation (mostly Chinese, by contributors), timed like the LRC as well.
+    if (auto translation = str(path(lyric, {"tlyric"}), "lyric"); translation.find('[') != std::string::npos) { result.translation = std::move(translation); result.translation_format = "lrc"; }
     return result;
 }
 
@@ -334,11 +336,12 @@ std::string qq_lyric_from_response(const std::string &response, const std::strin
     if (start == std::string::npos || end == std::string::npos || end < start) return {};
     auto content = xml.substr(start + 1, end - start - 1);
     if (content.starts_with("<![CDATA[") && content.ends_with("]]>")) content = content.substr(9, content.size() - 12);
+    const auto plain = content; // a plain LRC keeps its line breaks and spaces
     content.erase(std::remove_if(content.begin(), content.end(), [](unsigned char c) { return std::isspace(c); }), content.end());
     if (content.empty()) return {};
     std::string text;
     try { text = decrypt_qrc(content); }
-    catch (const std::exception &) { return content.find("[") != std::string::npos ? content : std::string{}; }
+    catch (const std::exception &) { return plain.find("[") != std::string::npos ? xml_unescape(plain) : std::string{}; }
     if (text.find("<?xml") == std::string::npos) return text;
     const auto attribute = text.find("LyricContent=\"");
     if (attribute == std::string::npos) return {};
@@ -395,6 +398,10 @@ std::optional<LyricResult> search_qq(const HttpFetch &fetch, const LyricMatcher 
     if (auto roman = qq_lyric_from_response(response.body, "contentroma"); roman.find('[') != std::string::npos) {
         result.roman_format = is_qrc(roman) ? "qrc" : "lrc";
         result.roman = std::move(roman);
+    }
+    if (auto translation = qq_lyric_from_response(response.body, "contentts"); translation.find('[') != std::string::npos) {
+        result.translation_format = is_qrc(translation) ? "qrc" : "lrc";
+        result.translation = std::move(translation);
     }
     return result;
 }

@@ -12,8 +12,8 @@ export interface Playlist { id: string; name: string; trackIds: string[] }
 export interface Settings { volume: number; repeat: 'off' | 'all' | 'one'; shuffle: boolean; lyricOffset: number; theme: 'dark' | 'light'; titleBar: 'direct2d' | 'system' | 'webview2'; lyricFont?: string; lyricWeight?: number; lyricScale?: number; chineseSearch?: boolean; lyricScript?: 'o' | 's' | 't'; lyricVariant?: 't' | 'tw' | 'twp' | 'hk'; lyricRuby?: '' | 'jyutping'; lyricRubyBelow?: boolean; lyricTranslate?: '' | 'zh' | 'en'; translateEndpoint?: string; translateModel?: string; translateProvider?: 'local' | 'niutrans'; onlineLyrics?: boolean; lyricProviders?: string[]; amllMirror?: string }
 export interface FontFamily { family: string; name: string }
 export interface Library { version: number; tracks: Track[]; folders: string[]; favorites: string[]; playlists: Playlist[]; settings: Settings; notice?: string }
-/** roman / romanFormat: the provider's own romanization (NetEase romalrc as LRC, QQ contentroma as QRC). */
-export interface LyricFile { text: string; format: string; source: string; roman?: string; romanFormat?: string }
+/** roman / translation (+ format): the provider's own romanization (NetEase romalrc, QQ contentroma) and translation (NetEase tlyric, QQ contentts). */
+export interface LyricFile { text: string; format: string; source: string; roman?: string; romanFormat?: string; translation?: string; translationFormat?: string }
 /** A lyric from an online provider, matched natively; best match first. */
 export interface OnlineLyricResult extends LyricFile { provider: string; title: string; artists: string; album: string; score: number; reference: string }
 export interface ImportResult { library: Library; imported: number; removed?: number; warnings: string[] }

@@ -36,6 +36,9 @@ export function translateState(status: TranslatorStatus | undefined, source: str
 }
 export const READINESS_LABEL: Record<Readiness, string> = { same: '已是原文', checking: '检查中', 'no-key': '未填写密钥', 'no-ollama': '未运行 Ollama', 'no-model': '未下载模型', ready: '' };
 
+/** Whether the lyric came with its own translation (TTML, LRC pairs, NetEase, QQ Music, Kugou). */
+export const hasSourceTranslation = (lines: { translatedLyric?: string }[]) => lines.some(line => line.translatedLyric?.trim());
+
 export const translatorStatus = (local = false) => window.music.translateStatus(local);
 export const downloadModel = () => window.music.translatePull();
 

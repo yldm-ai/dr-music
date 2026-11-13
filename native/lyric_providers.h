@@ -21,6 +21,8 @@ struct LyricResult {
     int score = 0;
     /** The provider's own romanization (NetEase romalrc "lrc", QQ contentroma "qrc"), when it has one. */
     std::string roman, roman_format;
+    /** The provider's own translation (NetEase tlyric, QQ contentts: LRC), when it has one. */
+    std::string translation, translation_format;
 };
 
 /**

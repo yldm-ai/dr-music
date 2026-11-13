@@ -16,7 +16,7 @@ import { Lyrics, lyricTypographyStyle, type TranslateState } from './Lyrics';
 import { parseLyrics } from './lib/lyrics';
 import { hasSourceRoman, type RubyChoice } from './lib/ruby';
 import { hasKana } from './lib/japanese';
-import { READINESS_LABEL, sourceLanguage, translateState as translateReadiness, translatorStatus, type TranslatorStatus } from './lib/translate';
+import { hasSourceTranslation, READINESS_LABEL, sourceLanguage, translateState as translateReadiness, translatorStatus, type TranslatorStatus } from './lib/translate';
 import { TranslationSettings } from './TranslationModels';
 import { Select } from './Select';
 import { onCaptionButton, onWindowState } from './bridge';
@@ -471,14 +471,18 @@ export function App() {
   }, [notify]);
   // 注音 is shown for lyrics with Han characters only; the choice itself is kept for the next song.
   // 音 / 译 apply to the song being played only: a different song starts with neither.
-  const [lyricTools, setLyricTools] = useState<{ id?: string; ruby: '' | RubyChoice; translate: '' | 'zh' | 'en' }>({ ruby: '', translate: '' });
+  const [lyricTools, setLyricTools] = useState<{ id?: string; ruby: '' | RubyChoice; translate: '' | 'zh' | 'en' | 'source' }>({ ruby: '', translate: '' });
   const rubyChoice = lyricTools.id === current?.id ? lyricTools.ruby : '';
-  const translateChoice = lyricTools.id === current?.id ? lyricTools.translate : '';
-  const setLyricTool = (patch: Partial<{ ruby: '' | RubyChoice; translate: '' | 'zh' | 'en' }>) => setLyricTools(tools => ({ ...(tools.id === current?.id ? tools : { ruby: '', translate: '' }), ...patch, id: current?.id }));
+  const translatePick = lyricTools.id === current?.id ? lyricTools.translate : '';
+  const setLyricTool = (patch: Partial<{ ruby: '' | RubyChoice; translate: '' | 'zh' | 'en' | 'source' }>) => setLyricTools(tools => ({ ...(tools.id === current?.id ? tools : { ruby: '', translate: '' }), ...patch, id: current?.id }));
   // Which guides fit this lyric: 粤语 for Chinese (Han without kana), 罗马音 / 假名 for Japanese, and the
   // lyric's own romanization (TTML, NetEase, QQ Music, Kugou) when it has one.
   const lyricHasKana = useMemo(() => !!lyric.file && hasKana(lyric.file.text), [lyric.file]);
-  const lyricHasRoman = useMemo(() => { try { return !!lyric.file?.text && hasSourceRoman(parseLyrics(lyric.file, 0).lines); } catch { return false; } }, [lyric.file]);
+  // The lyric's own romanization / translation (TTML, LRC pairs, NetEase, QQ Music, Kugou), offered in 音 / 译.
+  const sourceLines = useMemo(() => { try { return lyric.file?.text ? parseLyrics(lyric.file, 0).lines : []; } catch { return []; } }, [lyric.file]);
+  const lyricHasRoman = useMemo(() => hasSourceRoman(sourceLines), [sourceLines]);
+  const lyricHasTranslation = useMemo(() => hasSourceTranslation(sourceLines), [sourceLines]);
+  const translateChoice = translatePick === 'source' && !lyricHasTranslation ? '' : translatePick;
   const rubyFits = (choice: RubyChoice) => choice === 'jyutping' ? lyricHasHan && !lyricHasKana : choice === 'romaji-online' ? lyricHasRoman : lyricHasKana;
   const lyricRuby = useMemo(() => rubyChoice && rubyFits(rubyChoice) ? { kind: rubyChoice, below: !!settings?.lyricRubyBelow } : undefined, [rubyChoice, settings?.lyricRubyBelow, lyricHasHan, lyricHasKana, lyricHasRoman]);
   const rubyAvailable = rubyFits('jyutping') || lyricHasKana || lyricHasRoman;
@@ -885,6 +889,7 @@ export function App() {
       {translateMenu && <ContextMenu label="翻译" point={translateMenu} onClose={() => setTranslateMenu(undefined)} items={[
         { kind: 'header', label: settings?.translateProvider === 'niutrans' ? '翻译（小牛翻译）' : '翻译（混元本地模型）' },
         { label: '不翻译', checked: !translateChoice, onSelect: () => setLyricTool({ translate: '' }) },
+        ...(lyricHasTranslation ? [{ label: lyric.source === 'local' ? '歌词自带译文' : '在线译文', checked: translateChoice === 'source', onSelect: () => setLyricTool({ translate: 'source' }) } as MenuItem] : []),
         ...(['zh', 'en'] as const).map((target): MenuItem => {
           const state = translateReadiness(translateMenu.status, lyricSource, target);
           return { label: target === 'zh' ? '翻译成中文' : '翻译成英文', checked: translateChoice === target, disabled: state !== 'ready',

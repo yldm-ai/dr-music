@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sourceLanguage, translateLines, translateState, type TranslatorStatus } from '../src/lib/translate';
+import { hasSourceTranslation, sourceLanguage, translateLines, translateState, type TranslatorStatus } from '../src/lib/translate';
 
 test('the lyric language comes from its script', () => {
   assert.equal(sourceLanguage('[00:01.00]测试歌词'), 'zh');
@@ -28,4 +28,9 @@ test('lines go through the bridge, and a superseded request is dropped', async (
   assert.deepEqual(calls, [[['你好', ''], 'zh', 'en']]);
   const controller = new AbortController(); controller.abort();
   await assert.rejects(translateLines(['你好'], 'zh', 'en', controller.signal), /aborted/);
+});
+
+test('a lyric offers its own translation only when some line has one', () => {
+  assert.equal(hasSourceTranslation([{ translatedLyric: '' }, {}]), false);
+  assert.equal(hasSourceTranslation([{ translatedLyric: ' ' }, { translatedLyric: '你好' }]), true);
 });

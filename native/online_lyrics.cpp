@@ -24,11 +24,11 @@ int priority(const std::string &provider) {
 }
 Json to_json(const LyricResult &r) {
     return {{"provider", r.provider}, {"title", r.title}, {"artists", r.artists}, {"album", r.album}, {"format", r.format},
-            {"text", r.text}, {"reference", r.reference}, {"duration", r.duration}, {"score", r.score}};
+            {"text", r.text}, {"reference", r.reference}, {"duration", r.duration}, {"score", r.score}, {"roman", r.roman}, {"romanFormat", r.roman_format}};
 }
 LyricResult from_json(const Json &j) {
     return {j.value("provider", ""), j.value("title", ""), j.value("artists", ""), j.value("album", ""), j.value("format", ""),
-            j.value("text", ""), j.value("reference", ""), j.value("duration", 0.0), j.value("score", 0)};
+            j.value("text", ""), j.value("reference", ""), j.value("duration", 0.0), j.value("score", 0), j.value("roman", ""), j.value("romanFormat", "")};
 }
 }
 
@@ -152,7 +152,7 @@ std::vector<LyricResult> OnlineLyrics::search(const Json &track, bool refresh) {
     const TrackQuery query{track.value("title", ""), track.value("artist", ""), track.value("album", ""), track.value("duration", 0.0)};
     std::string providers;
     for (const auto &p : provider_ids()) if (options.providers.contains(p) && (p != "apple" || !options.apple_token.empty())) providers += p + ",";
-    const auto signature = query.title + "\n" + query.artist + "\n" + query.album + "\n" + std::to_string(static_cast<long long>(query.duration)) + "\n" + providers + "\n" + options.amll_base;
+    const auto signature = query.title + "\n" + query.artist + "\n" + query.album + "\n" + std::to_string(static_cast<long long>(query.duration)) + "\n" + providers + "\n" + options.amll_base + "\nroman"; // results cached before romanization was kept are fetched again
     const bool cacheable = !id.empty() && id.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos;
     const auto cache_file = cache_ / L"results" / from_text(id + ".json");
     std::error_code ec;

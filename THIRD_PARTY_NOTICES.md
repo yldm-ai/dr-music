@@ -55,6 +55,8 @@ DR Music 是 suxiaofan 的个人音乐播放器。当前宿主为独立实现的
 
 React / React DOM（MIT）、Motion / Framer Motion 14.12.0（MIT）、Lucide（ISC）和其他打包依赖的版本由 `package-lock.json` 锁定。Motion 用于页面、列表、播放状态、菜单和弹窗的 React 动画。原许可与版权文字由 `scripts/licenses.mjs` 收集至 `licenses/DEPENDENCY_LICENSES.txt`。Vite、TypeScript、Node.js 与 Playwright 仅用于构建或测试，不随应用作为后端运行。
 
+歌词注音（「音」）：粤拼来自 ToJyutping（CanCLID，BSD-2-Clause）；日语罗马音和假名由 kuromoji.js 的 `@sglkc/kuromoji` 1.1.0 分支（Takuya Asano / Atilika Inc.，Apache-2.0）分词，读音转写使用 wanakana 5.3.1（MIT）。kuromoji 附带的 IPADIC 词典（mecab-ipadic-2.7.0-20070801，© 2000–2003 Nara Institute of Science and Technology）随应用分发于 `web/kuromoji/`，NAIST 的版权声明与免责条款原文见 `licenses/DEPENDENCY_LICENSES.txt` 中 `@sglkc/kuromoji` 的 NOTICE.md。
+
 ## 修改与分发
 
 - 2026-11-11，0.1.0：创建音乐播放器，移植歌词分词逻辑，接入 AMLL，新增音乐库、收藏、歌单和队列。最初采用的 Electron 宿主已在后续版本移除。

@@ -121,10 +121,12 @@ void online_lyrics_test(const dr::fs::path &root) {
     put(amll + "raw-lyrics/600-1-ffff.ttml", "<tt xmlns=\"http://www.w3.org/ns/ttml\"><body><div><p begin=\"0\" end=\"1\">AMLL</p></div></body></tt>");
     put("lrclib.net/api/search", R"J([{"id":7,"trackName":"晴天","artistName":"周杰伦","albumName":"叶惠美","duration":269,"instrumental":false,"syncedLyrics":"[00:01.00]LRCLIB","plainLyrics":"LRCLIB"}])J");
     put("music.163.com/api/search/get/web", R"J({"code":200,"result":{"songs":[{"id":186016,"name":"晴天","artists":[{"name":"周杰伦"}],"album":{"name":"叶惠美"},"duration":269000},{"id":1,"name":"晴天 (Live)","artists":[{"name":"别人"}],"album":{"name":"x"},"duration":200000}]}})J");
-    put("interface3.music.163.com/eapi/song/lyric/v1", R"J({"code":200,"lrc":{"lyric":"[00:01.00]NetEase LRC"},"yrc":{"lyric":"[1000,1000](1000,1000,0)NetEase"}})J");
+    put("interface3.music.163.com/eapi/song/lyric/v1", R"J({"code":200,"lrc":{"lyric":"[00:01.00]NetEase LRC"},"yrc":{"lyric":"[1000,1000](1000,1000,0)NetEase"},"romalrc":{"lyric":"[00:01.00]ne tto i zu"}})J");
     put("u.y.qq.com/cgi-bin/musicu.fcg", R"J({"req_1":{"data":{"body":{"song":{"list":[{"id":97773,"mid":"0039MnYb0qxYhV","name":"晴天","title":"晴天","singer":[{"name":"周杰伦"}],"album":{"name":"叶惠美"},"interval":269}]}}}}})J");
     const auto qrc_xml = std::string("<?xml version=\"1.0\" encoding=\"utf-8\"?><QrcInfos><LyricInfo LyricCount=\"1\"><Lyric_1 LyricType=\"1\" LyricContent=\"[1000,1000]QQ(1000,1000)&#10;\"/></LyricInfo></QrcInfos>");
-    put("c.y.qq.com/qqmusic/fcgi-bin/lyric_download.fcg", "<!--<?xml version=\"1.0\" encoding=\"GB2312\" ?><QrcInfos><lyric><content><![CDATA[" + dr::encrypt_qrc(qrc_xml) + "]]></content></lyric></QrcInfos>-->");
+    const auto roma_xml = std::string("<?xml version=\"1.0\" encoding=\"utf-8\"?><QrcInfos><LyricInfo LyricCount=\"1\"><Lyric_1 LyricType=\"1\" LyricContent=\"[ti:x]&#10;[1000,1000]kyu (1000,1000)&#10;\"/></LyricInfo></QrcInfos>");
+    // The romanization comes first here: <content> must not match <contentroma> / <contentts>.
+    put("c.y.qq.com/qqmusic/fcgi-bin/lyric_download.fcg", "<!--<?xml version=\"1.0\" encoding=\"GB2312\" ?><QrcInfos><lyric><contentroma><![CDATA[" + dr::encrypt_qrc(roma_xml) + "]]></contentroma><contentts></contentts><content><![CDATA[" + dr::encrypt_qrc(qrc_xml) + "]]></content></lyric></QrcInfos>-->");
     put("mobilecdn.kugou.com/api/v3/search/song", R"J({"data":{"info":[{"hash":"ABCDEF","songname":"晴天","singername":"周杰伦","album_name":"叶惠美","duration":269}]}})J");
     put("lyrics.kugou.com/search", R"J({"candidates":[{"id":"42","accesskey":"KEY"}]})J");
     {
@@ -159,6 +161,10 @@ void online_lyrics_test(const dr::fs::path &root) {
     CHECK(by["lrclib"].format == "lrc" && by["lrclib"].text == "[00:01.00]LRCLIB");
     CHECK(by["netease"].format == "yrc" && by["netease"].text.find("NetEase") != std::string::npos && by["netease"].title == "晴天");
     CHECK(by["qq"].format == "qrc" && by["qq"].text == "[1000,1000]QQ(1000,1000)\n");
+    // The providers' own romanization travels with the lyric (and through the cache below).
+    CHECK(by["qq"].roman_format == "qrc" && by["qq"].roman == "[ti:x]\n[1000,1000]kyu (1000,1000)\n");
+    CHECK(by["netease"].roman_format == "lrc" && by["netease"].roman == "[00:01.00]ne tto i zu");
+    CHECK(by["lrclib"].roman.empty() && by["kugou"].roman.empty());
     CHECK(by["kugou"].format == "krc" && by["kugou"].text == "[1000,1000]<0,1000,0>Kugou");
     CHECK(by["apple"].format == "ttml" && by["apple"].text.find("Apple") != std::string::npos);
     CHECK(by["lrcred"].format == "ttml" && by["lrcred"].text.find("lrc.red") != std::string::npos && by["lrcred"].reference == "https://lrc.red/s/TWK970300504.ttml");
@@ -166,7 +172,11 @@ void online_lyrics_test(const dr::fs::path &root) {
     CHECK(results.front().provider == "amll" || results.front().score > by["amll"].score); // word-level AMLL wins ties
     // Cached: the next lookup works without any provider answering.
     dr::fs::remove_all(fixture);
-    CHECK(all.search(track).size() == 7);
+    {
+        const auto cached = all.search(track);
+        CHECK(cached.size() == 7);
+        CHECK(std::any_of(cached.begin(), cached.end(), [](const dr::LyricResult &r) { return r.provider == "qq" && r.roman_format == "qrc" && !r.roman.empty(); }));
+    }
     // Provider set changes invalidate the cache; disabled providers are not asked.
     all.set_options({{"lrclib"}, "", ""});
     CHECK(all.search(track).empty());

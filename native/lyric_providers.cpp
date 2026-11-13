@@ -314,17 +314,23 @@ std::optional<LyricResult> search_netease(const HttpFetch &fetch, const LyricMat
     std::string format = "yrc";
     if (text.empty()) { text = str(path(lyric, {"lrc"}), "lyric"); format = "lrc"; }
     if (text.empty()) return std::nullopt;
-    return LyricResult{"netease", best.item.name, best.item.artists, best.item.album, format, text, "https://music.163.com/song?id=" + best.item.id, best.item.duration, best.score};
+    LyricResult result{"netease", best.item.name, best.item.artists, best.item.album, format, text, "https://music.163.com/song?id=" + best.item.id, best.item.duration, best.score};
+    // Romanization written by NetEase's lyric contributors (Japanese / Korean / Cantonese songs), timed like the LRC.
+    if (auto roman = str(path(lyric, {"romalrc"}), "lyric"); roman.find('[') != std::string::npos) { result.roman = std::move(roman); result.roman_format = "lrc"; }
+    return result;
 }
 
 // ---- QQ Music ------------------------------------------------------------------------------------
-std::string qq_lyric_from_response(const std::string &response) {
-    // lyric_download.fcg answers XML wrapped in <!-- -->; <content> holds hex QRC (or plain LRC).
+std::string qq_lyric_from_response(const std::string &response, const std::string &tag) {
+    // lyric_download.fcg answers XML wrapped in <!-- -->; <content> holds hex QRC (or plain LRC),
+    // <contentts> the translation and <contentroma> the romanization, encrypted the same way.
     std::string xml = response;
     for (auto marker : {"<!--", "-->"}) for (size_t at; (at = xml.find(marker)) != std::string::npos;) xml.erase(at, strlen(marker));
-    const auto open = xml.find("<content");
+    size_t open = std::string::npos;
+    for (size_t at = xml.find("<" + tag); at != std::string::npos; at = xml.find("<" + tag, at + 1))
+        if (const char next = at + tag.size() + 1 < xml.size() ? xml[at + tag.size() + 1] : '\0'; next == '>' || next == ' ' || next == '/') { open = at; break; } // <content>, not <contentts>
     if (open == std::string::npos) return {};
-    const auto start = xml.find('>', open), end = xml.find("</content>", open);
+    const auto start = xml.find('>', open), end = xml.find("</" + tag + ">", open);
     if (start == std::string::npos || end == std::string::npos || end < start) return {};
     auto content = xml.substr(start + 1, end - start - 1);
     if (content.starts_with("<![CDATA[") && content.ends_with("]]>")) content = content.substr(9, content.size() - 12);
@@ -372,8 +378,25 @@ std::optional<LyricResult> search_qq(const HttpFetch &fetch, const LyricMatcher 
     if (response.status != 200) return std::nullopt;
     const auto text = qq_lyric_from_response(response.body);
     if (text.empty()) return std::nullopt;
-    const bool qrc = text.find("](") != std::string::npos || (text.size() > 2 && text[0] == '[' && std::isdigit(static_cast<unsigned char>(text[1])) && text.find(',') < text.find(']'));
-    return LyricResult{"qq", best.item.name, best.item.artists, best.item.album, qrc ? "qrc" : "lrc", text, "https://y.qq.com/n/ryqq/songDetail/" + best.item.mid, best.item.duration, best.score};
+    // QRC lines start "[start,duration]"; LRC lines "[mm:ss.xx]". Metadata lines ([ti:…]) may come first.
+    auto is_qrc = [](const std::string &t) {
+        if (t.find("](") != std::string::npos) return true;
+        for (size_t at = t.find('['); at != std::string::npos; at = t.find('[', at + 1)) {
+            size_t i = at + 1; while (i < t.size() && std::isdigit(static_cast<unsigned char>(t[i]))) ++i;
+            if (i == at + 1 || i >= t.size()) continue;
+            if (t[i] == ',') return true;
+            if (t[i] == ':') return false;
+        }
+        return false;
+    };
+    const bool qrc = is_qrc(text);
+    LyricResult result{"qq", best.item.name, best.item.artists, best.item.album, qrc ? "qrc" : "lrc", text, "https://y.qq.com/n/ryqq/songDetail/" + best.item.mid, best.item.duration, best.score};
+    // The romanization is a QRC with the same line and word timing as the lyric.
+    if (auto roman = qq_lyric_from_response(response.body, "contentroma"); roman.find('[') != std::string::npos) {
+        result.roman_format = is_qrc(roman) ? "qrc" : "lrc";
+        result.roman = std::move(roman);
+    }
+    return result;
 }
 
 // ---- Kugou ---------------------------------------------------------------------------------------

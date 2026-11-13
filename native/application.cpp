@@ -278,7 +278,7 @@ void Application::receive(const Json &request) {
                     Json results = Json::array();
                     for (const auto &r : online_lyrics_.search(library_.track(track_id), refresh))
                         results.push_back({{"provider", r.provider}, {"title", r.title}, {"artists", r.artists}, {"album", r.album},
-                                           {"format", r.format}, {"text", r.text}, {"score", r.score}, {"reference", r.reference}});
+                                           {"format", r.format}, {"text", r.text}, {"score", r.score}, {"reference", r.reference}, {"roman", r.roman}, {"romanFormat", r.roman_format}});
                     reply(id, results);
                 } catch (const std::exception &e) { reject(id, e.what()); }
             });

@@ -19,6 +19,8 @@ struct LyricResult {
     std::string provider, title, artists, album, format, text, reference;
     double duration = 0;
     int score = 0;
+    /** The provider's own romanization (NetEase romalrc "lrc", QQ contentroma "qrc"), when it has one. */
+    std::string roman, roman_format;
 };
 
 /**
@@ -53,8 +55,8 @@ std::optional<LyricResult> search_lrcred(const HttpFetch &fetch, const LyricMatc
 
 /** NetEase EAPI request body ("params=…") for a /api/… path, as Lyricify's EapiHelper builds it. */
 std::string netease_eapi_body(const std::string &api_path, const Json &data);
-/** Extracts the QRC text from QQ Music's lyric_download.fcg XML response. */
-std::string qq_lyric_from_response(const std::string &xml);
+/** Extracts the QRC text of one element (content = lyric, contentroma = romanization) from QQ Music's lyric_download.fcg XML response. */
+std::string qq_lyric_from_response(const std::string &xml, const std::string &tag = "content");
 /** Picks the most plausible Apple Music web-player token (JWT) from a script, or "". */
 std::string apple_pick_token(const std::string &script, long long now_seconds);
 

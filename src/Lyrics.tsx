@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import { LyricPlayer, LyricLineMouseEvent } from '@applemusic-like-lyrics/core';
 import '@applemusic-like-lyrics/core/style.css';
 import { parseLyrics } from './lib/lyrics';
-import { annotate, loadReader, type Reader, type RubyKind } from './lib/ruby';
+import { annotate, lineText, loadReader, sourceRoman, type RubyChoice, type Segment } from './lib/ruby';
 import { sourceLanguage, translateLines, type TranslateTarget } from './lib/translate';
 import type { LyricFile } from './types';
 
@@ -19,20 +19,28 @@ export const lyricTypographyStyle = ({ font, weight, scale }: LyricTypography) =
   '--dr-lyric-scale': String(scale || 1),
 }) as React.CSSProperties;
 
-export interface LyricRuby { kind: RubyKind; below: boolean }
+export interface LyricRuby { kind: RubyChoice; below: boolean }
 export type TranslateState = { state: 'idle' | 'working' | 'done' } | { state: 'error'; message: string } | { state: 'downloading'; progress: number };
 
-export function Lyrics({ file, audio, offset, active, onSeek, typography = {}, ruby, translate, onTranslateState }: { file: LyricFile; audio: NativePlayback; offset: number; active: boolean; onSeek: (seconds: number) => void; typography?: LyricTypography; ruby?: LyricRuby; translate?: TranslateTarget; onTranslateState?: (state: TranslateState) => void }) {
-  // The reader for the chosen guide; until it has loaded, lyrics show without it.
-  const [reader, setReader] = useState<{ kind: RubyKind; read: Reader }>();
+export function Lyrics({ file, audio, offset, active, onSeek, typography = {}, ruby, translate, onTranslateState, onRubyError }: { file: LyricFile; audio: NativePlayback; offset: number; active: boolean; onSeek: (seconds: number) => void; typography?: LyricTypography; ruby?: LyricRuby; translate?: TranslateTarget; onTranslateState?: (state: TranslateState) => void; onRubyError?: (message: string) => void }) {
+  // Readings for the chosen guide, read for the whole lyric at once; until they arrive, lyrics show without them.
+  const rubyErrorRef = useRef(onRubyError); rubyErrorRef.current = onRubyError;
+  const [readings, setReadings] = useState<{ key: string; lines: Segment[][] }>();
+  const readKind = ruby && ruby.kind !== 'romaji-online' ? ruby.kind : undefined;
+  const readKey = readKind ? `${readKind}\n${file.text}` : '';
   useEffect(() => {
-    if (!ruby || reader?.kind === ruby.kind) return;
+    if (!readKind || readings?.key === readKey) return;
+    let texts: string[];
+    try { texts = parseLyrics(file, 0).lines.map(lineText); } catch { return; }
     let live = true;
-    loadReader(ruby.kind).then(read => { if (live) setReader({ kind: ruby.kind, read }); }).catch(() => {});
+    const key = readKey;
+    loadReader(readKind).then(read => read(texts)).then(lines => { if (live) setReadings({ key, lines }); },
+      error => { if (live) rubyErrorRef.current?.(error instanceof Error ? error.message : String(error)); });
     return () => { live = false; };
-  }, [ruby?.kind]);
-  const read = ruby && reader?.kind === ruby.kind ? reader.read : undefined;
-  const below = !!ruby?.below;
+  }, [readKey]);
+  const lineReadings = readKind && readings?.key === readKey ? readings.lines : undefined;
+  const below = !!ruby?.below, spaced = readKind !== 'kana';
+  const showSourceRoman = ruby?.kind === 'romaji-online' ? (below ? 'below' : 'above') : 'off';
   // 译: every line translated on the device by Edge's built-in model, shown under the line.
   const reportRef = useRef(onTranslateState); reportRef.current = onTranslateState;
   const [translated, setTranslated] = useState<{ key: string; lines: string[] }>();
@@ -65,7 +73,9 @@ export function Lyrics({ file, audio, offset, active, onSeek, typography = {}, r
     setPlain(parsed.plain);
     setInfo('');
     if (!parsed.lines.length) return;
-    if (read) parsed = { ...parsed, lines: annotate(parsed.lines, read, below) };
+    // The lyric's own romanization only shows when chosen in 音 (romaji-online).
+    parsed = { ...parsed, lines: sourceRoman(parsed.lines, showSourceRoman) };
+    if (lineReadings) parsed = { ...parsed, lines: annotate(parsed.lines, lineReadings, below, spaced) };
     if (translation) parsed = { ...parsed, lines: parsed.lines.map((line, i) => translation[i] ? { ...line, translatedLyric: translation[i] } : line) };
     const player = new LyricPlayer();
     player.setAlignPosition(0.38);
@@ -108,7 +118,7 @@ export function Lyrics({ file, audio, offset, active, onSeek, typography = {}, r
     frame = requestAnimationFrame(tick);
     return () => { cancelAnimationFrame(frame); audio.removeEventListener('play', sync); audio.removeEventListener('pause', sync); audio.removeEventListener('seeking', seek); player.removeEventListener('line-click', click); player.dispose(); };
     // Font metrics change line heights, so rebuild AMLL's layout when typography changes.
-  }, [file, audio, offset, typography.font, typography.weight, typography.scale, read, below, translation]);
+  }, [file, audio, offset, typography.font, typography.weight, typography.scale, lineReadings, below, spaced, showSourceRoman, translation]);
   return <div className="lyrics-shell" style={lyricTypographyStyle(typography)}>
     <motion.div className="lyrics-host" ref={host} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={textTransition}/>
     <AnimatePresence>

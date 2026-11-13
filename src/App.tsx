@@ -13,6 +13,9 @@ import { withoutFolder, withMetadata, musicFolders } from './lib/library';
 import { searchText, hasHan, matchesQuery } from './lib/search';
 import { ContextMenu, type MenuItem } from './ContextMenu';
 import { Lyrics, lyricTypographyStyle, type TranslateState } from './Lyrics';
+import { parseLyrics } from './lib/lyrics';
+import { hasSourceRoman, type RubyChoice } from './lib/ruby';
+import { hasKana } from './lib/japanese';
 import { READINESS_LABEL, sourceLanguage, translateState as translateReadiness, translatorStatus, type TranslatorStatus } from './lib/translate';
 import { TranslationSettings } from './TranslationModels';
 import { Select } from './Select';
@@ -468,11 +471,19 @@ export function App() {
   }, [notify]);
   // 注音 is shown for lyrics with Han characters only; the choice itself is kept for the next song.
   // 音 / 译 apply to the song being played only: a different song starts with neither.
-  const [lyricTools, setLyricTools] = useState<{ id?: string; ruby: '' | 'jyutping'; translate: '' | 'zh' | 'en' }>({ ruby: '', translate: '' });
+  const [lyricTools, setLyricTools] = useState<{ id?: string; ruby: '' | RubyChoice; translate: '' | 'zh' | 'en' }>({ ruby: '', translate: '' });
   const rubyChoice = lyricTools.id === current?.id ? lyricTools.ruby : '';
   const translateChoice = lyricTools.id === current?.id ? lyricTools.translate : '';
-  const setLyricTool = (patch: Partial<{ ruby: '' | 'jyutping'; translate: '' | 'zh' | 'en' }>) => setLyricTools(tools => ({ ...(tools.id === current?.id ? tools : { ruby: '', translate: '' }), ...patch, id: current?.id }));
-  const lyricRuby = useMemo(() => rubyChoice && lyricHasHan ? { kind: rubyChoice, below: !!settings?.lyricRubyBelow } : undefined, [rubyChoice, settings?.lyricRubyBelow, lyricHasHan]);
+  const setLyricTool = (patch: Partial<{ ruby: '' | RubyChoice; translate: '' | 'zh' | 'en' }>) => setLyricTools(tools => ({ ...(tools.id === current?.id ? tools : { ruby: '', translate: '' }), ...patch, id: current?.id }));
+  // Which guides fit this lyric: 粤语 for Chinese (Han without kana), 罗马音 / 假名 for Japanese, and the
+  // lyric's own romanization (TTML, NetEase, QQ Music, Kugou) when it has one.
+  const lyricHasKana = useMemo(() => !!lyric.file && hasKana(lyric.file.text), [lyric.file]);
+  const lyricHasRoman = useMemo(() => { try { return !!lyric.file?.text && hasSourceRoman(parseLyrics(lyric.file, 0).lines); } catch { return false; } }, [lyric.file]);
+  const rubyFits = (choice: RubyChoice) => choice === 'jyutping' ? lyricHasHan && !lyricHasKana : choice === 'romaji-online' ? lyricHasRoman : lyricHasKana;
+  const lyricRuby = useMemo(() => rubyChoice && rubyFits(rubyChoice) ? { kind: rubyChoice, below: !!settings?.lyricRubyBelow } : undefined, [rubyChoice, settings?.lyricRubyBelow, lyricHasHan, lyricHasKana, lyricHasRoman]);
+  const rubyAvailable = rubyFits('jyutping') || lyricHasKana || lyricHasRoman;
+  const rubyError = useRef('');
+  const onRubyError = useCallback((message: string) => { if (rubyError.current !== message) notify(`注音失败：${message}`); rubyError.current = message; }, [notify]);
   const folded = useRef(new Map<string, { key: string; text: string }>());
   const [foldedVersion, setFoldedVersion] = useState(0);
   useEffect(() => {
@@ -883,8 +894,15 @@ export function App() {
       ]}/>}
       {rubyMenu && <ContextMenu label="注音" point={rubyMenu} onClose={() => setRubyMenu(undefined)} items={[
         { kind: 'header', label: '注音' },
-        { label: '不显示', checked: !rubyChoice, onSelect: () => setLyricTool({ ruby: '' }) },
-        { label: '粤语（粤拼）', checked: rubyChoice === 'jyutping', onSelect: () => setLyricTool({ ruby: 'jyutping' }) },
+        { label: '不显示', checked: !lyricRuby, onSelect: () => setLyricTool({ ruby: '' }) },
+        ...(rubyFits('jyutping') ? [{ label: '粤语（粤拼）', checked: lyricRuby?.kind === 'jyutping', onSelect: () => setLyricTool({ ruby: 'jyutping' }) } as MenuItem] : []),
+        // 罗马音: a submenu only when the lyric has its own romanization besides the local reading.
+        ...(lyricHasKana && lyricHasRoman ? [{ label: '罗马音', checked: lyricRuby?.kind === 'romaji' || lyricRuby?.kind === 'romaji-online', submenu: [
+          { label: lyric.source === 'local' ? '歌词自带' : '在线', checked: lyricRuby?.kind === 'romaji-online', onSelect: () => setLyricTool({ ruby: 'romaji-online' }) },
+          { label: '本地', checked: lyricRuby?.kind === 'romaji', onSelect: () => setLyricTool({ ruby: 'romaji' }) },
+        ] } as MenuItem]
+          : lyricHasKana || lyricHasRoman ? [{ label: '罗马音', checked: lyricRuby?.kind === 'romaji' || lyricRuby?.kind === 'romaji-online', onSelect: () => setLyricTool({ ruby: lyricHasKana ? 'romaji' : 'romaji-online' }) } as MenuItem] : []),
+        ...(lyricHasKana ? [{ label: '假名注音', checked: lyricRuby?.kind === 'kana', onSelect: () => setLyricTool({ ruby: 'kana' }) } as MenuItem] : []),
       ]}/>}
       {scriptMenu && <ContextMenu label="繁体标准" point={scriptMenu} onClose={() => setScriptMenu(undefined)} items={[
         { kind: 'header', label: '繁体标准' },
@@ -911,7 +929,7 @@ export function App() {
 
       {current && <section className="now-playing" data-open={nowPlaying ? 'true' : 'false'} aria-label="正在播放" aria-hidden={!nowPlaying} inert={!nowPlaying}>
           <div className="now-bg"><AnimatePresence mode="popLayout" initial={false}>{current.cover && <motion.img key={current.id} src={media(current, 'cover')} alt="" initial={{ opacity: 0, scale: 1.05 }} animate={{ opacity: .7, scale: 1 }} exit={{ opacity: 0, scale: .98 }} transition={{ duration: .58, ease: smoothEase }}/>}</AnimatePresence></div>
-          <header><IconButton icon={ChevronDown} label="收起播放页" onClick={() => setNowPlaying(false)}/><div className="now-header-tools">{(!!lyric.file?.text || lyricHasHan) && <span className="lyric-ai-tools">{!!lyric.file?.text && <button type="button" className="ruby-button translate-button" aria-label="翻译" data-tooltip={translateState.state === 'downloading' ? `正在下载翻译模型 ${Math.round(translateState.progress * 100)}%` : translateState.state === 'working' ? '正在翻译…' : '翻译'} aria-haspopup="menu" aria-expanded={!!translateMenu} aria-pressed={!!translateChoice} data-busy={translateState.state === 'working' || translateState.state === 'downloading' ? 'true' : undefined} onClick={event => openTranslateMenu(event.currentTarget.getBoundingClientRect())}>译</button>}{lyricHasHan && <button type="button" className="ruby-button" aria-label="注音" data-tooltip="注音" aria-haspopup="menu" aria-expanded={!!rubyMenu} aria-pressed={!!rubyChoice} onClick={event => { const box = event.currentTarget.getBoundingClientRect(); setRubyMenu(rubyMenu ? undefined : { x: box.left, y: box.bottom + 6 }); }}>音</button>}</span>}<IconButton icon={ListMusic} label="播放队列" onClick={toggleQueue}/></div></header>
+          <header><IconButton icon={ChevronDown} label="收起播放页" onClick={() => setNowPlaying(false)}/><div className="now-header-tools">{(!!lyric.file?.text || rubyAvailable) && <span className="lyric-ai-tools">{!!lyric.file?.text && <button type="button" className="ruby-button translate-button" aria-label="翻译" data-tooltip={translateState.state === 'downloading' ? `正在下载翻译模型 ${Math.round(translateState.progress * 100)}%` : translateState.state === 'working' ? '正在翻译…' : '翻译'} aria-haspopup="menu" aria-expanded={!!translateMenu} aria-pressed={!!translateChoice} data-busy={translateState.state === 'working' || translateState.state === 'downloading' ? 'true' : undefined} onClick={event => openTranslateMenu(event.currentTarget.getBoundingClientRect())}>译</button>}{rubyAvailable && <button type="button" className="ruby-button" aria-label="注音" data-tooltip="注音" aria-haspopup="menu" aria-expanded={!!rubyMenu} aria-pressed={!!lyricRuby} onClick={event => { const box = event.currentTarget.getBoundingClientRect(); setRubyMenu(rubyMenu ? undefined : { x: box.left, y: box.bottom + 6 }); }}>音</button>}</span>}<IconButton icon={ListMusic} label="播放队列" onClick={toggleQueue}/></div></header>
           <div className="now-layout">
             <AnimatePresence mode="wait" initial={false}>
               <motion.div key={current.id} className="now-left" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={textTransition}>
@@ -924,7 +942,7 @@ export function App() {
             <div className="now-right">
               <AnimatePresence mode="wait" initial={false}>
                 <motion.div key={lyric.file ? `lyrics:${current.id}:${lyric.source}:${lyric.file.source}` : `empty:${current.id}:${lyricLoading || lookingOnline}`} className="lyric-content" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={textTransition}>
-                  {shownLyric ? <Lyrics file={shownLyric} audio={audio} offset={settings?.lyricOffset || 0} active={nowPlaying} onSeek={seek} typography={{ font: settings?.lyricFont, weight: settings?.lyricWeight, scale: settings?.lyricScale }} ruby={lyricRuby} translate={translateChoice || undefined} onTranslateState={onTranslateState}/> : <div className="no-lyrics"><AudioLines size={38}/><h3>{lyricLoading ? '正在读取歌词' : lookingOnline ? '正在查找在线歌词' : '让文字也跟着旋律'}</h3><p>自动读取歌曲旁的同名歌词文件{settings?.onlineLyrics !== false ? '，没有时从 AMLL TTML DB 查找' : ''}<br/>也可以手动关联 LRC、TTML、YRC 或 TXT</p><PressableButton className="secondary-button" onClick={() => void attachLyrics()}><Plus size={16}/>关联歌词</PressableButton></div>}
+                  {shownLyric ? <Lyrics file={shownLyric} audio={audio} offset={settings?.lyricOffset || 0} active={nowPlaying} onSeek={seek} typography={{ font: settings?.lyricFont, weight: settings?.lyricWeight, scale: settings?.lyricScale }} ruby={lyricRuby} onRubyError={onRubyError} translate={translateChoice || undefined} onTranslateState={onTranslateState}/> : <div className="no-lyrics"><AudioLines size={38}/><h3>{lyricLoading ? '正在读取歌词' : lookingOnline ? '正在查找在线歌词' : '让文字也跟着旋律'}</h3><p>自动读取歌曲旁的同名歌词文件{settings?.onlineLyrics !== false ? '，没有时从 AMLL TTML DB 查找' : ''}<br/>也可以手动关联 LRC、TTML、YRC 或 TXT</p><PressableButton className="secondary-button" onClick={() => void attachLyrics()}><Plus size={16}/>关联歌词</PressableButton></div>}
                 </motion.div>
               </AnimatePresence>
               <div className="lyric-toolbar">
@@ -974,7 +992,7 @@ export function App() {
               <div className="settings-row"><span>歌词字体</span><Select label="歌词字体" value={settings?.lyricFont || ''} onChange={value => setSettings({ lyricFont: value })} options={[{ value: '', label: fonts ? '默认 · 跟随应用' : '默认 · 跟随应用（正在读取字体…）' }, ...(fonts || []).map(font => ({ value: font.family, label: font.name, style: { fontFamily: `"${font.family}", var(--font-ui)` } })), ...(settings?.lyricFont && fonts && !fonts.some(font => font.family === settings.lyricFont) ? [{ value: settings.lyricFont, label: `${settings.lyricFont}（未安装）` }] : [])]}/></div>
               <div className="settings-row"><span>歌词粗细</span><Select label="歌词粗细" value={String(settings?.lyricWeight || 0)} onChange={value => setSettings({ lyricWeight: Number(value) })} options={[{ value: '0', label: '默认' }, ...[[300, '细'], [400, '常规'], [500, '中等'], [600, '半粗'], [700, '粗'], [800, '特粗'], [900, '黑']].map(([weight, name]) => ({ value: String(weight), label: `${name} · ${weight}`, style: { fontWeight: weight as number } }))]}/></div>
               <div className="settings-row"><span>歌词大小</span><Select label="歌词大小" value={String(settings?.lyricScale || 1)} onChange={value => setSettings({ lyricScale: Number(value) })} options={[.8, .9, 1, 1.1, 1.2, 1.35, 1.5].map(scale => ({ value: String(scale), label: scale === 1 ? '默认 · 100%' : `${Math.round(scale * 100)}%` }))}/></div>
-              <div className="settings-row settings-toggle-row"><span className="settings-row-label"><span>注音另起一行</span><small>播放页右上角「音」可为中文歌词加注音（目前支持粤语粤拼）。关闭时注音标在每个字上方，打开后在整行歌词下方单独显示。</small></span><button type="button" role="switch" className="switch" aria-label="注音另起一行" aria-checked={!!settings?.lyricRubyBelow} onClick={() => setSettings({ lyricRubyBelow: !settings?.lyricRubyBelow })}><span/></button></div>
+              <div className="settings-row settings-toggle-row"><span className="settings-row-label"><span>注音另起一行</span><small>播放页右上角「音」可为歌词加注音：中文歌词标粤拼，日文歌词标罗马音或假名，歌词自带罗马音时也可直接显示。关闭时注音标在文字上方，打开后在整行歌词下方单独显示。</small></span><button type="button" role="switch" className="switch" aria-label="注音另起一行" aria-checked={!!settings?.lyricRubyBelow} onClick={() => setSettings({ lyricRubyBelow: !settings?.lyricRubyBelow })}><span/></button></div>
               <div className="lyric-font-preview" aria-label="歌词字体预览" style={lyricTypographyStyle({ font: settings?.lyricFont, weight: settings?.lyricWeight, scale: settings?.lyricScale })}><span>让文字也跟着旋律</span><small>Lyrics follow the melody · 0123</small></div>
               </section><section role="tabpanel" aria-label="音乐库" hidden={settingsTab !== 'library'}><h4>音乐库</h4><p className="settings-hint">添加文件夹时包含子目录，歌曲先加入，标签和封面在后台补齐。重新扫描会更新标签和新增歌曲。移除文件夹会同时清理子目录、收藏和歌单中的歌曲记录，磁盘音乐会保留。</p>
               <div className="folder-list">{library?.folders.map(folder => <div key={folder}><FolderOpen size={16}/><span data-tooltip={folder}>{folder}</span><IconButton icon={X} label={`移除文件夹 ${folder}`} disabled={busy} onClick={() => void removeFolder(folder)}/></div>)}{!library?.folders.length && <p>还没有导入音乐文件夹</p>}</div>

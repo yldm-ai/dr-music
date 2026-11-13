@@ -41,7 +41,7 @@ await writeFile(path.join(lyricsRoot, 'lrclib.net', 'api', 'search'), JSON.strin
 // lrc.red answers in its own TTML dialect: lrc: attributes and transliterations inside <head>.
 await mkdir(path.join(lyricsRoot, 'lrc.red', 's'), { recursive: true });
 await writeFile(path.join(lyricsRoot, 'lrc.red', 'search.json'), JSON.stringify({ hits: [{ isrc: 'CNA000000001', title: '午后散步', artist: '在线歌手', album: '', duration: 16 }], next: null }));
-await writeFile(path.join(lyricsRoot, 'lrc.red', 's', 'CNA000000001.ttml'), '<tt xmlns="http://www.w3.org/ns/ttml" xmlns:lrc="http://lrc.red/lyric-ttml-internal" xmlns:ttm="http://www.w3.org/ns/ttml#metadata" lrc:timing="Word" xml:lang="zh-Hans"><head><metadata><ttm:agent type="person" xml:id="v1"/><sourceMetadata xmlns="http://lrc.red/lyric-ttml-internal"><transliterations><transliteration xml:lang="zh-Latn-pinyin"><text for="L1"><span xmlns="http://www.w3.org/ns/ttml" begin="0.5" end="6">wu hou</span></text></transliteration></transliterations></sourceMetadata></metadata></head><body dur="0:16.000"><div begin="0.5" end="12" lrc:songPart="Verse"><p begin="0.5" end="6" lrc:key="L1" ttm:agent="v1"><span begin="0.5" end="3">lrc.red </span><span begin="3" end="6">午后</span></p><p begin="6" end="12" lrc:key="L2" ttm:agent="v1"><span begin="6" end="12">lrc.red 第二句</span></p></div></body></tt>');
+await writeFile(path.join(lyricsRoot, 'lrc.red', 's', 'CNA000000001.ttml'), '<tt xmlns="http://www.w3.org/ns/ttml" xmlns:lrc="http://lrc.red/lyric-ttml-internal" xmlns:ttm="http://www.w3.org/ns/ttml#metadata" lrc:timing="Word" xml:lang="zh-Hans"><head><metadata><ttm:agent type="person" xml:id="v1"/><sourceMetadata xmlns="http://lrc.red/lyric-ttml-internal"><transliterations><transliteration xml:lang="zh-Latn-pinyin"><text for="L1"><span xmlns="http://www.w3.org/ns/ttml" begin="0.5" end="6">wu hou</span></text></transliteration></transliterations></sourceMetadata></metadata></head><body dur="0:16.000"><div begin="0.5" end="12" lrc:songPart="Verse"><p begin="0.5" end="6" lrc:key="L1" ttm:agent="v1"><span begin="0.5" end="3">lrc.red </span><span begin="3" end="6">午后</span></p><p begin="6" end="12" lrc:key="L2" ttm:agent="v1"><span begin="6" end="12">lrc.red 第二句</span></p><p begin="12" end="16" lrc:key="L3" ttm:agent="v1"><span begin="12" end="16">君の名前を呼ぶ</span></p></div></body></tt>');
 await writeFile(path.join(root, 'songs', '午后散步.lrc'), '[00:00.00]测试歌词第一句\n[00:04.00]测试歌词第二句\n[00:08.00]测试歌词第三句\n[00:12.00]最后一句');
 await writeFile(path.join(root, 'songs', '夜色温柔.ttml'), '<tt xmlns="http://www.w3.org/ns/ttml"><body><div><p begin="00:01.000" end="00:03.000"><span begin="00:01.000" end="00:02.000">你好</span><span begin="00:02.000" end="00:03.000">世界</span></p></div></body></tt>');
 const server = createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening'); const port = server.address().port; await new Promise(resolve => server.close(resolve));
@@ -640,6 +640,36 @@ try {
   await sources.getByRole('menuitem', { name: 'lrc.red', exact: true }).click();
   await lyricText('lrc.red 第二句');
   await page.waitForFunction(async () => (await window.music.getLibrary()).tracks.find(t => t.title === '午后散步').lyricPreference === 'lrcred');
+  // 音 on a Japanese lyric that brings its own romanization (lrc.red's transliteration, hidden until
+  // chosen): no 粤语; 罗马音 opens 在线 / 本地 (kuromoji in a worker); 假名注音 puts hiragana over kanji.
+  const playerText = () => page.evaluate(() => document.querySelector('.now-playing .amll-lyric-player')?.textContent ?? '');
+  const rubyWords = () => page.evaluate(() => [...document.querySelectorAll('.now-playing .amll-lyric-player [class*="rubyWord"]')].map(e => e.textContent).join(' '));
+  const openRuby = async () => { await page.getByRole('button', { name: '注音', exact: true }).click(); const menu = page.getByRole('menu', { name: '注音', exact: true }); await menu.waitFor(); return menu; };
+  const menuLabels = menu => menu.getByRole('menuitem').evaluateAll(items => items.map(item => item.getAttribute('aria-label')));
+  await lyricText('君の名前を呼ぶ');
+  assert.equal(/wu\s*hou/.test(await playerText()), false);
+  let rubyMenu = await openRuby();
+  assert.deepEqual(await menuLabels(rubyMenu), ['不显示', '罗马音', '假名注音']);
+  await rubyMenu.getByRole('menuitem', { name: '罗马音', exact: true }).click();
+  let romajiMenu = page.getByRole('menu', { name: '罗马音', exact: true }); await romajiMenu.waitFor();
+  assert.deepEqual(await menuLabels(romajiMenu), ['在线', '本地']);
+  await romajiMenu.getByRole('menuitem', { name: '在线', exact: true }).click();
+  await page.waitForFunction(() => /wu[\s\S]*hou/.test(document.querySelector('.now-playing .amll-lyric-player')?.textContent ?? ''));
+  assert.equal(await page.getByRole('button', { name: '注音', exact: true }).getAttribute('aria-pressed'), 'true');
+  rubyMenu = await openRuby();
+  await rubyMenu.getByRole('menuitem', { name: '罗马音', exact: true }).click();
+  await page.getByRole('menu', { name: '罗马音', exact: true }).getByRole('menuitem', { name: '本地', exact: true }).click();
+  await page.waitForFunction(() => /kimi.*no.*namae.*o.*yobu/.test([...document.querySelectorAll('.now-playing .amll-lyric-player [class*="rubyWord"]')].map(e => e.textContent).join(' ')), null, { timeout: 30000 });
+  assert.equal(/wu\s*hou/.test(await playerText()), false);
+  await page.waitForTimeout(250); await page.screenshot({ path: path.join(root, 'lyric-romaji.png') });
+  rubyMenu = await openRuby();
+  await rubyMenu.getByRole('menuitem', { name: '假名注音', exact: true }).click();
+  await page.waitForFunction(() => { const text = [...document.querySelectorAll('.now-playing .amll-lyric-player [class*="rubyWord"]')].map(e => e.textContent); return text.includes('きみ') && text.includes('なまえ') && text.includes('よ'); });
+  assert.equal(/kimi/.test(await rubyWords()), false);
+  await page.waitForTimeout(250); await page.screenshot({ path: path.join(root, 'lyric-kana.png') });
+  rubyMenu = await openRuby();
+  await rubyMenu.getByRole('menuitem', { name: '不显示', exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector('.now-playing .amll-lyric-player [class*="rubyWord"]'));
   sources = await openSources();
   await sources.getByRole('menuitem', { name: 'AMLL TTML DB', exact: true }).click();
   await lyricText('午后在线歌词');

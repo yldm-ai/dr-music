@@ -28,6 +28,8 @@ public:
     std::function<bool()> on_cursor;
     std::function<void()> on_focus;
     std::function<void()> on_move;
+    /** WebView caption mode: the pointer entered (true) or left (false) the window, caption included. */
+    std::function<void(bool)> on_pointer;
     bool direct2d() const { return direct2d_; }
     bool web_caption() const { return web_caption_; }
 private:
@@ -44,11 +46,13 @@ private:
     int caption_hit(POINT) const;
     void hover(int hit, bool nonclient);
     void caption_tip(int hit);
+    void pointer_inside(bool inside);
+    void check_pointer();
     RECT caption_button(int hit) const;
     HWND hwnd_ = nullptr;
     HWND caption_ = nullptr;
     bool direct2d_ = true, web_caption_ = false, dark_ = true, dimmed_ = false;
-    bool caption_layout_ready_ = false, caption_hot_ = false, caption_pressed_ = false, web_mouse_inside_ = false;
+    bool caption_layout_ready_ = false, caption_hot_ = false, caption_pressed_ = false, web_mouse_inside_ = false, pointer_inside_ = false;
     RECT caption_rect_{}, minimize_rect_{}, maximize_rect_{}, close_rect_{};
     int hot_ = HTNOWHERE, pressed_ = HTNOWHERE, tip_ = HTNOWHERE;
     const std::wstring title_ = L"DR Music";

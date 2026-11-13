@@ -105,6 +105,16 @@ try {
   assert.equal(searchFocused.height, searchBefore.height);
   await page.getByRole('textbox', { name: '搜索音乐' }).blur();
   await page.screenshot({ path: path.join(root, 'library.png') });
+  // The hero's cover stack fans and its record slides out under the pointer.
+  const recordX = () => page.locator('.feature-record-slot').evaluate(element => element.getBoundingClientRect().x);
+  const restingRecord = await recordX();
+  await page.locator('.feature-hero').hover();
+  await page.waitForFunction(resting => document.querySelector('.feature-record-slot').getBoundingClientRect().x > resting + 20, restingRecord); // the record slid out
+  await page.waitForTimeout(400);
+  // The sheen across the card is off unless switched on in 设置 → 外观.
+  assert.equal(await page.locator('.feature-sheen').evaluate(element => getComputedStyle(element).animationName), 'none');
+  await page.screenshot({ path: path.join(root, 'hero-hover.png') });
+  await page.mouse.move(700, 700);
   // 简繁通搜: traditional input finds simplified titles only while the OpenCC-backed setting is on.
   assert.equal((await page.evaluate(() => window.music.chineseStatus())).available, true);
   assert.deepEqual(await page.evaluate(() => window.music.simplify(['寫給明天', 'Hello'])), ['写给明天', 'Hello']);
@@ -593,11 +603,12 @@ try {
     start: Number(element.dataset.virtualStart),
     end: Number(element.dataset.virtualEnd),
     rendered: element.querySelectorAll('.queue-item').length,
-    height: element.querySelector('.queue-virtual-space')?.getBoundingClientRect().height,
+    height: element.querySelector('.queue-virtual-space')?.offsetHeight, // layout size: the drawer may still be scaling in
   }));
   assert.equal(virtualQueue.rendered, virtualQueue.end - virtualQueue.start);
-  assert.equal(virtualQueue.height, 60);
+  assert.equal(virtualQueue.height, 52);
   assert.equal(await page.locator('.queue-item').first().evaluate(element => getComputedStyle(element).transform), 'none');
+  await page.waitForTimeout(400); await page.screenshot({ path: path.join(root, 'queue.png') });
   await page.getByRole('button', { name: '关闭播放队列', exact: true }).click();
   await page.waitForFunction(() => {
     const drawer = document.querySelector('.queue-drawer');
@@ -610,6 +621,58 @@ try {
   await page.getByRole('button', { name: '播放 夜色温柔', exact: true }).click();
   await page.getByRole('button', { name: '打开歌词播放页', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('.amll-lyric-player')?.textContent.includes('你好世界'));
+  // Player page layout: the switch shows only while the pointer is in its zone (where it rests when shown), and its
+  // highlight sits on the chosen button as it slides in; 仅歌词 / 仅封面 hide the other half and are saved.
+  const layoutSwitch = page.getByRole('radiogroup', { name: '播放页布局' });
+  const switchShown = () => page.evaluate(() => getComputedStyle(document.querySelector('.now-layout-switch')).transform === 'none');
+  const zone = await page.locator('.now-layout-zone').boundingBox();
+  await page.mouse.move(zone.x + zone.width / 2, zone.y + zone.height + 12); // just below the zone: still hidden
+  await page.waitForTimeout(400);
+  assert.equal(await switchShown(), false, 'layout switch showed outside its zone');
+  const showSwitch = async () => { await page.locator('.now-layout-zone').hover(); await page.waitForFunction(() => getComputedStyle(document.querySelector('.now-layout-switch')).transform === 'none'); };
+  await showSwitch();
+  const pillOffset = await page.evaluate(() => { const pill = document.querySelector('.now-layout-pill').getBoundingClientRect(), chosen = document.querySelector('.now-layout-switch [aria-checked="true"]').getBoundingClientRect(); return Math.abs(pill.x - chosen.x) + Math.abs(pill.width - chosen.width); });
+  assert.ok(pillOffset < 1, `layout switch highlight is ${pillOffset}px off the chosen button`);
+  await layoutSwitch.getByRole('radio', { name: '仅歌词' }).click();
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.now-left')).display === 'none');
+  await page.waitForFunction(async () => (await window.music.getLibrary()).settings.nowLayout === 'lyrics');
+  assert.equal(await page.locator('.now-playing [class*="_lyricLine"]').first().evaluate(element => getComputedStyle(element).textAlign), 'center');
+  // Away from the top, a single-pane layout hides the collapse arrow with the switch.
+  const collapse = page.getByRole('button', { name: '收起播放页', exact: true });
+  await page.mouse.move(640, 500);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.now-playing>header>.icon-button')).opacity === '0');
+  await page.mouse.move(640, 20);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.now-playing>header>.icon-button')).opacity === '1');
+  await showSwitch();
+  await layoutSwitch.getByRole('radio', { name: '仅封面' }).click();
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.now-right')).display === 'none' && getComputedStyle(document.querySelector('.now-left')).display !== 'none');
+  await page.waitForTimeout(400); await page.screenshot({ path: path.join(root, 'now-cover-only.png') });
+  // Cover only fits the window: the transport stays fully visible under the cover.
+  assert.ok(await page.locator('.now-left .transport').evaluate(element => element.getBoundingClientRect().bottom <= innerHeight), 'cover-only transport is cut off');
+  assert.equal(await collapse.isVisible(), true);
+  await layoutSwitch.getByRole('radio', { name: '默认' }).click();
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.now-right')).display !== 'none' && getComputedStyle(document.querySelector('.now-left')).display !== 'none');
+  // Left, the switch stays 3 s (coming back within that keeps it), then slides away.
+  await page.mouse.move(640, 600);
+  await page.waitForTimeout(1000);
+  assert.equal(await switchShown(), true, 'layout switch hid at once after the pointer left');
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.now-layout-switch')).transform !== 'none', null, { timeout: 4000 });
+  // The cover column is as far from the window's top (cover) as from its foot (the play buttons).
+  await page.waitForFunction(() => {
+    const left = document.querySelector('.now-left'), cover = left.firstElementChild.getBoundingClientRect(), line = left.querySelector('.transport').getBoundingClientRect();
+    const tilt = document.querySelector('.now-cover'), scaled = (cover.height - tilt.offsetHeight) / 2; // the paused cover is scaled about its middle
+    return Math.abs((cover.top + scaled) - (innerHeight - line.bottom)) <= 2;
+  });
+  // The header's corner buttons sit 10 px from the page's top and the window's sides.
+  assert.deepEqual(await page.evaluate(() => { const arrow = document.querySelector('.now-playing>header>.icon-button').getBoundingClientRect(), tools = document.querySelector('.now-header-tools > .icon-button').getBoundingClientRect(); return [Math.round(arrow.top), Math.round(arrow.left), Math.round(tools.top), Math.round(innerWidth - tools.right)]; }), [10, 10, 10, 10]);
+  // The lyrics run from 10 px under the header's tools (音 / 译 / queue) to 10 px above the lyric tools.
+  await page.waitForFunction(() => { const box = document.querySelector('.now-right .lyrics-shell').getBoundingClientRect(), tools = document.querySelector('.now-header-tools > .icon-button').getBoundingClientRect(), bar = document.querySelector('.now-right .lyric-toolbar').getBoundingClientRect(); return Math.abs(box.top - tools.bottom - 10) <= 1 && Math.abs(bar.top - box.bottom - 10) <= 1; });
+  // ⋯ beside the heart opens the song's menu, with 添加到歌单.
+  await page.locator('.now-title').getByRole('button', { name: '更多操作', exact: true }).click();
+  const nowMenu = page.getByRole('menu', { name: /夜色温柔 歌曲菜单/ });
+  await nowMenu.getByRole('menuitem', { name: '添加到歌单' }).waitFor();
+  await page.keyboard.press('Escape');
+  await nowMenu.waitFor({ state: 'detached' });
   await page.keyboard.press('Escape');
 
   // Online lyrics: a song without its own lyric shows the AMLL TTML DB match automatically.
@@ -712,7 +775,7 @@ try {
   assert.equal(await toolsOpacity(), '0');
   const near = await page.getByRole('button', { name: '播放队列', exact: true }).last().boundingBox();
   await page.mouse.move(near.x - 60, near.y + near.height / 2); await page.waitForTimeout(300);
-  assert.equal(await toolsOpacity(), '1');
+  await page.locator('.lyric-ai-tools').evaluate(element => new Promise(resolve => { const check = () => getComputedStyle(element).opacity === '1' ? resolve() : requestAnimationFrame(check); check(); })); // fades in
   // ← / → move the current song by 5 seconds.
   await page.mouse.move(300, 500);
   const progressInput = page.locator('.now-left input[aria-label="播放进度"]');
@@ -896,6 +959,7 @@ try {
   });
   await page.waitForFunction(before => { const style = getComputedStyle(document.querySelector('.amll-lyric-player')); return style.fontWeight === before.weight && style.fontFamily === before.family && parseFloat(style.fontSize) === before.size; }, lyricBefore);
   await page.getByRole('tab', { name: '音乐库', exact: true }).click();
+  await page.waitForTimeout(100); // the tab opens scrolled to its top; that scroll would close a tip opened before it
   await page.locator('.folder-list span').first().hover();
   await page.getByRole('tooltip').filter({ hasText: 'songs' }).waitFor();
   assert.equal(await page.getByRole('tooltip').getAttribute('data-theme'), 'light');
@@ -928,6 +992,9 @@ try {
   assert.equal(await page.locator('.now-playing').evaluate(element => Math.round(element.getBoundingClientRect().top)), 0);
   assert.equal(await page.locator('.web-caption').evaluate(element => getComputedStyle(element).backgroundColor), 'rgba(0, 0, 0, 0)');
   await page.screenshot({ path: path.join(root, 'webview-caption-immersive.png') });
+  // The real cursor may be outside the window, which hides the caption and the page's header; moving over the page brings them back.
+  await page.mouse.move(400, 300);
+  await page.waitForFunction(() => !document.querySelector('.now-playing[data-away]') && !document.querySelector('.web-caption.away'));
   await page.getByRole('button', { name: '收起播放页', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('.now-playing')?.getAttribute('data-open') === 'false');
   await page.getByRole('button', { name: /设置与关于/ }).click();

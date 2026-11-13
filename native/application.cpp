@@ -481,6 +481,7 @@ int Application::run(HINSTANCE instance) {
     };
     window_.on_caption_event = [this](const std::wstring &event) { if (!closing_) webview_.send({{"event", "caption-button"}, {"data", {{"event", utf8(event)}}}}); };
     window_.on_mouse = [this](UINT message, WPARAM w, LPARAM l) { webview_.mouse(message, w, l); };
+    window_.on_pointer = [this](bool inside) { if (!closing_) webview_.send({{"event", "window-pointer"}, {"data", {{"inside", inside}}}}); };
     window_.on_cursor = [this] { return webview_.cursor(); };
     window_.on_focus = [this] { webview_.focus(); };
     window_.on_move = [this] { webview_.notify_move(); };

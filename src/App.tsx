@@ -1,9 +1,9 @@
 import { NativePlayback } from './playback';
 import { VolumeControl } from './VolumeControl';
 import { ProgressSlider } from './ProgressSlider';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion, MotionConfig, type Transition } from 'motion/react';
-import { Music2, Library as LibraryIcon, Heart, Disc3, Mic2, FolderPlus, Plus, Search, Play, Pause, SkipBack, SkipForward, Shuffle, Repeat, Repeat1, ListMusic, Maximize2, ChevronDown, ChevronLeft, ChevronRight, Settings2, MoreHorizontal, FolderOpen, RefreshCw, X, Check, FileMusic, ArrowUpRight, Headphones, Trash2, Pencil, ListPlus, AudioLines, Folder, FolderSearch, Copy, ListX, Globe, Languages } from 'lucide-react';
+import { Music2, Library as LibraryIcon, Heart, Disc3, Mic2, FolderPlus, Plus, Search, Play, Pause, SkipBack, SkipForward, Shuffle, Repeat, Repeat1, ListMusic, Maximize2, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Settings2, MoreHorizontal, FolderOpen, RefreshCw, X, Check, FileMusic, ArrowUpRight, Headphones, Trash2, Pencil, ListPlus, AudioLines, Folder, FolderSearch, Copy, ListX, Globe, Languages } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { Library, Track, Settings, LyricFile, Progress, Playlist, FontFamily, OnlineLyricResult } from './types';
 import { chooseLyric, providerName, LYRIC_PROVIDERS, type LyricSource } from './lib/lyricSource';
@@ -12,6 +12,7 @@ import { virtualRange } from './lib/virtual';
 import { withoutFolder, withMetadata, musicFolders } from './lib/library';
 import { searchText, hasHan, matchesQuery } from './lib/search';
 import { ContextMenu, type MenuItem } from './ContextMenu';
+import { FeatureStack, TiltCover, type StackCover } from './CoverEffects';
 import { Lyrics, lyricTypographyStyle, type TranslateState } from './Lyrics';
 import { parseLyrics } from './lib/lyrics';
 import { hasSourceRoman, type RubyChoice } from './lib/ruby';
@@ -19,7 +20,7 @@ import { hasKana } from './lib/japanese';
 import { hasSourceTranslation, READINESS_LABEL, sourceLanguage, translateState as translateReadiness, translatorStatus, type TranslatorStatus } from './lib/translate';
 import { TranslationSettings } from './TranslationModels';
 import { Select } from './Select';
-import { onCaptionButton, onWindowState } from './bridge';
+import { onCaptionButton, onWindowPointer, onWindowState } from './bridge';
 
 const media = (track: Track, kind = 'audio') => `https://media.dr-music.local/${kind}/${track.id}${kind === 'cover' && (track.coverHash || track.coverRevision !== undefined) ? `?v=${track.coverHash || track.coverRevision}` : ''}`;
 const smoothEase: [number, number, number, number] = [.22, 1, .36, 1];
@@ -28,7 +29,7 @@ const quickTextTransition: Transition = { duration: .24, ease: smoothEase };
 const pressTransition: Transition = { duration: .2, ease: smoothEase };
 const playTransition = { type: 'spring', stiffness: 340, damping: 32, mass: .78 } as const;
 const layoutTransition = { type: 'spring', stiffness: 250, damping: 30, mass: .9 } as const;
-const QUEUE_ROW_HEIGHT = 60;
+const QUEUE_ROW_HEIGHT = 52;
 // Traditional standards for the lyric 繁 button (same choices as ../dr-dict).
 const TRADITIONAL_NAMES = { t: '繁体（OpenCC 标准）', tw: '台湾正体', twp: '台湾正体及台湾用词', hk: '香港繁体' } as const;
 const QUEUE_OVERSCAN = 4;
@@ -68,6 +69,40 @@ function IconButton({ icon: Icon, label, active, ...props }: { icon: LucideIcon;
   </PressableButton>;
 }
 
+const NOW_LAYOUTS = [['default', '默认'], ['lyrics', '仅歌词'], ['cover', '仅封面']] as const;
+/**
+ * Player page layout switch. It shows only while the pointer is in its zone (exactly where it rests when shown,
+ * or while it has keyboard focus) and slides down in one piece: the highlight is placed from the chosen button's
+ * offset inside the switch, so it never animates on its own while the switch moves.
+ */
+function LayoutSwitch({ value, onChange }: { value: NonNullable<Settings['nowLayout']>; onChange: (value: NonNullable<Settings['nowLayout']>) => void }) {
+  const [shown, setShown] = useState(false);
+  // Hover intent: shown once the pointer rests in the zone a moment (passing through shows nothing), and kept for
+  // 3 s after it leaves (coming back cancels that), the way video players keep their controls.
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const enter = () => { clearTimeout(timer.current); if (!shown) timer.current = window.setTimeout(() => setShown(true), 100); };
+  const leave = () => { clearTimeout(timer.current); if (shown) timer.current = window.setTimeout(() => setShown(false), 3000); };
+  const group = useRef<HTMLDivElement>(null);
+  const [pill, setPill] = useState<{ left: number; width: number }>();
+  useLayoutEffect(() => {
+    const measure = () => {
+      const chosen = group.current?.querySelector<HTMLElement>('[aria-checked="true"]');
+      if (chosen) setPill(old => old?.left === chosen.offsetLeft && old.width === chosen.offsetWidth ? old : { left: chosen.offsetLeft, width: chosen.offsetWidth });
+    };
+    measure();
+    const observer = new ResizeObserver(measure); // web fonts can change the buttons' widths after the first layout
+    if (group.current) observer.observe(group.current);
+    return () => observer.disconnect();
+  }, [value]);
+  return <div className="now-layout-zone" data-shown={shown ? 'true' : undefined} onPointerEnter={enter} onPointerLeave={leave}>
+    <div ref={group} className="now-layout-switch" role="radiogroup" aria-label="播放页布局">
+      {pill && <span className="now-layout-pill" style={{ transform: `translateX(${pill.left}px)`, width: pill.width }} aria-hidden="true"/>}
+      {NOW_LAYOUTS.map(([id, label]) => <button key={id} type="button" role="radio" aria-checked={value === id} onClick={() => onChange(id)}>{label}</button>)}
+    </div>
+  </div>;
+}
+
 export function App() {
   const [library, setLibrary] = useState<Library>();
   const [page, setPage] = useState('songs');
@@ -87,6 +122,8 @@ export function App() {
   const [queueViewport, setQueueViewport] = useState({ scrollTop: 0, height: 0 });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState('appearance');
+  // Each settings tab opens at its top, not at the scroll position of the tab before.
+  useEffect(() => { document.querySelector('.settings-body')?.scrollTo({ top: 0 }); }, [settingsTab]);
   const [maximized, setMaximized] = useState(false);
   const [captionHot, setCaptionHot] = useState(false);
   const [captionActive, setCaptionActive] = useState(false);
@@ -125,7 +162,7 @@ export function App() {
   const [appleToken, setAppleToken] = useState<{ set: boolean; draft: string }>({ set: false, draft: '' });
   const [mirrorDraft, setMirrorDraft] = useState<string>();
   const onlineRequest = useRef(0);
-  const [menu, setMenu] = useState<{ point: { x: number; y: number }; ids: string[]; playlistsOnly?: boolean }>();
+  const [menu, setMenu] = useState<{ point: { x: number; y: number }; ids: string[]; playlistsOnly?: boolean; fromNowPlaying?: boolean }>();
   const [selection, setSelection] = useState<string[]>([]);
   const selectionAnchor = useRef<string | undefined>(undefined);
   // The sidebar folder list starts collapsed every launch.
@@ -555,6 +592,57 @@ export function App() {
   }, [filtered, page]);
   const totalDuration = filtered.reduce((n, t) => n + t.duration, 0);
   const heading = query ? '搜索结果' : group || selectedPlaylist?.name || selectedFolder?.name || ({ songs: '你的音乐，随时在场。', favorites: '我喜欢的音乐', albums: '专辑收藏', artists: '艺术家' }[page] || '音乐库');
+  // The hero's stack (MyGo Music's feature card): the first three album covers of what the page lists.
+  const featureCovers = useMemo(() => {
+    const seen = new Set<string>(), covers: StackCover[] = [];
+    for (const track of filtered) {
+      if (!track.cover || seen.has(track.album || track.id)) continue;
+      seen.add(track.album || track.id); covers.push({ id: track.id, src: media(track, 'cover'), label: `${track.album} 封面` });
+      if (covers.length === 3) break;
+    }
+    return covers;
+  }, [filtered]);
+  const featureOurs = !!currentId && queue.length === filtered.length && queue.length > 0 && queue[0] === filtered[0].id && queue.includes(currentId);
+  const [heroHover, setHeroHover] = useState(false);
+  // Player page: its layout, the switch shown as the pointer nears the top, and (WebView caption) its controls hidden while the pointer is out of the window.
+  const nowLayout = settings?.nowLayout || 'default';
+  const [nearTop, setNearTop] = useState(false);
+  const [pointerAway, setPointerAway] = useState(false);
+  useEffect(() => { if (settings?.titleBar !== 'webview2') { setPointerAway(false); return; } return onWindowPointer(inside => setPointerAway(!inside)); }, [settings?.titleBar]);
+  // Player page: the cover column sits as far from the window's top (cover) as from its foot (the play buttons).
+  // It is laid out under the header, so it is moved by half the difference, measured from the layout boxes
+  // (offsets ignore the cover's tilt and breathing) and kept on resizes, layout and song changes.
+  useEffect(() => {
+    if (!current) return; // measured while the page is still hidden too, so opening it never resizes the lyrics mid-animation
+    const section = document.querySelector<HTMLElement>('.now-playing'), layout = section?.querySelector<HTMLElement>('.now-layout');
+    if (!section || !layout) return;
+    let frame = 0;
+    const center = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => {
+      // The lyrics start 10 px under the header's tools (音 / 译 / queue); CSS pulls them up by this distance.
+      const right = layout.querySelector<HTMLElement>('.now-right'), tools = section.querySelector<HTMLElement>('.now-header-tools > .icon-button'); // the button, not the tools' enlarged hover area
+      if (right?.offsetHeight && tools) right.style.setProperty('--lyric-rise', `${Math.round(right.getBoundingClientRect().top - tools.getBoundingClientRect().bottom - 10)}px`);
+      const left = layout.querySelector<HTMLElement>('.now-left');
+      const first = left?.firstElementChild as HTMLElement | null, last = left?.querySelector<HTMLElement>('.transport') ?? null; // cover top ↔ play buttons
+      if (!left || !first || !last || !left.offsetHeight) return;
+      const shift = parseFloat(left.dataset.shift || '0'), box = left.getBoundingClientRect(), frameBox = section.getBoundingClientRect();
+      const top = box.top - shift + first.offsetTop - frameBox.top, bottom = frameBox.bottom - (box.top - shift + last.offsetTop + last.offsetHeight);
+      const next = Math.round((bottom - top) / 2);
+      if (next === shift) return;
+      left.dataset.shift = String(next); left.style.translate = `0 ${next}px`;
+    }); };
+    const resized = new ResizeObserver(center), added = new MutationObserver(() => { const left = layout.querySelector('.now-left'); if (left) resized.observe(left); center(); });
+    resized.observe(section); added.observe(layout, { childList: true });
+    const left = layout.querySelector('.now-left'); if (left) resized.observe(left);
+    center();
+    return () => { cancelAnimationFrame(frame); resized.disconnect(); added.disconnect(); };
+  }, [current?.id, nowLayout]);
+  // Any pointer movement over the page means it is back, even before the host says so.
+  useEffect(() => {
+    if (!pointerAway) return;
+    const back = () => setPointerAway(false);
+    window.addEventListener('pointermove', back, { once: true });
+    return () => window.removeEventListener('pointermove', back);
+  }, [pointerAway]);
   const addToPlaylist = (playlist: Playlist, ids: string[]) => {
     const added = ids.filter(id => !playlist.trackIds.includes(id));
     if (!added.length) { notify(ids.length > 1 ? '所选歌曲都已在歌单中' : '这首歌已在歌单中'); return; }
@@ -677,7 +765,9 @@ export function App() {
     { label: '新建歌单…', icon: Plus, onSelect: () => setPlaylistDialog({ name: '', trackIds: ids }) },
     ...(library?.playlists.length ? [{ kind: 'separator' } as MenuItem, ...library.playlists.map((p): MenuItem => ({ label: p.name, icon: ListMusic, checked: ids.every(id => p.trackIds.includes(id)), onSelect: () => addToPlaylist(p, ids) }))] : []),
   ];
-  const menuItems = (ids: string[]): MenuItem[] => {
+  const menuItems = (ids: string[], fromNowPlaying = false): MenuItem[] => {
+    // From the player page's ⋯ button: going to a page closes the player page, and the list page's own actions stay out.
+    const go = (action: () => void) => () => { if (fromNowPlaying) setNowPlaying(false); action(); };
     const tracks = ids.map(id => trackById.get(id)).filter((track): track is Track => !!track);
     if (!tracks.length || !library) return [];
     const single = tracks.length === 1 ? tracks[0] : undefined;
@@ -686,7 +776,7 @@ export function App() {
     const folder = single && folders.find(f => f.trackIds.includes(single.id));
     return [
       ...(single ? [] : [{ kind: 'header', label: `已选择 ${tracks.length} 首歌曲` } as MenuItem]),
-      { label: playingThis ? '暂停' : single ? '播放' : '播放所选', icon: playingThis ? Pause : Play, shortcut: 'Enter', onSelect: () => single && currentId === single.id ? togglePlay() : playTrack(ids[0], single ? filtered.map(t => t.id) : ids) },
+      { label: playingThis ? '暂停' : single ? '播放' : '播放所选', icon: playingThis ? Pause : Play, shortcut: 'Enter', onSelect: () => single && currentId === single.id ? togglePlay() : playTrack(ids[0], single && !fromNowPlaying ? filtered.map(t => t.id) : ids) },
       { label: '下一首播放', icon: ListPlus, onSelect: () => playNext(ids) },
       { label: '添加到歌单', icon: ListMusic, submenu: playlistMenu(ids) },
       { kind: 'separator' },
@@ -695,13 +785,13 @@ export function App() {
       ...(single ? [
         { label: '复制歌名和歌手', onSelect: () => void copySongText(`${single.title} - ${single.artist}`) },
         { kind: 'separator' },
-        { label: `查看歌手：${single.artist}`, icon: Mic2, onSelect: () => { navigate('artists'); setGroup(single.artist); } },
-        { label: `查看专辑：${single.album}`, icon: Disc3, onSelect: () => { navigate('albums'); setGroup(single.album); } },
-        ...(folder && !selectedFolder ? [{ label: `前往文件夹：${folder.name}`, icon: Folder, onSelect: () => navigate(`folder:${folder.path}`) } as MenuItem] : []),
+        { label: `查看歌手：${single.artist}`, icon: Mic2, onSelect: go(() => { navigate('artists'); setGroup(single.artist); }) },
+        { label: `查看专辑：${single.album}`, icon: Disc3, onSelect: go(() => { navigate('albums'); setGroup(single.album); }) },
+        ...(folder && (fromNowPlaying || !selectedFolder) ? [{ label: `前往文件夹：${folder.name}`, icon: Folder, onSelect: go(() => navigate(`folder:${folder.path}`)) } as MenuItem] : []),
         { label: '在资源管理器中显示', icon: FolderOpen, onSelect: () => void window.music.reveal(single.id).catch(e => notify(String(e))) },
       ] as MenuItem[] : []),
       { kind: 'separator' },
-      ...(selectedPlaylist ? [{ label: '从当前歌单移除', icon: ListX, onSelect: () => removeFromPlaylist(selectedPlaylist, ids) } as MenuItem] : []),
+      ...(selectedPlaylist && !fromNowPlaying ? [{ label: '从当前歌单移除', icon: ListX, onSelect: () => removeFromPlaylist(selectedPlaylist, ids) } as MenuItem] : []),
       { label: single ? '从音乐库移除' : `从音乐库移除 ${tracks.length} 首`, icon: Trash2, danger: true, disabled: busy, onSelect: () => void removeTracks(ids) },
     ];
   };
@@ -781,7 +871,7 @@ export function App() {
 
   return <MotionConfig reducedMotion="user">
     <motion.div className={`app-shell ${settings?.titleBar === 'webview2' ? 'web-caption-mode' : ''}`} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: .42, ease: smoothEase }}>
-      {settings?.titleBar === 'webview2' && <header className={`web-caption ${nowPlaying ? 'immersive' : ''}`}>
+      {settings?.titleBar === 'webview2' && <header className={`web-caption ${nowPlaying ? 'immersive' : ''} ${nowPlaying && pointerAway ? 'away' : ''}`}>
         <span>DR Music</span>
         <div>
           <button aria-label="最小化窗口" data-tooltip="最小化" onClick={() => void window.music.windowCommand('minimize').catch(error => notify(String(error)))}><span className="caption-glyph" aria-hidden="true">{'\uE921'}</span></button>
@@ -831,8 +921,13 @@ export function App() {
         </header>
 
         <div className={`page-scroll ${collectionPage ? 'playlist-page' : ''}`} onScroll={() => setMenu(undefined)} onClick={event => { if (selection.length && !(event.target as Element).closest('.track-row, button, a, input')) setSelection([]); }}>
-          <motion.section className={`hero ${collectionPage ? 'playlist-hero' : ''} ${page === 'favorites' ? 'favorite-hero' : ''}`}>
-            {collectionPage && <Cover track={selectedFolder ? folderCover : playlistCover} className="playlist-cover" enableLayout={false}/>}
+          <motion.section className={`hero ${collectionPage ? 'playlist-hero' : 'feature-hero'} ${page === 'favorites' ? 'favorite-hero' : ''}`} data-hover={!collectionPage && heroHover ? 'true' : undefined} data-sheen={settings?.heroSheen ? 'true' : undefined}
+            onPointerEnter={() => setHeroHover(true)} onPointerLeave={() => setHeroHover(false)}>
+            {!collectionPage && <div className="feature-backdrop" aria-hidden="true">
+              <AnimatePresence initial={false}>{featureCovers[0]?.src && <motion.img key={featureCovers[0].src} src={featureCovers[0].src} alt="" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .6 }}/>}</AnimatePresence>
+              <i className="feature-sheen"/>
+            </div>}
+            {collectionPage &&<Cover track={selectedFolder ? folderCover : playlistCover} className="playlist-cover" enableLayout={false}/>}
               <motion.div key={viewKey} className="hero-copy" initial={{ opacity: .65 }} animate={{ opacity: 1 }} transition={{ duration: .14 }}>
                 {group && <PressableButton className="back-link" onClick={() => setGroup('')}><ChevronLeft size={16}/>返回{page === 'artists' ? '艺术家' : '专辑'}</PressableButton>}
                 {collectionPage && <div className="eyebrow">{selectedFolder ? '文件夹' : '歌单'}</div>}
@@ -845,11 +940,7 @@ export function App() {
                   <AnimatePresence>{selectedPlaylist && <motion.span className="hero-playlist-actions" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }}><IconButton icon={Pencil} label="重命名歌单" onClick={() => setPlaylistDialog({ id: selectedPlaylist.id, name: selectedPlaylist.name })}/><IconButton icon={Trash2} label="删除歌单" onClick={() => setDeletePlaylist(selectedPlaylist)}/></motion.span>}{selectedFolder && <motion.span className="hero-playlist-actions" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }}><IconButton icon={FolderSearch} label="在资源管理器中打开" disabled={!selectedFolder.trackIds.length} onClick={() => void window.music.reveal(selectedFolder.trackIds[0]).catch(e => notify(String(e)))}/></motion.span>}</AnimatePresence>
                 </div>
               </motion.div>
-            {!collectionPage && <motion.div className="hero-art" aria-hidden="true" initial={{ opacity: .65 }} animate={{ opacity: .85 }} transition={{ duration: .14 }}>
-              <motion.div className="hero-orbit" animate={{ rotate: 360 }} transition={{ duration: 22, repeat: Infinity, ease: 'linear' }}/>
-              <motion.div className="hero-vinyl" animate={{ rotate: [-18, -13, -18] }} transition={{ duration: 9, repeat: Infinity, ease: 'easeInOut' }}><div className="vinyl-label"><AudioLines size={34}/></div></motion.div>
-
-            </motion.div>}
+            {!collectionPage && <FeatureStack covers={featureCovers} hovered={heroHover} ours={featureOurs} playing={featureOurs && playing}/>}
           </motion.section>
 
           <AnimatePresence initial={false}>
@@ -876,7 +967,7 @@ export function App() {
         </div>
       </main>
 
-      {menu && <ContextMenu items={menu.playlistsOnly ? playlistMenu(menu.ids) : menuItems(menu.ids)} point={menu.point} label={menu.playlistsOnly ? '添加到歌单' : menu.ids.length > 1 ? `已选 ${menu.ids.length} 首歌曲菜单` : `${trackById.get(menu.ids[0])?.title || ''} 歌曲菜单`} onClose={() => setMenu(undefined)}/>}
+      {menu && <ContextMenu items={menu.playlistsOnly ? playlistMenu(menu.ids) : menuItems(menu.ids, menu.fromNowPlaying)} point={menu.point} label={menu.playlistsOnly ? '添加到歌单' : menu.ids.length > 1 ? `已选 ${menu.ids.length} 首歌曲菜单` : `${trackById.get(menu.ids[0])?.title || ''} 歌曲菜单`} onClose={() => setMenu(undefined)}/>}
       {lyricMenu && current && <ContextMenu label="歌词来源" point={lyricMenu} onClose={() => setLyricMenu(undefined)} items={[
         { kind: 'header', label: '歌词来源' },
         ...(lyricFile.text ? [{ label: '本地歌词', icon: FileMusic, checked: lyric.source === 'local', onSelect: () => chooseLyricSource('local') } as MenuItem] : []),
@@ -917,7 +1008,7 @@ export function App() {
         <div className="player-track">
           <AnimatePresence mode="wait" initial={false}>
             <motion.div key={current?.id || 'empty'} className="player-track-current" initial={{ opacity: 0, y: 3 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={textTransition}>
-              <PressableButton className="cover-button" aria-label="打开正在播放" disabled={!current} onClick={() => setNowPlaying(true)}><Cover track={current}/></PressableButton>
+              <PressableButton className="cover-button" aria-label="打开正在播放" disabled={!current} onClick={() => setNowPlaying(true)}><Cover track={current}/>{current && <span className="cover-open" aria-hidden="true"><ChevronUp size={20}/></span>}</PressableButton>
               <PressableButton className="player-title" disabled={!current} onClick={() => setNowPlaying(true)}><strong>{current?.title || '还没有正在播放的音乐'}</strong><small>{current?.artist || '选一首喜欢的，开始聆听'}</small></PressableButton>
             </motion.div>
           </AnimatePresence>
@@ -932,14 +1023,16 @@ export function App() {
         </div>
       </motion.footer>
 
-      {current && <section className="now-playing" data-open={nowPlaying ? 'true' : 'false'} aria-label="正在播放" aria-hidden={!nowPlaying} inert={!nowPlaying}>
+      {current && <section className="now-playing" data-open={nowPlaying ? 'true' : 'false'} data-layout={nowLayout} data-away={pointerAway ? 'true' : undefined} data-near-top={nearTop ? 'true' : undefined} aria-label="正在播放" aria-hidden={!nowPlaying} inert={!nowPlaying}
+          onPointerMove={event => { const near = event.clientY < 150; if (near !== nearTop) setNearTop(near); }} onPointerLeave={() => setNearTop(false)}>
           <div className="now-bg"><AnimatePresence mode="popLayout" initial={false}>{current.cover && <motion.img key={current.id} src={media(current, 'cover')} alt="" initial={{ opacity: 0, scale: 1.05 }} animate={{ opacity: .7, scale: 1 }} exit={{ opacity: 0, scale: .98 }} transition={{ duration: .58, ease: smoothEase }}/>}</AnimatePresence></div>
-          <header><IconButton icon={ChevronDown} label="收起播放页" onClick={() => setNowPlaying(false)}/><div className="now-header-tools">{(!!lyric.file?.text || rubyAvailable) && <span className="lyric-ai-tools">{!!lyric.file?.text && <button type="button" className="ruby-button translate-button" aria-label="翻译" data-tooltip={translateState.state === 'downloading' ? `正在下载翻译模型 ${Math.round(translateState.progress * 100)}%` : translateState.state === 'working' ? '正在翻译…' : '翻译'} aria-haspopup="menu" aria-expanded={!!translateMenu} aria-pressed={!!translateChoice} data-busy={translateState.state === 'working' || translateState.state === 'downloading' ? 'true' : undefined} onClick={event => openTranslateMenu(event.currentTarget.getBoundingClientRect())}>译</button>}{rubyAvailable && <button type="button" className="ruby-button" aria-label="注音" data-tooltip="注音" aria-haspopup="menu" aria-expanded={!!rubyMenu} aria-pressed={!!lyricRuby} onClick={event => { const box = event.currentTarget.getBoundingClientRect(); setRubyMenu(rubyMenu ? undefined : { x: box.left, y: box.bottom + 6 }); }}>音</button>}</span>}<IconButton icon={ListMusic} label="播放队列" onClick={toggleQueue}/></div></header>
+          <header><IconButton icon={ChevronDown} label="收起播放页" onClick={() => setNowPlaying(false)}/>
+            <LayoutSwitch value={nowLayout} onChange={value => setSettings({ nowLayout: value })}/><div className="now-header-tools">{(!!lyric.file?.text || rubyAvailable) && <span className="lyric-ai-tools">{!!lyric.file?.text && <button type="button" className="ruby-button translate-button" aria-label="翻译" data-tooltip={translateState.state === 'downloading' ? `正在下载翻译模型 ${Math.round(translateState.progress * 100)}%` : translateState.state === 'working' ? '正在翻译…' : '翻译'} aria-haspopup="menu" aria-expanded={!!translateMenu} aria-pressed={!!translateChoice} data-busy={translateState.state === 'working' || translateState.state === 'downloading' ? 'true' : undefined} onClick={event => openTranslateMenu(event.currentTarget.getBoundingClientRect())}>译</button>}{rubyAvailable && <button type="button" className="ruby-button" aria-label="注音" data-tooltip="注音" aria-haspopup="menu" aria-expanded={!!rubyMenu} aria-pressed={!!lyricRuby} onClick={event => { const box = event.currentTarget.getBoundingClientRect(); setRubyMenu(rubyMenu ? undefined : { x: box.left, y: box.bottom + 6 }); }}>音</button>}</span>}<IconButton icon={ListMusic} label="播放队列" onClick={toggleQueue}/></div></header>
           <div className="now-layout">
             <AnimatePresence mode="wait" initial={false}>
               <motion.div key={current.id} className="now-left" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={textTransition}>
-                <Cover track={current} className="now-cover"/>
-                <div className="now-title"><div><h2>{current.title}</h2><p>{current.artist} · {current.album}</p></div><IconButton icon={Heart} label="喜欢当前歌曲" active={library?.favorites.includes(current.id)} onClick={() => favorite(current.id)}/></div>
+                <TiltCover playing={playing} className="now-cover"><Cover track={current} className="now-cover-art" enableLayout={false}/></TiltCover>
+                <div className="now-title"><div><h2>{current.title}</h2><p>{current.artist} · {current.album}</p></div><span className="now-title-actions"><IconButton icon={Heart} label="喜欢当前歌曲" active={library?.favorites.includes(current.id)} onClick={() => favorite(current.id)}/><IconButton icon={MoreHorizontal} label="更多操作" active={!!menu?.fromNowPlaying} onClick={event => { const box = (event.currentTarget as HTMLElement).getBoundingClientRect(); setMenu(menu?.fromNowPlaying ? undefined : { point: { x: box.left, y: box.bottom + 6 }, ids: [current.id], fromNowPlaying: true }); }}/></span></div>
                 {renderProgress()}{renderTransport(<VolumeControl className="transport-volume" orientation="horizontal" label="播放页音量" value={settings?.volume ?? .7} onChange={volume => setSettings({ volume })}/>)}
                 <div className="audio-quality">{current.format}{current.sampleRate ? ` · ${(current.sampleRate / 1000).toFixed(1)} kHz` : ''}</div>
               </motion.div>
@@ -967,7 +1060,7 @@ export function App() {
 
       <AnimatePresence onExitComplete={() => { setQueueContentReady(false); setQueueImagesReady(false); }}>
         {queueOpen && <motion.button key="queue-dismiss" type="button" className="drawer-dismiss" aria-label="关闭队列背景" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setQueueOpen(false)}/>}
-        {queueOpen && <motion.aside key="queue-drawer" className="queue-drawer" initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} transition={{ duration: .38, ease: smoothEase }}>
+        {queueOpen && <motion.aside key="queue-drawer" className="queue-drawer" initial={{ opacity: 0, x: 28, scale: .98 }} animate={{ opacity: 1, x: 0, scale: 1 }} exit={{ opacity: 0, x: 28, scale: .98 }} transition={{ duration: .32, ease: smoothEase }}>
           <div className="drawer-heading"><div><h2>播放队列</h2><motion.p key={queue.length} initial={{ opacity: 0, y: 2 }} animate={{ opacity: 1, y: 0 }} transition={quickTextTransition}>{queue.length} 首音乐</motion.p></div><IconButton icon={X} label="关闭播放队列" onClick={() => setQueueOpen(false)}/></div>
           {queueContentReady && <motion.div ref={queueListRef} className="queue-list" data-virtual-start={queueWindow.start} data-virtual-end={queueWindow.end} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: .18, ease: smoothEase }}>
             {queue.length ? <div className="queue-virtual-space" role="list" style={{ height: queueWindow.totalHeight }}>
@@ -975,7 +1068,8 @@ export function App() {
                 const index = queueWindow.start + offset;
                 const track = trackById.get(id);
                 return track && <div key={`${id}-${index}`} className={`queue-item ${id === currentId ? 'current' : ''}`} role="listitem" aria-setsize={queue.length} aria-posinset={index + 1} style={{ top: index * QUEUE_ROW_HEIGHT }}>
-                  <PressableButton onClick={() => playTrack(id)}><Cover track={track} enableLayout={false} loadImage={queueImagesReady}/><span><strong>{track.title}</strong><small>{track.artist}</small></span>{id === currentId && <span className="centered-motion-icon"><AudioLines size={17}/></span>}</PressableButton>
+                  <PressableButton className="track-cover-play queue-cover-play" data-state={id === currentId && playing ? 'playing' : 'idle'} aria-label={id === currentId && playing ? `暂停 ${track.title}` : `播放 ${track.title}`} onClick={() => id === currentId ? togglePlay() : playTrack(id)}><Cover track={track} enableLayout={false} loadImage={queueImagesReady}/><span className="track-cover-overlay" aria-hidden="true">{id === currentId && playing ? <Pause size={16} fill="currentColor"/> : <Play size={16} fill="currentColor"/>}</span></PressableButton>
+                  <PressableButton className="queue-item-main" onClick={() => playTrack(id)}><span><strong>{track.title}</strong><small>{track.artist}</small></span>{id === currentId && <span className="row-wave centered-motion-icon" data-playing={playing ? 'true' : 'false'} aria-label={playing ? '正在播放' : '已暂停'}><i/><i/><i/><i/></span>}</PressableButton>
                   <IconButton icon={X} label={`从队列移除 ${track.title}`} onClick={() => setQueue(q => q.filter(x => x !== id))}/>
                 </div>;
               })}
@@ -993,6 +1087,7 @@ export function App() {
               <section role="tabpanel" aria-label="外观" hidden={settingsTab !== 'appearance'}><h4>外观</h4><p className="settings-hint">选择适合你的配色和窗口风格。</p>
               <div className="settings-row"><span>应用主题</span><Select label="应用主题" value={settings?.theme || 'dark'} onChange={value => setSettings({ theme: value as Settings['theme'] })} options={[{ value: 'dark', label: '深色 · 夜间唱片店' }, { value: 'light', label: '浅色 · 午后音乐室' }]}/></div>
               <div className="settings-row"><span>原生标题栏</span><Select label="原生标题栏" value={settings?.titleBar || 'direct2d'} onChange={value => setSettings({ titleBar: value as Settings['titleBar'] })} options={[{ value: 'direct2d', label: 'Direct2D 自绘' }, { value: 'webview2', label: 'WebView2 沉浸式' }, { value: 'system', label: 'Windows 系统标题栏' }]}/></div>
+              <div className="settings-row settings-toggle-row"><span className="settings-row-label"><span>卡片悬停高光</span><small>鼠标移到音乐库、我喜欢的、专辑、艺术家顶部卡片上时，卡片上闪过一道从左到右的高光。</small></span><button type="button" role="switch" className="switch" aria-label="卡片悬停高光" aria-checked={!!settings?.heroSheen} onClick={() => setSettings({ heroSheen: !settings?.heroSheen })}><span/></button></div>
               <h5 className="settings-subheading">歌词</h5>
               <div className="settings-row"><span>歌词字体</span><Select label="歌词字体" value={settings?.lyricFont || ''} onChange={value => setSettings({ lyricFont: value })} options={[{ value: '', label: fonts ? '默认 · 跟随应用' : '默认 · 跟随应用（正在读取字体…）' }, ...(fonts || []).map(font => ({ value: font.family, label: font.name, style: { fontFamily: `"${font.family}", var(--font-ui)` } })), ...(settings?.lyricFont && fonts && !fonts.some(font => font.family === settings.lyricFont) ? [{ value: settings.lyricFont, label: `${settings.lyricFont}（未安装）` }] : [])]}/></div>
               <div className="settings-row"><span>歌词粗细</span><Select label="歌词粗细" value={String(settings?.lyricWeight || 0)} onChange={value => setSettings({ lyricWeight: Number(value) })} options={[{ value: '0', label: '默认' }, ...[[300, '细'], [400, '常规'], [500, '中等'], [600, '半粗'], [700, '粗'], [800, '特粗'], [900, '黑']].map(([weight, name]) => ({ value: String(weight), label: `${name} · ${weight}`, style: { fontWeight: weight as number } }))]}/></div>

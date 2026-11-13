@@ -148,6 +148,18 @@ RECT Window::caption_button(int hit) const {
     const int height = web_caption_ ? scale(36) : caption_height();
     return {r.right - width * slot, 0, r.right - width * (slot - 1), height};
 }
+void Window::pointer_inside(bool inside) {
+    if (pointer_inside_ == inside) return;
+    pointer_inside_ = inside;
+    if (on_pointer) on_pointer(inside);
+}
+// After a client or caption leave notification: still inside when the pointer only crossed between the
+// two (or onto the resize border), outside when it is off the window or over another window on top.
+void Window::check_pointer() {
+    POINT point{}; RECT bounds{};
+    const bool inside = GetCursorPos(&point) && GetWindowRect(hwnd_, &bounds) && PtInRect(&bounds, point) && GetAncestor(WindowFromPoint(point), GA_ROOT) == hwnd_;
+    pointer_inside(inside);
+}
 void Window::caption_tip(int hit) {
     // Same delayed native-caption -> web tooltip handoff as DR Dict / DR Reader.
     const auto next = button(hit) && (direct2d_ || web_caption_) && !dimmed_ ? hit : HTNOWHERE;
@@ -335,6 +347,7 @@ LRESULT Window::message(UINT m, WPARAM w, LPARAM l) {
         return caption_hit(point);
     }
     case WM_NCMOUSEMOVE: {
+        pointer_inside(true);
         if (web_mouse_inside_) {
             web_mouse_inside_ = false;
             if (on_mouse) on_mouse(WM_MOUSELEAVE, 0, 0);
@@ -346,14 +359,14 @@ LRESULT Window::message(UINT m, WPARAM w, LPARAM l) {
             caption_tip(hot ? HTMAXBUTTON : HTNOWHERE);
             if (on_caption_event) on_caption_event(hot ? L"enter" : L"leave");
         }
-        if (hot) {
-            TRACKMOUSEEVENT track{sizeof(track), TME_NONCLIENT | TME_LEAVE, hwnd_, 0};
-            TrackMouseEvent(&track);
-            return 0;
-        }
+        // Leave tracking over the whole caption, so leaving the window through it is noticed too.
+        TRACKMOUSEEVENT track{sizeof(track), TME_NONCLIENT | TME_LEAVE, hwnd_, 0};
+        TrackMouseEvent(&track);
+        if (hot) return 0;
         break;
     }
     case WM_NCMOUSELEAVE:
+        check_pointer();
         if (caption_pressed_) break;
         if (caption_hot_) {
             caption_hot_ = false;
@@ -405,10 +418,12 @@ LRESULT Window::message(UINT m, WPARAM w, LPARAM l) {
     case WM_XBUTTONDBLCLK:
     case WM_MOUSEWHEEL:
     case WM_MOUSEHWHEEL:
+        pointer_inside(true);
         if (on_mouse) { web_mouse_inside_ = true; on_mouse(m, w, l); return 0; }
         break;
     case WM_MOUSELEAVE:
         web_mouse_inside_ = false;
+        check_pointer();
         if (on_mouse) on_mouse(m, w, l);
         if (!caption_hot_) caption_tip(HTNOWHERE);
         return 0;

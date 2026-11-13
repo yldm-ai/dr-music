@@ -25,12 +25,16 @@ const translateChangedListeners = new Set<() => void>();
 const translateProgressListeners = new Set<(progress: { status: string; completed: number; total: number }) => void>();
 export function onWindowState(listener: (maximized: boolean) => void) { windowListeners.add(listener); return () => { windowListeners.delete(listener); }; }
 export function onCaptionTooltip(listener: (tip: CaptionTooltip) => void) { captionListeners.add(listener); return () => { captionListeners.delete(listener); }; }
+const pointerListeners = new Set<(inside: boolean) => void>();
+/** WebView caption mode: the pointer entered or left the whole window (the native caption strip included). */
+export function onWindowPointer(listener: (inside: boolean) => void) { pointerListeners.add(listener); return () => { pointerListeners.delete(listener); }; }
 export function onCaptionButton(listener: (event: CaptionButtonEvent) => void) { captionButtonListeners.add(listener); return () => { captionButtonListeners.delete(listener); }; }
 host?.addEventListener('message', ({ data }) => {
   if (data?.event === 'playback:action') { for (const listener of playbackActions) listener(data.data); return; }
   if (data?.event === 'playback:state') { if (data.data?.session === playbackSession) for (const listener of playbackListeners) listener(data.data); return; }
   if (data?.event === 'translate:changed') { for (const listener of translateChangedListeners) listener(); return; }
   if (data?.event === 'translate:progress') { for (const listener of translateProgressListeners) listener(data.data); return; }
+  if (data?.event === 'window-pointer') { for (const listener of pointerListeners) listener(!!data.data?.inside); return; }
   if (data?.event === 'window-state') { for (const listener of windowListeners) listener(!!data.data?.maximized); return; }
   if (data?.event === 'library:progress') { for (const listener of progressListeners) listener(data.data); return; }
   if (data?.event === 'library:metadata') { for (const listener of metadataListeners) listener(data.data); return; }

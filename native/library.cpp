@@ -366,6 +366,10 @@ Json Library::update(const Json &patch) {
         if (s.contains("translateProvider") && s["translateProvider"].is_string()) { const auto v = s["translateProvider"].get<std::string>(); if (v == "local" || v == "niutrans") target["translateProvider"] = v; }
         if (s.contains("translateModel") && s["translateModel"].is_string() && LocalTranslator::valid_model(s["translateModel"].get<std::string>())) target["translateModel"] = s["translateModel"];
         if (s.contains("lyricTranslate") && s["lyricTranslate"].is_string()) { const auto v = s["lyricTranslate"].get<std::string>(); if (v.empty() || v == "zh" || v == "en") target["lyricTranslate"] = v; }
+        // The library hero's sheen on hover (off unless switched on).
+        if (s.contains("heroSheen") && s["heroSheen"].is_boolean()) target["heroSheen"] = s["heroSheen"];
+        // Player page layout: cover and lyrics, lyrics only, or cover only.
+        if (s.contains("nowLayout") && s["nowLayout"].is_string()) { const auto v = s["nowLayout"].get<std::string>(); if (v == "default" || v == "lyrics" || v == "cover") target["nowLayout"] = v; }
         if (s.contains("lyricOffset") && s["lyricOffset"].is_number()) target["lyricOffset"] = std::clamp(s["lyricOffset"].get<double>(), -30000.0, 30000.0);
         if (s.contains("shuffle") && s["shuffle"].is_boolean()) target["shuffle"] = s["shuffle"];
         if (s.contains("chineseSearch") && s["chineseSearch"].is_boolean()) target["chineseSearch"] = s["chineseSearch"];

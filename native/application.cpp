@@ -13,10 +13,10 @@ using Microsoft::WRL::ComPtr;
 Application::Application(fs::path data, fs::path assets, unsigned debug_port, std::vector<fs::path> imports, const std::string &shell, fs::path online_lyrics_fixture)
     : library_(std::move(data)), assets_(std::move(assets)), chinese_(assets_.parent_path() / L"opencc"),
       online_lyrics_(library_.directory() / L"online-lyrics",
-          online_lyrics_fixture.empty() ? winhttp_fetch([this](const std::string &host) { return online_lyrics_.allowed_host(host); }) : fixture_fetch(online_lyrics_fixture),
+          online_lyrics_fixture.empty() ? winhttp_fetch([this](const std::string &host) { return online_lyrics_.allowed_host(host); }, http_cancel_) : fixture_fetch(online_lyrics_fixture),
           [this](const std::string &text) { return chinese_.simplify(text); }),
-      translator_(library_.directory() / L"translations", winhttp_fetch([](const std::string &host) { return LocalTranslator::loopback(host); })),
-      niutrans_(library_.directory() / L"translations", winhttp_fetch([](const std::string &host) { return host == NiuTrans::kHost; })),
+      translator_(library_.directory() / L"translations", winhttp_fetch([](const std::string &host) { return LocalTranslator::loopback(host); }, http_cancel_)),
+      niutrans_(library_.directory() / L"translations", winhttp_fetch([](const std::string &host) { return host == NiuTrans::kHost; }, http_cancel_)),
       debug_port_(debug_port), imports_(std::move(imports)), shell_(shell) {
     library_.load();
     apply_lyric_options();
@@ -65,7 +65,8 @@ Application::Application(fs::path data, fs::path assets, unsigned debug_port, st
     });
 }
 Application::~Application() {
-    closing_ = true; worker_.request_stop(); ready_.notify_all(); if (worker_.joinable()) worker_.join();
+    closing_ = true; http_cancel_->cancel(); // a translation or lyric download in flight must not keep the process (and library lock) alive
+    worker_.request_stop(); ready_.notify_all(); if (worker_.joinable()) worker_.join();
     transport_worker_.request_stop(); transport_ready_.notify_all(); if (transport_worker_.joinable()) transport_worker_.join();
     network_worker_.request_stop(); network_ready_.notify_all(); if (network_worker_.joinable()) network_worker_.join();
     translate_worker_.request_stop(); translate_ready_.notify_all(); if (translate_worker_.joinable()) translate_worker_.join();
@@ -483,7 +484,7 @@ int Application::run(HINSTANCE instance) {
     window_.on_cursor = [this] { return webview_.cursor(); };
     window_.on_focus = [this] { webview_.focus(); };
     window_.on_move = [this] { webview_.notify_move(); };
-    window_.on_close = [this] { closing_ = true; worker_.request_stop(); ready_.notify_all(); DestroyWindow(window_.handle()); };
+    window_.on_close = [this] { closing_ = true; http_cancel_->cancel(); worker_.request_stop(); ready_.notify_all(); DestroyWindow(window_.handle()); };
     webview_.on_message = [this](const Json &message) { receive(message); };
     webview_.on_resource = [this](const std::wstring &uri, const std::string &range, const std::string &method) { return serve_media(library_, uri, range, method); };
     webview_.on_error = [this](const std::wstring &error) { MessageBoxW(window_.handle(), error.c_str(), L"DR Music", MB_OK | MB_ICONERROR); PostMessageW(window_.handle(), WM_CLOSE, 0, 0); };

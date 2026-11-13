@@ -29,8 +29,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
         if (!dr::fs::exists(assets / L"index.html")) throw std::runtime_error("找不到 web/index.html，请保持 web 文件夹与 dr-music.exe 位于同一目录");
         // Lock the data directory across processes to prevent lost library writes.
         dr::fs::create_directories(data);
-        auto lock = CreateFileW((data / L"library.lock").c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (lock == INVALID_HANDLE_VALUE) throw std::runtime_error("此音乐库已由另一个 DR Music 实例打开，或目录不可写");
+        // A second launch brings the open window forward; an instance that is still shutting down gets a moment to finish.
+        HANDLE lock = INVALID_HANDLE_VALUE;
+        for (int attempt = 0;; ++attempt) {
+            lock = CreateFileW((data / L"library.lock").c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (lock != INVALID_HANDLE_VALUE) break;
+            if (GetLastError() != ERROR_SHARING_VIOLATION) throw std::runtime_error("无法打开音乐库目录，请检查目录是否可写");
+            if (HWND open = FindWindowW(L"DRMusic.NativeShell", nullptr); open && IsWindowVisible(open)) {
+                if (IsIconic(open)) ShowWindow(open, SW_RESTORE);
+                SetForegroundWindow(open);
+                CoUninitialize(); return 0;
+            }
+            if (attempt >= 50) throw std::runtime_error("此音乐库已由另一个 DR Music 实例打开（它可能仍在退出），请稍后再试");
+            Sleep(200);
+        }
         try { dr::Application application(data, assets, port, std::move(imports), shell, online_lyrics_fixture); result = application.run(instance); }
         catch (...) { CloseHandle(lock); throw; }
         CloseHandle(lock);

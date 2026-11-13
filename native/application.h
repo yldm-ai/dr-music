@@ -47,6 +47,8 @@ private:
     Json media_track_;
     fs::path assets_;
     ChineseText chinese_;
+    // Cancelled on close so the workers joined on exit (and the library lock) are released at once.
+    std::shared_ptr<HttpCancel> http_cancel_ = std::make_shared<HttpCancel>();
     OnlineLyrics online_lyrics_;
     LocalTranslator translator_;
     NiuTrans niutrans_;

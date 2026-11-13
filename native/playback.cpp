@@ -30,6 +30,11 @@ struct Playback::Impl {
     std::string id, error, session;
     uint64_t request = 0, serial = 0;
     std::chrono::steady_clock::time_point drain_started{};
+    // Watchdog: the device consumes frames while playing; if it stops doing so (device invalidated,
+    // taken over, stopped by the system), it is reopened instead of leaving playback silent.
+    uint64_t watched_position = 0;
+    std::chrono::steady_clock::time_point progressed{};
+    int recoveries = 0;
     std::jthread worker;
     explicit Impl(bool null_device) : use_null(null_device), worker([this](std::stop_token stop) { run(stop); }) {}
     ~Impl() { worker.request_stop(); ready.notify_all(); worker.join(); }
@@ -70,6 +75,24 @@ struct Playback::Impl {
         }
         device_ready = true;
     }
+    void device_close() {
+        if (device_ready) ma_device_uninit(&device);
+        if (context_ready) ma_context_uninit(&context);
+        device_ready = context_ready = false;
+    }
+    void start() {
+        if (ma_device_start(&device) != MA_SUCCESS) throw std::runtime_error("无法启动音频输出设备");
+        playing = true; watched_position = read_position.load(); progressed = std::chrono::steady_clock::now();
+    }
+    void watch() {
+        const auto now = std::chrono::steady_clock::now();
+        const auto position = read_position.load();
+        if (position != watched_position) { watched_position = position; progressed = now; recoveries = 0; return; }
+        if (write_position.load() == position || now - progressed < std::chrono::milliseconds(1500)) return;
+        // Frames are waiting but none were consumed for 1.5 s: reopen the output (follows the current default device).
+        if (++recoveries > 3) throw std::runtime_error("音频输出设备不可用，请检查声音设置后重新播放");
+        device_close(); device_init(); start();
+    }
     void fill() {
         if (!decoder || eof) return;
         const auto write = write_position.load(std::memory_order_relaxed);
@@ -91,9 +114,8 @@ struct Playback::Impl {
             const auto next = message.at("id").get<std::string>();
             if (next != id || !decoder) { reset(); decoder = std::make_unique<AudioDecoder>(file); id = next; duration = decoder->duration(); }
             else if (ended) { pause(); decoder->seek(0); read_position = 0; write_position = 0; base = 0; eof = ended = false; }
-            device_init(); fill();
-            if (ma_device_start(&device) != MA_SUCCESS) throw std::runtime_error("无法启动音频输出设备");
-            playing = true;
+            device_init(); fill(); recoveries = 0;
+            start();
         } else if (action == "pause") pause();
         else if (action == "stop") reset();
         else if (action == "seek") {
@@ -102,7 +124,7 @@ struct Playback::Impl {
             if (decoder) {
                 const bool resume = playing; pause(); base = duration > 0 ? std::min(seconds, duration) : seconds;
                 decoder->seek(base); read_position = 0; write_position = 0; eof = ended = false; fill();
-                if (resume) { if (ma_device_start(&device) != MA_SUCCESS) throw std::runtime_error("无法恢复音频输出"); playing = true; }
+                if (resume) start();
             }
         } else if (action == "volume") {
             const auto value = message.at("volume").get<double>();
@@ -120,7 +142,7 @@ struct Playback::Impl {
             if (command) command();
             try {
                 if (playing) {
-                    fill();
+                    fill(); watch();
                     if (eof && read_position.load() == write_position.load()) {
                         // The last callback has submitted, not necessarily played,
                         // the last frames. Allow the short device buffers to drain.
@@ -133,7 +155,7 @@ struct Playback::Impl {
             const auto now = std::chrono::steady_clock::now();
             if (playing && now - last >= std::chrono::milliseconds(100)) { publish(); last = now; }
         }
-        reset(); if (device_ready) ma_device_uninit(&device); if (context_ready) ma_context_uninit(&context);
+        reset(); device_close();
     }
 };
 Playback::Playback(bool null_device) : impl_(std::make_unique<Impl>(null_device)) {}

@@ -1,3 +1,5 @@
+#include <winsock2.h> // before windows.h (via library.h): a loopback server that never answers
+#include <ws2tcpip.h>
 #include "library.h"
 #include "media.h"
 #include "window.h"
@@ -23,6 +25,8 @@
 #include <windowsx.h>
 #include <dwmapi.h>
 #include <chrono>
+#include <future>
+#include <thread>
 #define CHECK(value) do { if (!(value)) throw std::runtime_error("Check failed at line " + std::to_string(__LINE__) + ": " #value); } while (false)
 namespace {
 void write(const dr::fs::path &file, const std::string &text) { std::ofstream out(file, std::ios::binary); out.write(text.data(), text.size()); }
@@ -473,6 +477,25 @@ void local_translator_test(const dr::fs::path &root) {
     // The real client refuses anything but loopback before connecting.
     auto real = dr::winhttp_fetch([](const std::string &host) { return dr::LocalTranslator::loopback(host); });
     CHECK(throws([&] { real({"GET", "https://example.com/api/version"}); }));
+    // Closing the app cancels a request that the (local) server is still answering, instead of waiting for its timeout.
+    WSADATA wsa{}; CHECK(WSAStartup(MAKEWORD(2, 2), &wsa) == 0);
+    SOCKET server = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    sockaddr_in address{}; address.sin_family = AF_INET; address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    int length = sizeof(address);
+    CHECK(server != INVALID_SOCKET && bind(server, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0 && listen(server, 4) == 0
+          && getsockname(server, reinterpret_cast<sockaddr *>(&address), &length) == 0); // accepted by the backlog, never answered
+    auto cancel = std::make_shared<dr::HttpCancel>();
+    auto slow = dr::winhttp_fetch([](const std::string &host) { return dr::LocalTranslator::loopback(host); }, cancel);
+    dr::HttpRequest hanging{"POST", "http://127.0.0.1:" + std::to_string(ntohs(address.sin_port)) + "/api/generate"};
+    hanging.direct = true; hanging.timeout_ms = 3 * 60 * 1000;
+    const auto started = std::chrono::steady_clock::now();
+    auto pending = std::async(std::launch::async, [&] { return throws([&] { slow(hanging); }); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    cancel->cancel();
+    CHECK(pending.wait_for(std::chrono::seconds(5)) == std::future_status::ready && pending.get());
+    CHECK(std::chrono::steady_clock::now() - started < std::chrono::seconds(5));
+    CHECK(throws([&] { slow(hanging); })); // later requests fail at once
+    closesocket(server); WSACleanup();
 }
 // 小牛翻译 v2: the documented authStr (MD5 of sorted key=value pairs incl. apikey), one JSON POST to
 // api.niutrans.com only, error codes surfaced, lines kept one per line and cached.

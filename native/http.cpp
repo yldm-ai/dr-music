@@ -49,8 +49,32 @@ std::string url_encode(const std::string &text) {
     return out;
 }
 
-HttpFetch winhttp_fetch(std::function<bool(const std::string &host)> allowed) {
-    return [allowed = std::move(allowed)](const HttpRequest &request) {
+void HttpCancel::cancel() {
+    std::lock_guard lock(mutex_);
+    cancelled_ = true;
+    // Closing a request handle makes the blocking WinHTTP call on it return at once (documented for synchronous requests too).
+    for (auto *handle : open_) WinHttpCloseHandle(static_cast<HINTERNET>(handle));
+    open_.clear();
+}
+bool HttpCancel::cancelled() const { std::lock_guard lock(mutex_); return cancelled_; }
+bool HttpCancel::track(void *handle) { std::lock_guard lock(mutex_); if (cancelled_) return false; open_.insert(handle); return true; }
+bool HttpCancel::untrack(void *handle) { std::lock_guard lock(mutex_); return open_.erase(handle) > 0; }
+
+HttpFetch winhttp_fetch(std::function<bool(const std::string &host)> allowed, std::shared_ptr<HttpCancel> cancel) {
+    // The request handle is registered with `cancel`, which may close it from another thread; whoever unregisters it closes it.
+    struct Request {
+        HINTERNET value; HttpCancel *owner;
+        Request(HINTERNET h, HttpCancel *c) : value(h), owner(c) {
+            if (value && owner && !owner->track(value)) { WinHttpCloseHandle(value); value = nullptr; }
+        }
+        ~Request() { if (value && (!owner || owner->untrack(value))) WinHttpCloseHandle(value); }
+        Request(const Request &) = delete;
+        Request &operator=(const Request &) = delete;
+        explicit operator bool() const { return value != nullptr; }
+        void check() const { if (owner && owner->cancelled()) throw std::runtime_error("请求已取消"); }
+    };
+    return [allowed = std::move(allowed), cancel = std::move(cancel)](const HttpRequest &request) {
+        if (cancel && cancel->cancelled()) throw std::runtime_error("请求已取消");
         const auto url = parse_url(request.url);
         if (!url) throw std::runtime_error("无效的歌词地址");
         if (!allowed || !allowed(url->host)) throw std::runtime_error("不允许访问的地址：" + url->host);
@@ -59,7 +83,8 @@ HttpFetch winhttp_fetch(std::function<bool(const std::string &host)> allowed) {
         WinHttpSetTimeouts(session.value, 5000, 5000, 8000, static_cast<int>(request.timeout_ms));
         Handle connection(WinHttpConnect(session.value, wide(url->host).c_str(), url->port, 0));
         if (!connection) throw std::runtime_error("无法连接 " + url->host);
-        Handle handle(WinHttpOpenRequest(connection.value, wide(request.method).c_str(), wide(url->path).c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, url->https ? WINHTTP_FLAG_SECURE : 0));
+        Request handle(WinHttpOpenRequest(connection.value, wide(request.method).c_str(), wide(url->path).c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, url->https ? WINHTTP_FLAG_SECURE : 0), cancel.get());
+        handle.check();
         if (!handle) throw std::runtime_error("无法连接 " + url->host);
         DWORD policy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
         WinHttpSetOption(handle.value, WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof(policy));

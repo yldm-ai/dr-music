@@ -27,6 +27,14 @@ std::wstring wide(const std::string &text) {
 std::string path_text(const fs::path &p) { return utf8(p.wstring()); }
 fs::path from_text(const std::string &text) { return fs::path(wide(text)); }
 std::wstring take(wchar_t *value) { std::wstring text = value ? value : L""; CoTaskMemFree(value); return text; }
+std::string read_bytes(const fs::path &file, size_t limit) {
+    const auto size = fs::file_size(file);
+    if (size > limit) throw std::runtime_error("文件超过读取上限：" + path_text(file));
+    std::ifstream in(file, std::ios::binary);
+    std::string bytes(static_cast<size_t>(size), '\0');
+    if (!in || (size && !in.read(bytes.data(), static_cast<std::streamsize>(size)))) throw std::runtime_error("无法读取文件：" + path_text(file));
+    return bytes;
+}
 std::string read_text(const fs::path &file, size_t limit) {
     auto size = fs::file_size(file);
     if (size > limit) throw std::runtime_error("文件超过读取上限：" + path_text(file));

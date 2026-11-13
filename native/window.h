@@ -55,7 +55,7 @@ private:
     Microsoft::WRL::ComPtr<ID2D1Factory> factory_;
     Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> target_;
     Microsoft::WRL::ComPtr<IDWriteFactory> write_;
-    Microsoft::WRL::ComPtr<IDWriteTextFormat> text_;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> text_, icons_;
     std::mutex mutex_;
     std::vector<std::function<void()>> pending_;
 };

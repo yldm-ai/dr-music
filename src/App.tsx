@@ -3,7 +3,7 @@ import { VolumeControl } from './VolumeControl';
 import { ProgressSlider } from './ProgressSlider';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion, MotionConfig, type Transition } from 'motion/react';
-import { Music2, Library as LibraryIcon, Heart, Disc3, Mic2, FolderPlus, Plus, Search, Play, Pause, SkipBack, SkipForward, Shuffle, Repeat, Repeat1, ListMusic, Maximize2, ChevronDown, ChevronLeft, ChevronRight, Settings2, MoreHorizontal, FolderOpen, RefreshCw, X, Check, FileMusic, ArrowUpRight, Headphones, Trash2, Pencil, ListPlus, AudioLines, Folder, FolderSearch, Copy, ListX, Globe } from 'lucide-react';
+import { Music2, Library as LibraryIcon, Heart, Disc3, Mic2, FolderPlus, Plus, Search, Play, Pause, SkipBack, SkipForward, Shuffle, Repeat, Repeat1, ListMusic, Maximize2, ChevronDown, ChevronLeft, ChevronRight, Settings2, MoreHorizontal, FolderOpen, RefreshCw, X, Check, FileMusic, ArrowUpRight, Headphones, Trash2, Pencil, ListPlus, AudioLines, Folder, FolderSearch, Copy, ListX, Globe, Languages } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { Library, Track, Settings, LyricFile, Progress, Playlist, FontFamily, OnlineLyricResult } from './types';
 import { chooseLyric, providerName, LYRIC_PROVIDERS, type LyricSource } from './lib/lyricSource';
@@ -12,7 +12,9 @@ import { virtualRange } from './lib/virtual';
 import { withoutFolder, withMetadata, musicFolders } from './lib/library';
 import { searchText, hasHan, matchesQuery } from './lib/search';
 import { ContextMenu, type MenuItem } from './ContextMenu';
-import { Lyrics, lyricTypographyStyle } from './Lyrics';
+import { Lyrics, lyricTypographyStyle, type TranslateState } from './Lyrics';
+import { READINESS_LABEL, sourceLanguage, translateState as translateReadiness, translatorStatus, type TranslatorStatus } from './lib/translate';
+import { TranslationSettings } from './TranslationModels';
 import { Select } from './Select';
 import { onCaptionButton, onWindowState } from './bridge';
 
@@ -211,6 +213,13 @@ export function App() {
     };
   }, [queueOpen, queueContentReady]);
 
+  // Player-page scale: 1 up to a 1440×900 window, then growing with the smaller of width / height
+  // (so a short wide window does not overflow), up to 1.6. The cover, column gap, title, buttons,
+  // progress bar and lyrics are all sized from it in style.css.
+  useEffect(() => {
+    const update = () => document.documentElement.style.setProperty('--np-s', String(Math.round(Math.min(1.6, Math.max(1, Math.min(innerWidth / 1440, innerHeight / 900))) * 1000) / 1000));
+    update(); window.addEventListener('resize', update); return () => window.removeEventListener('resize', update);
+  }, []);
   const trackById = useMemo(() => new Map((library?.tracks || []).map(track => [track.id, track])), [library?.tracks]);
   const current = currentId ? trackById.get(currentId) : undefined;
   const lyric = chooseLyric(lyricFile, onlineLyrics, current?.lyricPreference);
@@ -351,6 +360,13 @@ export function App() {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') { event.preventDefault(); setNowPlaying(false); searchRef.current?.focus(); return; }
       if (editing || playlistDialog || deletePlaylist || settingsOpen) return;
       if (event.code === 'Space') { event.preventDefault(); togglePlay(); }
+      // ← / → move through the current song by 5 seconds (menus, lists and sliders keep their own arrows).
+      if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && currentId
+        && !element.closest('[role=menu],[role=listbox],[role=slider],[role=tablist],[role=radiogroup]')) {
+        event.preventDefault();
+        seek(audio.currentTime + (event.key === 'ArrowRight' ? 5 : -5));
+        return;
+      }
       if (event.ctrlKey || event.metaKey) {
         if (event.key === 'ArrowRight') { event.preventDefault(); advance(1); }
         if (event.key === 'ArrowLeft') { event.preventDefault(); advance(-1); }
@@ -359,7 +375,7 @@ export function App() {
       }
     };
     window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key);
-  }, [advance, togglePlay, currentId, favorite, playlistDialog, deletePlaylist, settingsOpen]);
+  }, [advance, togglePlay, seek, audio, currentId, favorite, playlistDialog, deletePlaylist, settingsOpen]);
   useEffect(() => {
     if (!('mediaSession' in navigator)) return;
     navigator.mediaSession.metadata = current ? new MediaMetadata({ title: current.title, artist: current.artist, album: current.album }) : null;
@@ -432,6 +448,31 @@ export function App() {
   const scriptedText = lyric.file && lyricScript !== 'o' && scripted?.source === lyric.file.text ? scripted.text : undefined;
   const shownLyric = useMemo(() => lyric.file && scriptedText !== undefined ? { ...lyric.file, text: scriptedText } : lyric.file, [lyric.file, scriptedText]);
   const [scriptMenu, setScriptMenu] = useState<{ x: number; y: number }>();
+  const [rubyMenu, setRubyMenu] = useState<{ x: number; y: number }>();
+  // 译: the local Hunyuan model (Ollama). The menu checks, each time it opens, whether Ollama runs and has the model.
+  const [translateMenu, setTranslateMenu] = useState<{ x: number; y: number; status?: TranslatorStatus }>();
+  const [translateState, setTranslateState] = useState<TranslateState>({ state: 'idle' });
+  const lyricSource = useMemo(() => lyric.file ? sourceLanguage(lyric.file.text) : 'en', [lyric.file]);
+  const openTranslateMenu = (box: DOMRect) => {
+    if (translateMenu) { setTranslateMenu(undefined); return; }
+    const point = { x: box.left, y: box.bottom + 6 };
+    setTranslateMenu(point);
+    void translatorStatus().then(status => setTranslateMenu(menu => menu && menu.x === point.x ? { ...menu, status } : menu), () => {});
+  };
+  const translateError = useRef('');
+  const onTranslateState = useCallback((state: TranslateState) => {
+    setTranslateState(state);
+    // The same failure (e.g. no model on this device) is reported once, not for every song.
+    if (state.state === 'error' && translateError.current !== state.message) notify(`翻译失败：${state.message}`);
+    if (state.state === 'error') translateError.current = state.message; else if (state.state === 'done') translateError.current = '';
+  }, [notify]);
+  // 注音 is shown for lyrics with Han characters only; the choice itself is kept for the next song.
+  // 音 / 译 apply to the song being played only: a different song starts with neither.
+  const [lyricTools, setLyricTools] = useState<{ id?: string; ruby: '' | 'jyutping'; translate: '' | 'zh' | 'en' }>({ ruby: '', translate: '' });
+  const rubyChoice = lyricTools.id === current?.id ? lyricTools.ruby : '';
+  const translateChoice = lyricTools.id === current?.id ? lyricTools.translate : '';
+  const setLyricTool = (patch: Partial<{ ruby: '' | 'jyutping'; translate: '' | 'zh' | 'en' }>) => setLyricTools(tools => ({ ...(tools.id === current?.id ? tools : { ruby: '', translate: '' }), ...patch, id: current?.id }));
+  const lyricRuby = useMemo(() => rubyChoice && lyricHasHan ? { kind: rubyChoice, below: !!settings?.lyricRubyBelow } : undefined, [rubyChoice, settings?.lyricRubyBelow, lyricHasHan]);
   const folded = useRef(new Map<string, { key: string; text: string }>());
   const [foldedVersion, setFoldedVersion] = useState(0);
   useEffect(() => {
@@ -728,9 +769,9 @@ export function App() {
       {settings?.titleBar === 'webview2' && <header className={`web-caption ${nowPlaying ? 'immersive' : ''}`}>
         <span>DR Music</span>
         <div>
-          <button aria-label="最小化窗口" data-tooltip="最小化" onClick={() => void window.music.windowCommand('minimize').catch(error => notify(String(error)))}><svg viewBox="0 0 12 12"><path d="M1 6h10"/></svg></button>
-          <button className={`${captionHot ? 'hot' : ''} ${captionActive ? 'active' : ''}`} aria-label="最大化或还原窗口" data-tooltip={maximized ? '向下还原' : '最大化'} onClick={() => void window.music.windowCommand('maximize').catch(error => notify(String(error)))}><svg viewBox="0 0 12 12">{maximized ? <><path d="M4 1h7v7"/><rect x="1" y="4" width="7" height="7"/></> : <rect x="1.5" y="1.5" width="9" height="9"/>}</svg></button>
-          <button aria-label="关闭窗口" data-tooltip="关闭" onClick={() => void window.music.windowCommand('close').catch(error => notify(String(error)))}><svg viewBox="0 0 12 12"><path d="m1 1 10 10M1 11 11 1"/></svg></button>
+          <button aria-label="最小化窗口" data-tooltip="最小化" onClick={() => void window.music.windowCommand('minimize').catch(error => notify(String(error)))}><span className="caption-glyph" aria-hidden="true">{'\uE921'}</span></button>
+          <button className={`${captionHot ? 'hot' : ''} ${captionActive ? 'active' : ''}`} aria-label="最大化或还原窗口" data-tooltip={maximized ? '向下还原' : '最大化'} onClick={() => void window.music.windowCommand('maximize').catch(error => notify(String(error)))}><span className="caption-glyph" aria-hidden="true">{maximized ? '\uE923' : '\uE922'}</span></button>
+          <button aria-label="关闭窗口" data-tooltip="关闭" onClick={() => void window.music.windowCommand('close').catch(error => notify(String(error)))}><span className="caption-glyph" aria-hidden="true">{'\uE8BB'}</span></button>
         </div>
       </header>}
       <aside className="sidebar">
@@ -830,6 +871,21 @@ export function App() {
         { label: '重新搜索在线歌词', icon: RefreshCw, disabled: settings?.onlineLyrics === false || lookingOnline, onSelect: () => loadOnlineLyrics(current.id, true) },
         { label: '关联本地歌词…', icon: Plus, onSelect: () => void attachLyrics() },
       ]}/>}
+      {translateMenu && <ContextMenu label="翻译" point={translateMenu} onClose={() => setTranslateMenu(undefined)} items={[
+        { kind: 'header', label: settings?.translateProvider === 'niutrans' ? '翻译（小牛翻译）' : '翻译（混元本地模型）' },
+        { label: '不翻译', checked: !translateChoice, onSelect: () => setLyricTool({ translate: '' }) },
+        ...(['zh', 'en'] as const).map((target): MenuItem => {
+          const state = translateReadiness(translateMenu.status, lyricSource, target);
+          return { label: target === 'zh' ? '翻译成中文' : '翻译成英文', checked: translateChoice === target, disabled: state !== 'ready',
+            shortcut: READINESS_LABEL[state], onSelect: () => setLyricTool({ translate: target }) };
+        }),
+        ...(translateMenu.status && translateReadiness(translateMenu.status, 'xx', 'en') !== 'ready' ? [{ kind: 'header', label: '在 设置 → 工具 中配置翻译服务' } as MenuItem] : []),
+      ]}/>}
+      {rubyMenu && <ContextMenu label="注音" point={rubyMenu} onClose={() => setRubyMenu(undefined)} items={[
+        { kind: 'header', label: '注音' },
+        { label: '不显示', checked: !rubyChoice, onSelect: () => setLyricTool({ ruby: '' }) },
+        { label: '粤语（粤拼）', checked: rubyChoice === 'jyutping', onSelect: () => setLyricTool({ ruby: 'jyutping' }) },
+      ]}/>}
       {scriptMenu && <ContextMenu label="繁体标准" point={scriptMenu} onClose={() => setScriptMenu(undefined)} items={[
         { kind: 'header', label: '繁体标准' },
         ...(Object.keys(TRADITIONAL_NAMES) as (keyof typeof TRADITIONAL_NAMES)[]).map((variant): MenuItem => ({ label: TRADITIONAL_NAMES[variant], checked: lyricScript === 't' && lyricVariant === variant, onSelect: () => setSettings({ lyricScript: 't', lyricVariant: variant }) })),
@@ -855,7 +911,7 @@ export function App() {
 
       {current && <section className="now-playing" data-open={nowPlaying ? 'true' : 'false'} aria-label="正在播放" aria-hidden={!nowPlaying} inert={!nowPlaying}>
           <div className="now-bg"><AnimatePresence mode="popLayout" initial={false}>{current.cover && <motion.img key={current.id} src={media(current, 'cover')} alt="" initial={{ opacity: 0, scale: 1.05 }} animate={{ opacity: .7, scale: 1 }} exit={{ opacity: 0, scale: .98 }} transition={{ duration: .58, ease: smoothEase }}/>}</AnimatePresence></div>
-          <header><IconButton icon={ChevronDown} label="收起播放页" onClick={() => setNowPlaying(false)}/><div className="now-header-tools"><IconButton icon={ListMusic} label="播放队列" onClick={toggleQueue}/></div></header>
+          <header><IconButton icon={ChevronDown} label="收起播放页" onClick={() => setNowPlaying(false)}/><div className="now-header-tools">{(!!lyric.file?.text || lyricHasHan) && <span className="lyric-ai-tools">{!!lyric.file?.text && <button type="button" className="ruby-button translate-button" aria-label="翻译" data-tooltip={translateState.state === 'downloading' ? `正在下载翻译模型 ${Math.round(translateState.progress * 100)}%` : translateState.state === 'working' ? '正在翻译…' : '翻译'} aria-haspopup="menu" aria-expanded={!!translateMenu} aria-pressed={!!translateChoice} data-busy={translateState.state === 'working' || translateState.state === 'downloading' ? 'true' : undefined} onClick={event => openTranslateMenu(event.currentTarget.getBoundingClientRect())}>译</button>}{lyricHasHan && <button type="button" className="ruby-button" aria-label="注音" data-tooltip="注音" aria-haspopup="menu" aria-expanded={!!rubyMenu} aria-pressed={!!rubyChoice} onClick={event => { const box = event.currentTarget.getBoundingClientRect(); setRubyMenu(rubyMenu ? undefined : { x: box.left, y: box.bottom + 6 }); }}>音</button>}</span>}<IconButton icon={ListMusic} label="播放队列" onClick={toggleQueue}/></div></header>
           <div className="now-layout">
             <AnimatePresence mode="wait" initial={false}>
               <motion.div key={current.id} className="now-left" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={textTransition}>
@@ -868,7 +924,7 @@ export function App() {
             <div className="now-right">
               <AnimatePresence mode="wait" initial={false}>
                 <motion.div key={lyric.file ? `lyrics:${current.id}:${lyric.source}:${lyric.file.source}` : `empty:${current.id}:${lyricLoading || lookingOnline}`} className="lyric-content" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={textTransition}>
-                  {shownLyric ? <Lyrics file={shownLyric} audio={audio} offset={settings?.lyricOffset || 0} active={nowPlaying} onSeek={seek} typography={{ font: settings?.lyricFont, weight: settings?.lyricWeight, scale: settings?.lyricScale }}/> : <div className="no-lyrics"><AudioLines size={38}/><h3>{lyricLoading ? '正在读取歌词' : lookingOnline ? '正在查找在线歌词' : '让文字也跟着旋律'}</h3><p>自动读取歌曲旁的同名歌词文件{settings?.onlineLyrics !== false ? '，没有时从 AMLL TTML DB 查找' : ''}<br/>也可以手动关联 LRC、TTML、YRC 或 TXT</p><PressableButton className="secondary-button" onClick={() => void attachLyrics()}><Plus size={16}/>关联歌词</PressableButton></div>}
+                  {shownLyric ? <Lyrics file={shownLyric} audio={audio} offset={settings?.lyricOffset || 0} active={nowPlaying} onSeek={seek} typography={{ font: settings?.lyricFont, weight: settings?.lyricWeight, scale: settings?.lyricScale }} ruby={lyricRuby} translate={translateChoice || undefined} onTranslateState={onTranslateState}/> : <div className="no-lyrics"><AudioLines size={38}/><h3>{lyricLoading ? '正在读取歌词' : lookingOnline ? '正在查找在线歌词' : '让文字也跟着旋律'}</h3><p>自动读取歌曲旁的同名歌词文件{settings?.onlineLyrics !== false ? '，没有时从 AMLL TTML DB 查找' : ''}<br/>也可以手动关联 LRC、TTML、YRC 或 TXT</p><PressableButton className="secondary-button" onClick={() => void attachLyrics()}><Plus size={16}/>关联歌词</PressableButton></div>}
                 </motion.div>
               </AnimatePresence>
               <div className="lyric-toolbar">
@@ -908,7 +964,7 @@ export function App() {
       {settingsOpen && <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>
           <section className="modal settings-modal" role="dialog" aria-modal="true" aria-label="设置与关于" onClick={e => e.stopPropagation()}>
             <header className="modal-header settings-caption"><h2>设置与关于</h2><button type="button" className="caption-close" aria-label="关闭设置" data-tooltip="关闭" onClick={() => setSettingsOpen(false)}>{'\uE8BB'}</button></header>
-            <div className="settings-tabs" role="tablist" aria-label="设置分类">{[{ id: 'appearance', label: '外观', icon: Settings2 }, { id: 'library', label: '音乐库', icon: LibraryIcon }, { id: 'playback', label: '播放与快捷键', icon: Headphones }, { id: 'about', label: '关于', icon: Music2 }].map(({ id, label, icon: Icon }) => <button key={id} role="tab" aria-selected={settingsTab === id} tabIndex={settingsTab === id ? 0 : -1} onClick={() => setSettingsTab(id)} onKeyDown={event => { const buttons = Array.from(event.currentTarget.parentElement!.querySelectorAll<HTMLButtonElement>('[role=tab]')); const index = buttons.indexOf(event.currentTarget); if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const target = buttons[event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length]; target.click(); target.focus(); } }}><Icon size={16}/>{label}</button>)}</div>
+            <div className="settings-tabs" role="tablist" aria-label="设置分类">{[{ id: 'appearance', label: '外观', icon: Settings2 }, { id: 'library', label: '音乐库', icon: LibraryIcon }, { id: 'playback', label: '播放与快捷键', icon: Headphones }, { id: 'tools', label: '工具', icon: Languages }, { id: 'about', label: '关于', icon: Music2 }].map(({ id, label, icon: Icon }) => <button key={id} role="tab" aria-selected={settingsTab === id} tabIndex={settingsTab === id ? 0 : -1} onClick={() => setSettingsTab(id)} onKeyDown={event => { const buttons = Array.from(event.currentTarget.parentElement!.querySelectorAll<HTMLButtonElement>('[role=tab]')); const index = buttons.indexOf(event.currentTarget); if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const target = buttons[event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length]; target.click(); target.focus(); } }}><Icon size={16}/>{label}</button>)}</div>
             <div className="settings-body">
               <div className="settings-brand"><span className="brand-icon"><AudioLines size={25}/></span><div><h3>DR Music <small>0.2.0</small></h3><p>你的音乐，你的节奏。个人音乐播放器。</p></div></div>
               <section role="tabpanel" aria-label="外观" hidden={settingsTab !== 'appearance'}><h4>外观</h4><p className="settings-hint">选择适合你的配色和窗口风格。</p>
@@ -918,6 +974,7 @@ export function App() {
               <div className="settings-row"><span>歌词字体</span><Select label="歌词字体" value={settings?.lyricFont || ''} onChange={value => setSettings({ lyricFont: value })} options={[{ value: '', label: fonts ? '默认 · 跟随应用' : '默认 · 跟随应用（正在读取字体…）' }, ...(fonts || []).map(font => ({ value: font.family, label: font.name, style: { fontFamily: `"${font.family}", var(--font-ui)` } })), ...(settings?.lyricFont && fonts && !fonts.some(font => font.family === settings.lyricFont) ? [{ value: settings.lyricFont, label: `${settings.lyricFont}（未安装）` }] : [])]}/></div>
               <div className="settings-row"><span>歌词粗细</span><Select label="歌词粗细" value={String(settings?.lyricWeight || 0)} onChange={value => setSettings({ lyricWeight: Number(value) })} options={[{ value: '0', label: '默认' }, ...[[300, '细'], [400, '常规'], [500, '中等'], [600, '半粗'], [700, '粗'], [800, '特粗'], [900, '黑']].map(([weight, name]) => ({ value: String(weight), label: `${name} · ${weight}`, style: { fontWeight: weight as number } }))]}/></div>
               <div className="settings-row"><span>歌词大小</span><Select label="歌词大小" value={String(settings?.lyricScale || 1)} onChange={value => setSettings({ lyricScale: Number(value) })} options={[.8, .9, 1, 1.1, 1.2, 1.35, 1.5].map(scale => ({ value: String(scale), label: scale === 1 ? '默认 · 100%' : `${Math.round(scale * 100)}%` }))}/></div>
+              <div className="settings-row settings-toggle-row"><span className="settings-row-label"><span>注音另起一行</span><small>播放页右上角「音」可为中文歌词加注音（目前支持粤语粤拼）。关闭时注音标在每个字上方，打开后在整行歌词下方单独显示。</small></span><button type="button" role="switch" className="switch" aria-label="注音另起一行" aria-checked={!!settings?.lyricRubyBelow} onClick={() => setSettings({ lyricRubyBelow: !settings?.lyricRubyBelow })}><span/></button></div>
               <div className="lyric-font-preview" aria-label="歌词字体预览" style={lyricTypographyStyle({ font: settings?.lyricFont, weight: settings?.lyricWeight, scale: settings?.lyricScale })}><span>让文字也跟着旋律</span><small>Lyrics follow the melody · 0123</small></div>
               </section><section role="tabpanel" aria-label="音乐库" hidden={settingsTab !== 'library'}><h4>音乐库</h4><p className="settings-hint">添加文件夹时包含子目录，歌曲先加入，标签和封面在后台补齐。重新扫描会更新标签和新增歌曲。移除文件夹会同时清理子目录、收藏和歌单中的歌曲记录，磁盘音乐会保留。</p>
               <div className="folder-list">{library?.folders.map(folder => <div key={folder}><FolderOpen size={16}/><span data-tooltip={folder}>{folder}</span><IconButton icon={X} label={`移除文件夹 ${folder}`} disabled={busy} onClick={() => void removeFolder(folder)}/></div>)}{!library?.folders.length && <p>还没有导入音乐文件夹</p>}</div>
@@ -933,6 +990,9 @@ export function App() {
               <div className="settings-field"><label htmlFor="amll-mirror">AMLL TTML DB 地址</label><div><input id="amll-mirror" type="url" spellCheck={false} placeholder="https://raw.githubusercontent.com/amll-dev/amll-ttml-db/main" value={mirrorDraft ?? settings?.amllMirror ?? ''} onChange={event => setMirrorDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') saveMirror(); }}/><PressableButton className="secondary-button" disabled={mirrorDraft === undefined} onClick={saveMirror}>保存</PressableButton></div><small>留空使用 GitHub 原始地址；也可以填写仓库根目录的镜像。</small></div>
               <div className="settings-field"><label htmlFor="apple-token">Apple Music media-user-token</label><div><input id="apple-token" type="password" autoComplete="off" spellCheck={false} placeholder={appleToken.set ? '已设置，输入新令牌可替换' : '从 music.apple.com 登录后的 Cookie 中复制'} value={appleToken.draft} onChange={event => setAppleToken(t => ({ ...t, draft: event.target.value }))}/><PressableButton className="secondary-button" disabled={!appleToken.draft.trim()} onClick={() => saveAppleToken(appleToken.draft)}>保存</PressableButton>{appleToken.set && <PressableButton className="text-button" onClick={() => saveAppleToken('')}>清除</PressableButton>}</div><small>只有 Apple Music 订阅用户需要；令牌用 Windows 数据保护加密保存，不会显示或发回页面。</small></div>
               </section><section role="tabpanel" aria-label="播放与快捷键" hidden={settingsTab !== 'playback'}><h4>键盘与播放</h4><div className="shortcut-list"><span>播放 / 暂停 <kbd>Space</kbd></span><span>上一首 / 下一首 <kbd>Ctrl ← / →</kbd></span><span>打开 / 收起播放页 <kbd>Ctrl L</kbd></span><span>喜欢当前歌曲 <kbd>Ctrl D</kbd></span><span>搜索音乐 <kbd>Ctrl F</kbd></span><span>关闭面板 <kbd>Esc</kbd></span></div>
+              </section><section role="tabpanel" aria-label="工具" hidden={settingsTab !== 'tools'}><h4>工具</h4><p className="settings-hint">歌词翻译等附加功能的服务与模型。</p>
+              <h5 className="settings-subheading">歌词翻译</h5>
+              {settingsTab === 'tools' && <TranslationSettings settings={settings} setSettings={setSettings} notify={notify}/>}
               </section><section role="tabpanel" aria-label="关于" hidden={settingsTab !== 'about'}><h4>来源与开源声明</h4><p className="settings-hint">本项目由 suxiaofan 定制，基于 MySpotify 的产品布局与歌词分词逻辑重构。原作者及开源声明保留。歌词使用 Apple Music-like Lyrics 渲染。应用遵循 AGPL-3.0-only。</p>
               <PressableButton className="secondary-button" onClick={() => void window.music.notices().then(setNoticeText).catch(e => notify(String(e)))}>查看原项目及第三方声明</PressableButton>
               <p className="privacy-note"><Check size={15}/>没有账号、遥测或自动更新。音频与音乐库都在你的电脑里；只有开启「在线歌词」时才会向所选歌词源查询歌词。</p></section>

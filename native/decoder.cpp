@@ -29,6 +29,7 @@ struct AudioDecoder::Impl {
     AVFrame *frame = nullptr;
     int stream = -1;
     bool input_end = false, decoder_end = false;
+    int damaged = 0; // consecutive undecodable packets / frames
     double length = 0, discard_until = -1;
     std::vector<float> samples;
     size_t offset = 0;
@@ -75,12 +76,22 @@ struct AudioDecoder::Impl {
                 continue;
             }
             if (received == AVERROR_EOF) { decoder_end = true; break; }
+            // Damaged data (often a truncated or corrupt last frame) is skipped, as ffmpeg and other
+            // players do, instead of ending playback with an error; a stream that stays undecodable
+            // is treated as ended.
+            if (received == AVERROR_INVALIDDATA) { if (++damaged > 64) { decoder_end = true; break; } continue; }
             checked(received == AVERROR(EAGAIN) ? 0 : received, "音频解码失败");
             if (input_end) throw std::runtime_error("音频解码器未完成刷新");
             int read = 0;
             do { av_packet_unref(packet); read = av_read_frame(format, packet); } while (read >= 0 && packet->stream_index != stream);
             if (read == AVERROR_EOF) { input_end = true; checked(avcodec_send_packet(codec, nullptr), "无法刷新音频解码器"); }
-            else { checked(read, "无法读取音频数据"); checked(avcodec_send_packet(codec, packet), "无法提交音频数据"); }
+            else if (read == AVERROR_INVALIDDATA) { if (++damaged > 64) { input_end = true; checked(avcodec_send_packet(codec, nullptr), "无法刷新音频解码器"); } }
+            else {
+                checked(read, "无法读取音频数据");
+                const int sent = avcodec_send_packet(codec, packet);
+                if (sent == AVERROR_INVALIDDATA) { if (++damaged > 64) { input_end = true; checked(avcodec_send_packet(codec, nullptr), "无法刷新音频解码器"); } }
+                else { checked(sent, "无法提交音频数据"); damaged = 0; }
+            }
         }
         const int available = swr_get_out_samples(resampler, 0);
         if (available <= 0) return false;
@@ -132,6 +143,6 @@ void AudioDecoder::seek(double seconds) {
     const auto target = static_cast<int64_t>(seconds / av_q2d(stream->time_base)) + start;
     checked(avformat_seek_file(p.format, p.stream, INT64_MIN, target, target, AVSEEK_FLAG_BACKWARD), "无法定位音频");
     avcodec_flush_buffers(p.codec); swr_close(p.resampler); checked(swr_init(p.resampler), "无法重置重采样器");
-    p.samples.clear(); p.offset = 0; p.input_end = p.decoder_end = false; p.discard_until = seconds;
+    p.samples.clear(); p.offset = 0; p.input_end = p.decoder_end = false; p.damaged = 0; p.discard_until = seconds;
 }
 }

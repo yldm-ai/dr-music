@@ -2,6 +2,7 @@
 #include <winhttp.h>
 #include <algorithm>
 #include <cctype>
+#include <fstream>
 namespace dr {
 namespace {
 struct Handle {
@@ -53,9 +54,9 @@ HttpFetch winhttp_fetch(std::function<bool(const std::string &host)> allowed) {
         const auto url = parse_url(request.url);
         if (!url) throw std::runtime_error("无效的歌词地址");
         if (!allowed || !allowed(url->host)) throw std::runtime_error("不允许访问的地址：" + url->host);
-        Handle session(WinHttpOpen(L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) DR-Music/0.2", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
+        Handle session(WinHttpOpen(L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) DR-Music/0.2", request.direct ? WINHTTP_ACCESS_TYPE_NO_PROXY : WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
         if (!session) throw std::runtime_error("无法初始化网络");
-        WinHttpSetTimeouts(session.value, 5000, 5000, 8000, 15000);
+        WinHttpSetTimeouts(session.value, 5000, 5000, 8000, static_cast<int>(request.timeout_ms));
         Handle connection(WinHttpConnect(session.value, wide(url->host).c_str(), url->port, 0));
         if (!connection) throw std::runtime_error("无法连接 " + url->host);
         Handle handle(WinHttpOpenRequest(connection.value, wide(request.method).c_str(), wide(url->path).c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, url->https ? WINHTTP_FLAG_SECURE : 0));
@@ -66,8 +67,25 @@ HttpFetch winhttp_fetch(std::function<bool(const std::string &host)> allowed) {
         WinHttpSetOption(handle.value, WINHTTP_OPTION_DECOMPRESSION, &decompression, sizeof(decompression));
         std::wstring headers;
         for (const auto &[name, value] : request.headers) headers += wide(name) + L": " + wide(value) + L"\r\n";
-        const BOOL sent = WinHttpSendRequest(handle.value, headers.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : headers.c_str(), headers.empty() ? 0 : static_cast<DWORD>(-1L),
-            request.body.empty() ? WINHTTP_NO_REQUEST_DATA : const_cast<char *>(request.body.data()), static_cast<DWORD>(request.body.size()), static_cast<DWORD>(request.body.size()), 0);
+        BOOL sent = FALSE;
+        if (!request.body_file.empty()) {
+            // Large uploads (a model file) go out in chunks instead of being held in memory.
+            std::ifstream in(request.body_file, std::ios::binary);
+            if (!in) throw std::runtime_error("无法读取文件：" + path_text(request.body_file));
+            const auto total = fs::file_size(request.body_file);
+            if (total > 0xFFFFFFFFull) throw std::runtime_error("文件过大");
+            sent = WinHttpSendRequest(handle.value, headers.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : headers.c_str(), headers.empty() ? 0 : static_cast<DWORD>(-1L), WINHTTP_NO_REQUEST_DATA, 0, static_cast<DWORD>(total), 0);
+            std::string chunk(1 << 20, '\0'); uint64_t done = 0;
+            while (sent && done < total) {
+                in.read(chunk.data(), static_cast<std::streamsize>(std::min<uint64_t>(chunk.size(), total - done)));
+                const auto count = static_cast<DWORD>(in.gcount()); DWORD written = 0;
+                if (!count || !WinHttpWriteData(handle.value, chunk.data(), count, &written)) throw std::runtime_error("上传失败：" + url->host);
+                done += written;
+                if (request.on_sent) request.on_sent(done, total);
+            }
+        } else
+            sent = WinHttpSendRequest(handle.value, headers.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : headers.c_str(), headers.empty() ? 0 : static_cast<DWORD>(-1L),
+                request.body.empty() ? WINHTTP_NO_REQUEST_DATA : const_cast<char *>(request.body.data()), static_cast<DWORD>(request.body.size()), static_cast<DWORD>(request.body.size()), 0);
         if (!sent || !WinHttpReceiveResponse(handle.value, nullptr)) throw std::runtime_error("无法连接 " + url->host);
         DWORD status = 0, size = sizeof(status);
         WinHttpQueryHeaders(handle.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX);
@@ -76,6 +94,12 @@ HttpFetch winhttp_fetch(std::function<bool(const std::string &host)> allowed) {
             DWORD available = 0;
             if (!WinHttpQueryDataAvailable(handle.value, &available)) throw std::runtime_error("下载失败：" + url->host);
             if (!available) break;
+            if (request.on_data) {
+                std::string chunk(available, '\0'); DWORD read = 0;
+                if (!WinHttpReadData(handle.value, chunk.data(), available, &read)) throw std::runtime_error("下载失败：" + url->host);
+                request.on_data(std::string_view(chunk.data(), read));
+                continue;
+            }
             if (response.body.size() + available > request.limit) throw std::runtime_error("响应过大：" + url->host);
             const auto offset = response.body.size(); response.body.resize(offset + available);
             DWORD read = 0;
@@ -95,7 +119,9 @@ HttpFetch fixture_fetch(fs::path root) {
         const auto file = root / from_text(url->host) / from_text(path.substr(1));
         std::error_code ec;
         if (!fs::is_regular_file(file, ec)) return HttpResponse{404, {}};
-        return HttpResponse{200, read_text(file, request.limit)};
+        auto body = read_text(file, request.limit);
+        if (request.on_data) { request.on_data(body); return HttpResponse{200, {}}; }
+        return HttpResponse{200, std::move(body)};
     };
 }
 }

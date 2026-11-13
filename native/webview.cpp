@@ -22,7 +22,20 @@ void WebView::fail(HRESULT error, const wchar_t *step) {
     std::wostringstream text; text << step << L"失败 (0x" << std::hex << error << L")。请安装或修复 Microsoft Edge WebView2 Runtime。";
     if (on_error) on_error(text.str());
 }
-void WebView::resize(RECT bounds) { bounds_ = bounds; if (controller_) controller_->put_Bounds(bounds); }
+void WebView::resize(RECT bounds) {
+    bounds_ = bounds;
+    if (!controller_) return;
+    controller_->put_Bounds(bounds);
+    // A composition-hosted WebView is not moved by put_Bounds: its visual is placed (and clipped)
+    // explicitly, as in the WebView2 sample's ViewComponent::ResizeWebView. Otherwise the page stays
+    // at the client origin, covers the Direct2D caption and leaves the bottom strip blank.
+    if (composition_root_ && composition_device_) {
+        composition_root_->SetOffsetX(static_cast<float>(bounds.left));
+        composition_root_->SetOffsetY(static_cast<float>(bounds.top));
+        composition_root_->SetClip(D2D_RECT_F{0, 0, static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top)});
+        composition_device_->Commit();
+    }
+}
 void WebView::send(const Json &message) { if (view_) view_->PostWebMessageAsJson(wide(message.dump(-1, ' ', false, Json::error_handler_t::replace)).c_str()); }
 void WebView::close() {
     if (controller_) controller_->Close();
@@ -69,6 +82,8 @@ void WebView::mouse(UINT message, WPARAM wParam, LPARAM lParam) {
     }
     POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
     if (message == WM_MOUSEWHEEL || message == WM_MOUSEHWHEEL) ScreenToClient(window_, &point);
+    // Mouse input is relative to the WebView, which starts below the Direct2D caption.
+    point.x -= bounds_.left; point.y -= bounds_.top;
     if (message == WM_MOUSEMOVE) {
         TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, window_, 0};
         TrackMouseEvent(&track);
@@ -108,7 +123,7 @@ void WebView::create(HWND window, const fs::path &web_root, const fs::path &data
                         fail(E_FAIL, L"WebView2 合成视觉树");
                         return S_OK;
                     }
-                    controller_->put_Bounds(bounds_);
+                    resize(bounds_);
                     configure(web_root);
                     if (on_ready) on_ready();
                     return S_OK;

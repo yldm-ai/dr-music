@@ -218,6 +218,8 @@ button,input,select{transition:background-color .24s cubic-bezier(.22,1,.36,1),c
 .web-caption button:hover,.web-caption button.hot,.web-caption button.active{background:var(--hover)}
 .web-caption button:last-child:hover,.web-caption button:last-child.active{background:#c42b1c;color:white}
 .web-caption svg{width:11px;height:11px;fill:none;stroke:currentColor;stroke-width:1}
+/* Windows' own caption glyphs: ChromeMinimize / ChromeMaximize / ChromeRestore / ChromeClose. */
+.web-caption .caption-glyph{font:400 10px/1 'Segoe Fluent Icons','Segoe MDL2 Assets';display:block;-webkit-font-smoothing:antialiased}
 .web-caption.immersive{background:transparent;color:#fff;--hover:#ffffff16}
 /* Let the playback backdrop paint under the WebView2 caption; the header
    grows by the caption height so its controls stay below the drag strip. */
@@ -474,3 +476,73 @@ button,input,select{transition:background-color .24s cubic-bezier(.22,1,.36,1),c
 .lyric-toolbar .script-option[aria-pressed=true]{background:#ffffff1f;color:#fff;font-weight:500}
 .lyric-toolbar .script-more{display:grid;place-items:center;width:16px;height:24px;margin-left:-2px;padding:0;border-radius:4px;color:#ffffff73;transition:background-color .16s ease,color .16s ease}
 .lyric-toolbar .script-more:hover,.lyric-toolbar .script-more[aria-expanded=true]{background:#ffffff14;color:#fff}
+
+/* 音 (注音) beside the queue button in the player header; pressed while a guide is shown. */
+.now-header-tools{display:flex;align-items:center;gap:4px}
+.ruby-button{display:inline-grid;place-items:center;width:32px;height:32px;padding:0;border-radius:6px;font-size:15px;font-weight:300;line-height:1;color:var(--muted);transition:background-color .16s ease,color .16s ease}
+.ruby-button:hover,.ruby-button[aria-expanded=true]{background:var(--hover);color:var(--text)}
+.ruby-button[aria-pressed=true]{color:var(--accent);font-weight:400}
+/* 译 / 音 stay out of sight until the pointer comes near the top-right corner (the tool area is
+   padded outwards so "near" counts), or keyboard focus / an open menu needs them. */
+.now-header-tools{padding:20px 0 20px 120px;margin:-20px 0 -20px -120px}
+.lyric-ai-tools{display:inline-flex;align-items:center;gap:4px;opacity:0;transition:opacity .22s ease}
+.now-header-tools:hover .lyric-ai-tools,.lyric-ai-tools:focus-within,.lyric-ai-tools:has([aria-expanded=true]){opacity:1}
+/* Readings above characters (AMLL ruby): a little air between neighbours so 'dai6 jat1' never runs together. */
+.lyrics-shell .lyrics-host [class*="_rubyWord"]{padding-inline:.2em;font-size:.46em;letter-spacing:0;opacity:.85}
+/* 译 pulses while Edge downloads its model or translates. */
+.translate-button[data-busy=true]{animation:translate-busy 1.1s ease-in-out infinite}
+@keyframes translate-busy{50%{opacity:.45}}
+
+/* Wide player page: everything grows with --np-s (set from the window size in App.tsx; 1 at
+   1440×900 and below, so smaller windows keep the base layout). The lyric column takes the larger
+   share of the width, and the gap between the two halves widens too. Short windows keep their compact rules. */
+@media(min-width:1280px){
+  .now-layout{max-width:min(calc(1440px * var(--np-s,1)),94vw);grid-template-columns:minmax(320px,.8fr) minmax(460px,1.4fr);gap:calc(clamp(56px,5vw,96px) * var(--np-s,1));padding-left:calc(65px * var(--np-s,1));padding-right:calc(65px * var(--np-s,1))}
+  .now-left{max-width:calc(430px * var(--np-s,1))}
+  .now-cover{max-width:min(calc(430px * var(--np-s,1)),34vw,60vh,calc(100dvh - 310px * var(--np-s,1)));max-height:min(calc(430px * var(--np-s,1)),34vw,60vh,calc(100dvh - 310px * var(--np-s,1)))}
+}
+@media(min-width:1280px) and (min-height:761px){
+  .now-title{gap:calc(15px * var(--np-s,1));margin:calc(28px * var(--np-s,1)) 0}
+  .now-title h2{font-size:calc(22px * var(--np-s,1))}
+  .now-title p{font-size:calc(14px * var(--np-s,1));margin-top:calc(8px * var(--np-s,1))}
+  .now-title .icon-button{width:calc(32px * var(--np-s,1));height:calc(32px * var(--np-s,1))}
+  .now-title .icon-button svg{width:calc(19px * var(--np-s,1));height:calc(19px * var(--np-s,1))}
+  .now-left .progress-control{gap:calc(10px * var(--np-s,1))}
+  .now-left .progress-control>span{font-size:calc(12px * var(--np-s,1));min-width:calc(36px * var(--np-s,1))}
+  .now-left .progress-control input{background-size:100% calc(3px * var(--np-s,1))}
+  .now-left .transport{margin-top:calc(24px * var(--np-s,1));gap:calc(22px * var(--np-s,1))}
+  .now-left .transport .icon-button{width:calc(32px * var(--np-s,1));height:calc(32px * var(--np-s,1))}
+  .now-left .transport .icon-button svg{width:calc(19px * var(--np-s,1));height:calc(19px * var(--np-s,1))}
+  .now-left .play-button{width:calc(44px * var(--np-s,1));height:calc(44px * var(--np-s,1))}
+  .now-left .play-button svg{width:calc(21px * var(--np-s,1));height:calc(21px * var(--np-s,1))}
+  .now-left .audio-quality{font-size:calc(11px * var(--np-s,1));margin-top:calc(25px * var(--np-s,1))}
+  /* Lyrics grow more gently than the controls: they gain width first. */
+  .lyrics-host>.amll-lyric-player{--amll-lp-font-size:calc(30px * (1 + (var(--np-s,1) - 1) * .55) * var(--dr-lyric-scale,1))}
+}
+/* Settings → 歌词 → 翻译模型: local Hunyuan model status, download progress and the Ollama address. */
+.translation-models{display:grid;gap:10px;padding:14px 0;border-top:1px solid var(--line)}
+.translation-model-row{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:10px;font-size:13px}
+.translation-model-row>span{color:var(--muted)}
+.translation-model-row>span[data-state=ready]{color:var(--accent)}
+.translation-model-row button{height:30px;padding:0 14px;font-size:12px}
+.translation-progress{height:4px;border-radius:999px;background:color-mix(in srgb,var(--text) 10%,transparent);overflow:hidden}
+.translation-progress>i{display:block;height:100%;border-radius:inherit;background:var(--accent);transition:width .25s ease}
+.translation-endpoint{display:grid;grid-template-columns:1.1fr 1.6fr auto;gap:10px;align-items:end}
+.translation-endpoint label{display:grid;gap:5px;font-size:12px;color:var(--muted)}
+.translation-endpoint button{height:34px;padding:0 14px;font-size:12px}
+/* 工具 → 歌词翻译: App ID / API Key fields and the one-line Ollama install command. */
+.translation-key{display:grid;grid-template-columns:1fr 1.3fr auto;gap:10px;align-items:end}
+.translation-key label{display:grid;gap:5px;font-size:12px;color:var(--muted)}
+.translation-key button{height:34px;padding:0 14px;font-size:12px}
+.install-command{display:grid;gap:8px;padding:12px 14px;border-radius:8px;background:color-mix(in srgb,var(--text) 5%,transparent);font-size:12px;color:var(--muted)}
+.install-command>div{display:flex;align-items:center;gap:10px}
+.install-command code{flex:1;min-width:0;padding:7px 10px;border-radius:6px;background:var(--input);color:var(--text);font:12.5px/1.4 Consolas,'Cascadia Mono',monospace;user-select:all;overflow-x:auto;white-space:nowrap}
+.install-command button{display:inline-flex;align-items:center;gap:5px;height:30px;padding:0 12px;font-size:12px}
+/* Manual model download: browser links and the import button. */
+.manual-download{display:grid;gap:8px;font-size:12px;color:var(--muted)}
+.manual-download b{color:var(--text);font-weight:500}
+.manual-download>div{display:flex;gap:8px;flex-wrap:wrap}
+.manual-download button{height:30px;padding:0 14px;font-size:12px}
+/* API Key dots half as far apart as the font's own: in Noto Sans SC the bullet is a 5px dot on a full-width
+   13px advance (8px gap at 13px), so -.3em leaves ~4px. Placeholder text keeps normal spacing. */
+.translation-key input[type=password]:not(:placeholder-shown){letter-spacing:-.3em}

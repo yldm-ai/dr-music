@@ -63,7 +63,7 @@ add_dependencies(dr-music-opencc-data Dictionaries)
 # Same pinned SDK and static loader pattern as ../dr-dict/app/CMakeLists.txt.
 FetchContent_Declare(webview2 URL https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/1.0.2903.40 DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(webview2)
-add_library(dr_music_core STATIC native/common.cpp native/library.cpp native/media.cpp native/cover.cpp native/fonts.cpp native/chinese.cpp native/online_lyrics.cpp native/http.cpp native/lyric_crypto.cpp native/lyric_providers.cpp)
+add_library(dr_music_core STATIC native/common.cpp native/library.cpp native/media.cpp native/cover.cpp native/fonts.cpp native/chinese.cpp native/online_lyrics.cpp native/http.cpp native/lyric_crypto.cpp native/lyric_providers.cpp native/local_translator.cpp native/translation_memory.cpp native/niutrans.cpp)
 target_include_directories(dr_music_core PUBLIC native "${taglib_SOURCE_DIR}/taglib" "${taglib_SOURCE_DIR}/taglib/toolkit" "${taglib_BINARY_DIR}" "${taglib_BINARY_DIR}/taglib")
 target_link_libraries(dr_music_core PUBLIC nlohmann_json::nlohmann_json tag bcrypt ole32 shlwapi windowscodecs dwrite winhttp crypt32 ZLIB::ZLIB)
 target_link_libraries(dr_music_core PRIVATE OpenCC::OpenCC)

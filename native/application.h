@@ -2,6 +2,8 @@
 #include "library.h"
 #include "chinese.h"
 #include "online_lyrics.h"
+#include "local_translator.h"
+#include "niutrans.h"
 #include "window.h"
 #include "webview.h"
 #include "playback.h"
@@ -22,9 +24,16 @@ private:
     void enqueue_transport(std::function<void()> task);
     void enqueue_network(std::function<void()> task);
     void apply_lyric_options();
+    void apply_translate_options();
+    void enqueue_translate(std::function<void()> task);
     fs::path apple_token_file() const;
     void save_apple_token(const std::string &token);
     std::string load_apple_token() const;
+    fs::path niutrans_key_file() const;
+    void load_niutrans_key();
+    static void seal(const fs::path &file, const std::string &secret, const wchar_t *description);
+    static std::string unseal(const fs::path &file);
+    std::vector<std::string> translate_lines(const std::vector<std::string> &lines, const std::string &source, const std::string &target);
     void schedule_metadata(Json candidates, size_t offset = 0);
     void receive(const Json &request);
     void reply(const Json &id, Json result);
@@ -39,6 +48,8 @@ private:
     fs::path assets_;
     ChineseText chinese_;
     OnlineLyrics online_lyrics_;
+    LocalTranslator translator_;
+    NiuTrans niutrans_;
     unsigned debug_port_;
     std::vector<fs::path> imports_;
     std::string shell_;
@@ -59,5 +70,11 @@ private:
     std::condition_variable_any network_ready_;
     std::deque<std::function<void()>> network_jobs_;
     std::jthread network_worker_;
+    // Local-model translation (Ollama on loopback) has its own queue: a model download or a long
+    // lyric must not delay online lyric lookups.
+    std::mutex translate_mutex_;
+    std::condition_variable_any translate_ready_;
+    std::deque<std::function<void()>> translate_jobs_;
+    std::jthread translate_worker_;
 };
 }

@@ -15,6 +15,8 @@ std::string path_text(const fs::path &path);
 fs::path from_text(const std::string &text);
 std::wstring take(wchar_t *value);
 std::string read_text(const fs::path &file, size_t limit = 64 * 1024 * 1024);
+/** The file's bytes as they are (no text decoding), e.g. DPAPI-encrypted data. */
+std::string read_bytes(const fs::path &file, size_t limit);
 void write_atomic(const fs::path &file, const std::string &text);
 std::string lower(std::string text);
 std::string path_key(const fs::path &file);

@@ -4,6 +4,8 @@ import { AnimatePresence, motion } from 'motion/react';
 import { LyricPlayer, LyricLineMouseEvent } from '@applemusic-like-lyrics/core';
 import '@applemusic-like-lyrics/core/style.css';
 import { parseLyrics } from './lib/lyrics';
+import { annotate, loadReader, type Reader, type RubyKind } from './lib/ruby';
+import { sourceLanguage, translateLines, type TranslateTarget } from './lib/translate';
 import type { LyricFile } from './types';
 
 const smoothEase: [number, number, number, number] = [.22, 1, .36, 1];
@@ -17,7 +19,39 @@ export const lyricTypographyStyle = ({ font, weight, scale }: LyricTypography) =
   '--dr-lyric-scale': String(scale || 1),
 }) as React.CSSProperties;
 
-export function Lyrics({ file, audio, offset, active, onSeek, typography = {} }: { file: LyricFile; audio: NativePlayback; offset: number; active: boolean; onSeek: (seconds: number) => void; typography?: LyricTypography }) {
+export interface LyricRuby { kind: RubyKind; below: boolean }
+export type TranslateState = { state: 'idle' | 'working' | 'done' } | { state: 'error'; message: string } | { state: 'downloading'; progress: number };
+
+export function Lyrics({ file, audio, offset, active, onSeek, typography = {}, ruby, translate, onTranslateState }: { file: LyricFile; audio: NativePlayback; offset: number; active: boolean; onSeek: (seconds: number) => void; typography?: LyricTypography; ruby?: LyricRuby; translate?: TranslateTarget; onTranslateState?: (state: TranslateState) => void }) {
+  // The reader for the chosen guide; until it has loaded, lyrics show without it.
+  const [reader, setReader] = useState<{ kind: RubyKind; read: Reader }>();
+  useEffect(() => {
+    if (!ruby || reader?.kind === ruby.kind) return;
+    let live = true;
+    loadReader(ruby.kind).then(read => { if (live) setReader({ kind: ruby.kind, read }); }).catch(() => {});
+    return () => { live = false; };
+  }, [ruby?.kind]);
+  const read = ruby && reader?.kind === ruby.kind ? reader.read : undefined;
+  const below = !!ruby?.below;
+  // 译: every line translated on the device by Edge's built-in model, shown under the line.
+  const reportRef = useRef(onTranslateState); reportRef.current = onTranslateState;
+  const [translated, setTranslated] = useState<{ key: string; lines: string[] }>();
+  const translateKey = translate ? `${translate}\n${file.text}` : '';
+  useEffect(() => {
+    const report = (state: TranslateState) => reportRef.current?.(state);
+    if (!translate) { report({ state: 'idle' }); return; }
+    if (translated?.key === translateKey) { report({ state: 'done' }); return; }
+    let texts: string[];
+    try { texts = parseLyrics(file, 0).lines.map(line => line.words.map(w => w.word).join('').trim()); } catch { return; }
+    if (!texts.some(Boolean)) return;
+    const controller = new AbortController(), key = translateKey;
+    report({ state: 'working' });
+    translateLines(texts, sourceLanguage(texts.join('\n')), translate, controller.signal)
+      .then(lines => { setTranslated({ key, lines }); report({ state: 'done' }); })
+      .catch(error => { if (!controller.signal.aborted) report({ state: 'error', message: error instanceof Error ? error.message : String(error) }); });
+    return () => controller.abort();
+  }, [translateKey]);
+  const translation = translate && translated?.key === translateKey ? translated.lines : undefined;
   const host = useRef<HTMLDivElement>(null);
   const [info, setInfo] = useState('');
   const [plain, setPlain] = useState('');
@@ -31,6 +65,8 @@ export function Lyrics({ file, audio, offset, active, onSeek, typography = {} }:
     setPlain(parsed.plain);
     setInfo('');
     if (!parsed.lines.length) return;
+    if (read) parsed = { ...parsed, lines: annotate(parsed.lines, read, below) };
+    if (translation) parsed = { ...parsed, lines: parsed.lines.map((line, i) => translation[i] ? { ...line, translatedLyric: translation[i] } : line) };
     const player = new LyricPlayer();
     player.setAlignPosition(0.38);
     player.setWordFadeWidth(.35);
@@ -72,7 +108,7 @@ export function Lyrics({ file, audio, offset, active, onSeek, typography = {} }:
     frame = requestAnimationFrame(tick);
     return () => { cancelAnimationFrame(frame); audio.removeEventListener('play', sync); audio.removeEventListener('pause', sync); audio.removeEventListener('seeking', seek); player.removeEventListener('line-click', click); player.dispose(); };
     // Font metrics change line heights, so rebuild AMLL's layout when typography changes.
-  }, [file, audio, offset, typography.font, typography.weight, typography.scale]);
+  }, [file, audio, offset, typography.font, typography.weight, typography.scale, read, below, translation]);
   return <div className="lyrics-shell" style={lyricTypographyStyle(typography)}>
     <motion.div className="lyrics-host" ref={host} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={textTransition}/>
     <AnimatePresence>

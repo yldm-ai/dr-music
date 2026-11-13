@@ -1,7 +1,10 @@
 #include "application.h"
 #include "fonts.h"
 #include <wincrypt.h>
+#include <winhttp.h>
 #include <cmath>
+#include <map>
+#include <set>
 #include <shobjidl.h>
 #include <shlobj.h>
 #include <shellapi.h>
@@ -12,9 +15,13 @@ Application::Application(fs::path data, fs::path assets, unsigned debug_port, st
       online_lyrics_(library_.directory() / L"online-lyrics",
           online_lyrics_fixture.empty() ? winhttp_fetch([this](const std::string &host) { return online_lyrics_.allowed_host(host); }) : fixture_fetch(online_lyrics_fixture),
           [this](const std::string &text) { return chinese_.simplify(text); }),
+      translator_(library_.directory() / L"translations", winhttp_fetch([](const std::string &host) { return LocalTranslator::loopback(host); })),
+      niutrans_(library_.directory() / L"translations", winhttp_fetch([](const std::string &host) { return host == NiuTrans::kHost; })),
       debug_port_(debug_port), imports_(std::move(imports)), shell_(shell) {
     library_.load();
     apply_lyric_options();
+    apply_translate_options();
+    load_niutrans_key();
     worker_ = std::jthread([this](std::stop_token stop) {
         while (true) {
             std::function<void(std::stop_token)> task;
@@ -46,11 +53,22 @@ Application::Application(fs::path data, fs::path assets, unsigned debug_port, st
             task();
         }
     });
+    translate_worker_ = std::jthread([this](std::stop_token stop) {
+        while (true) {
+            std::function<void()> task;
+            { std::unique_lock lock(translate_mutex_); translate_ready_.wait(lock, stop, [this] { return !translate_jobs_.empty(); });
+              if (stop.stop_requested()) break;
+              if (translate_jobs_.empty()) continue;
+              task = std::move(translate_jobs_.front()); translate_jobs_.pop_front(); }
+            task();
+        }
+    });
 }
 Application::~Application() {
     closing_ = true; worker_.request_stop(); ready_.notify_all(); if (worker_.joinable()) worker_.join();
     transport_worker_.request_stop(); transport_ready_.notify_all(); if (transport_worker_.joinable()) transport_worker_.join();
     network_worker_.request_stop(); network_ready_.notify_all(); if (network_worker_.joinable()) network_worker_.join();
+    translate_worker_.request_stop(); translate_ready_.notify_all(); if (translate_worker_.joinable()) translate_worker_.join();
     system_media_.shutdown();
     playback_.set_listener({});
     playback_.command({{"action", "stop"}, {"request", UINT64_MAX}});
@@ -71,25 +89,43 @@ void Application::apply_lyric_options() {
     options.apple_token = load_apple_token();
     online_lyrics_.set_options(std::move(options));
 }
-fs::path Application::apple_token_file() const { return library_.directory() / L"apple-music-token.bin"; }
-void Application::save_apple_token(const std::string &token) {
-    std::error_code ec;
-    if (token.empty()) { fs::remove(apple_token_file(), ec); return; }
-    DATA_BLOB input{static_cast<DWORD>(token.size()), reinterpret_cast<BYTE *>(const_cast<char *>(token.data()))}, output{};
-    if (!CryptProtectData(&input, L"DR Music Apple Music token", nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output)) throw std::runtime_error("无法保存 Apple Music 令牌");
-    std::string sealed(reinterpret_cast<char *>(output.pbData), output.cbData); LocalFree(output.pbData);
-    write_atomic(apple_token_file(), sealed);
+void Application::apply_translate_options() {
+    const auto settings = library_.settings();
+    translator_.set_options({settings.value("translateEndpoint", std::string(LocalTranslator::kDefaultEndpoint)), settings.value("translateModel", std::string(LocalTranslator::kDefaultModel))});
 }
-std::string Application::load_apple_token() const {
+void Application::enqueue_translate(std::function<void()> task) {
+    { std::lock_guard lock(translate_mutex_); translate_jobs_.push_back(std::move(task)); } translate_ready_.notify_one();
+}
+// Secrets (Apple Music token, 小牛翻译 key) are DPAPI-encrypted for this Windows user and never sent back to the page.
+void Application::seal(const fs::path &file, const std::string &secret, const wchar_t *description) {
     std::error_code ec;
-    if (!fs::is_regular_file(apple_token_file(), ec)) return {};
+    if (secret.empty()) { fs::remove(file, ec); return; }
+    DATA_BLOB input{static_cast<DWORD>(secret.size()), reinterpret_cast<BYTE *>(const_cast<char *>(secret.data()))}, output{};
+    if (!CryptProtectData(&input, description, nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output)) throw std::runtime_error("无法加密保存密钥");
+    std::string sealed(reinterpret_cast<char *>(output.pbData), output.cbData); LocalFree(output.pbData);
+    write_atomic(file, sealed);
+}
+std::string Application::unseal(const fs::path &file) {
+    std::error_code ec;
+    if (!fs::is_regular_file(file, ec)) return {};
     try {
-        auto sealed = read_text(apple_token_file(), 64 * 1024);
+        auto sealed = read_bytes(file, 64 * 1024); // binary: read_text would reject it as invalid UTF-8
         DATA_BLOB input{static_cast<DWORD>(sealed.size()), reinterpret_cast<BYTE *>(sealed.data())}, output{};
         if (!CryptUnprotectData(&input, nullptr, nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output)) return {};
-        std::string token(reinterpret_cast<char *>(output.pbData), output.cbData); SecureZeroMemory(output.pbData, output.cbData); LocalFree(output.pbData);
-        return token;
+        std::string secret(reinterpret_cast<char *>(output.pbData), output.cbData); SecureZeroMemory(output.pbData, output.cbData); LocalFree(output.pbData);
+        return secret;
     } catch (const std::exception &) { return {}; }
+}
+fs::path Application::apple_token_file() const { return library_.directory() / L"apple-music-token.bin"; }
+void Application::save_apple_token(const std::string &token) { seal(apple_token_file(), token, L"DR Music Apple Music token"); }
+std::string Application::load_apple_token() const { return unseal(apple_token_file()); }
+fs::path Application::niutrans_key_file() const { return library_.directory() / L"niutrans-key.bin"; }
+void Application::load_niutrans_key() {
+    const auto json = Json::parse(unseal(niutrans_key_file()), nullptr, false);
+    niutrans_.set_credentials(json.is_object() ? json.value("appId", "") : "", json.is_object() ? json.value("apikey", "") : "");
+}
+std::vector<std::string> Application::translate_lines(const std::vector<std::string> &lines, const std::string &source, const std::string &target) {
+    return library_.settings().value("translateProvider", "local") == "niutrans" ? niutrans_.translate(lines, source, target) : translator_.translate(lines, source, target);
 }
 void Application::enqueue_network(std::function<void()> task) {
     { std::lock_guard lock(network_mutex_); network_jobs_.push_back(std::move(task)); } network_ready_.notify_one();
@@ -142,9 +178,11 @@ std::vector<fs::path> Application::choose_files(const std::string &kind) {
     dialog->SetOptions(flags);
     const COMDLG_FILTERSPEC audio[]{{L"音频文件", L"*.mp3;*.flac;*.wav;*.m4a;*.aac;*.ogg;*.opus;*.webm;*.mp4"}};
     const COMDLG_FILTERSPEC lyrics[]{{L"歌词文件", L"*.ttml;*.yrc;*.lrc;*.txt"}};
+    const COMDLG_FILTERSPEC model[]{{L"GGUF 模型文件", L"*.gguf"}};
     if (kind == "files") dialog->SetFileTypes(1, audio);
     if (kind == "lyrics") dialog->SetFileTypes(1, lyrics);
-    dialog->SetTitle(kind == "folder" ? L"选择音乐文件夹" : kind == "lyrics" ? L"选择歌词文件" : L"选择音乐文件");
+    if (kind == "model") { dialog->SetFileTypes(1, model); dialog->SetOptions(flags & ~FOS_ALLOWMULTISELECT); }
+    dialog->SetTitle(kind == "folder" ? L"选择音乐文件夹" : kind == "lyrics" ? L"选择歌词文件" : kind == "model" ? L"选择下载好的 Hy-MT2 模型文件（.gguf）" : L"选择音乐文件");
     auto hr = dialog->Show(window_.handle());
     if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED)) return {};
     if (FAILED(hr)) throw std::runtime_error("文件选择器打开失败");
@@ -254,6 +292,110 @@ void Application::receive(const Json &request) {
             reply(id, {{"appleToken", !token.empty()}}); return;
         }
         if (method == "lyrics:status") { reply(id, {{"appleToken", !load_apple_token().empty()}, {"providers", OnlineLyrics::provider_ids()}, {"amllDefault", OnlineLyrics::kAmllDefaultBase}}); return; }
+        // 译: Hunyuan Hy-MT2 through a local Ollama (loopback only, see local_translator.h).
+        if (method == "translate:status") {
+            // The Windows proxy (e.g. Clash on 127.0.0.1:7890) is read so settings can tell the user how to
+            // let Ollama use it: the Ollama service ignores it and only follows HTTPS_PROXY.
+            std::string system_proxy;
+            if (WINHTTP_CURRENT_USER_IE_PROXY_CONFIG ie{}; WinHttpGetIEProxyConfigForCurrentUser(&ie)) {
+                if (ie.lpszProxy) {
+                    auto value = utf8(ie.lpszProxy);
+                    if (auto at = value.find("https="); at != std::string::npos) value = value.substr(at + 6);
+                    else if (auto http = value.find("http="); http != std::string::npos) value = value.substr(http + 5);
+                    value = value.substr(0, value.find_first_of("; "));
+                    if (!value.empty() && value.find("://") == std::string::npos) value = "http://" + value;
+                    system_proxy = value;
+                }
+                if (ie.lpszProxy) GlobalFree(ie.lpszProxy);
+                if (ie.lpszProxyBypass) GlobalFree(ie.lpszProxyBypass);
+                if (ie.lpszAutoConfigUrl) GlobalFree(ie.lpszAutoConfigUrl);
+            }
+            // The local model is only probed when asked (the settings page, or it is the chosen provider).
+            const bool local = params.value("local", false) || library_.settings().value("translateProvider", "local") == "local";
+            enqueue_translate([this, id, local, system_proxy] {
+                reply(id, {{"provider", library_.settings().value("translateProvider", "local")}, {"local", local ? translator_.status() : Json()}, {"systemProxy", system_proxy},
+                           {"niutrans", {{"configured", niutrans_.configured()}, {"appId", niutrans_.app_id()}}}});
+            });
+            return;
+        }
+        if (method == "translate:import") {
+            // A .gguf downloaded in the browser, imported into the local Ollama (see LocalTranslator::import_gguf).
+            auto files = choose_files("model");
+            if (files.empty()) { reply(id, nullptr); return; }
+            enqueue_translate([this, id, file = files.front()] {
+                try {
+                    auto last = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+                    const auto model = translator_.import_gguf(file, [&](const LocalTranslator::Progress &p) {
+                        if (closing_) throw std::runtime_error("已取消");
+                        const auto now = std::chrono::steady_clock::now();
+                        if (now - last < std::chrono::milliseconds(200) && p.total > p.completed) return;
+                        last = now;
+                        window_.post([this, p] { if (!closing_) webview_.send({{"event", "translate:progress"}, {"data", {{"status", p.status}, {"completed", p.completed}, {"total", p.total}}}}); });
+                    });
+                    reply(id, {{"model", model}});
+                } catch (const std::exception &e) { reject(id, e.what()); }
+            });
+            return;
+        }
+        if (method == "app:open-url") {
+            // Fixed pages only (the page names one, never a URL): model downloads and service consoles.
+            static const std::map<std::string, std::wstring> pages = {
+                {"hy-mt2", L"https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF/tree/main"},
+                {"hy-mt2-mirror", L"https://hf-mirror.com/tencent/Hy-MT2-1.8B-GGUF/tree/main"},
+                {"ollama", L"https://ollama.com/download/windows"},
+                {"niutrans", L"https://niutrans.com/cloud/api/list"},
+            };
+            const auto page = pages.find(params.at("page").get<std::string>());
+            if (page == pages.end()) throw std::runtime_error("未知的页面");
+            if (reinterpret_cast<INT_PTR>(ShellExecuteW(window_.handle(), L"open", page->second.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32) throw std::runtime_error("无法打开浏览器");
+            reply(id, nullptr); return;
+        }
+        if (method == "translate:niutrans-key") {
+            const auto app_id = params.at("appId").get<std::string>(), apikey = params.at("apikey").get<std::string>();
+            auto plain = [](const std::string &s) { return s.size() <= 128 && std::all_of(s.begin(), s.end(), [](unsigned char c) { return std::isalnum(c) || c == '-' || c == '_'; }); };
+            if (!plain(app_id) || !plain(apikey) || app_id.empty() != apikey.empty()) throw std::runtime_error("App ID 或 API Key 格式不正确");
+            seal(niutrans_key_file(), app_id.empty() ? "" : Json{{"appId", app_id}, {"apikey", apikey}}.dump(), L"DR Music NiuTrans key");
+            load_niutrans_key();
+            reply(id, {{"configured", niutrans_.configured()}, {"appId", niutrans_.app_id()}}); return;
+        }
+        if (method == "translate:test") {
+            // A fixed sample through the chosen provider, so settings can confirm the key / model works.
+            enqueue_translate([this, id] {
+                try { reply(id, translate_lines({"故事的小黄花", "从出生那年就飘着"}, "zh", "en")); } catch (const std::exception &e) { reject(id, e.what()); }
+            });
+            return;
+        }
+        if (method == "translate:pull") {
+            enqueue_translate([this, id] {
+                try {
+                    auto last = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+                    translator_.pull([&](const LocalTranslator::Progress &p) {
+                        if (closing_) throw std::runtime_error("已取消");
+                        const auto now = std::chrono::steady_clock::now();
+                        if (now - last < std::chrono::milliseconds(200) && p.total > p.completed) return; // throttle progress events
+                        last = now;
+                        window_.post([this, p] { if (!closing_) webview_.send({{"event", "translate:progress"}, {"data", {{"status", p.status}, {"completed", p.completed}, {"total", p.total}}}}); });
+                    });
+                    reply(id, translator_.status());
+                } catch (const std::exception &e) { reject(id, e.what()); }
+            });
+            return;
+        }
+        if (method == "translate:lines") {
+            const auto &lines = params.at("lines");
+            const auto source = params.value("source", "zh"), target = params.at("target").get<std::string>();
+            static const std::set<std::string> languages = {"zh", "en", "ja", "ko"};
+            if (!lines.is_array() || lines.size() > 2000 || !languages.contains(source) || (target != "zh" && target != "en")) throw std::runtime_error("无效的翻译请求");
+            std::vector<std::string> texts;
+            for (const auto &line : lines) {
+                if (!line.is_string() || line.get_ref<const std::string &>().size() > 2000) throw std::runtime_error("无效的翻译请求");
+                texts.push_back(line.get<std::string>());
+            }
+            enqueue_translate([this, id, texts = std::move(texts), source, target] {
+                try { reply(id, translate_lines(texts, source, target)); } catch (const std::exception &e) { reject(id, e.what()); }
+            });
+            return;
+        }
         if (method == "app:data") {
             if (reinterpret_cast<INT_PTR>(ShellExecuteW(window_.handle(), L"open", library_.directory().c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32) throw std::runtime_error("无法打开数据目录");
             reply(id, nullptr); return;
@@ -264,6 +406,11 @@ void Application::receive(const Json &request) {
                 else if (method == "library:update") {
                     auto updated = library_.update(params);
                     if (params.contains("settings") && (params["settings"].contains("lyricProviders") || params["settings"].contains("amllMirror"))) apply_lyric_options();
+                    if (params.contains("settings") && (params["settings"].contains("translateEndpoint") || params["settings"].contains("translateModel") || params["settings"].contains("translateProvider"))) {
+                        apply_translate_options();
+                        // Settings re-check the provider only after the host uses the new values.
+                        window_.post([this] { if (!closing_) webview_.send({{"event", "translate:changed"}}); });
+                    }
                     if (params.contains("settings") && params["settings"].contains("titleBar")) window_.post([this, s = updated["settings"]] { if (!closing_) window_.set_style(s.value("titleBar", "direct2d") == "direct2d", s.value("titleBar", "direct2d") == "webview2"); });
                     reply(id, updated);
                 } else if (method == "library:remove" || method == "library:remove-folder") {

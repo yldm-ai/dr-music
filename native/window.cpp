@@ -175,6 +175,14 @@ void Window::paint(HWND surface) {
             write_->CreateTextFormat(family, nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 13, L"zh-CN", &text_);
             if (text_) { text_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER); text_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP); }
         }
+        if (write_ && !icons_) {
+            // Windows' own caption glyphs (Segoe Fluent Icons on Windows 11, Segoe MDL2 Assets on 10), 10 DIP like the system caption.
+            const wchar_t *family = L"Segoe MDL2 Assets";
+            Microsoft::WRL::ComPtr<IDWriteFontCollection> fonts; UINT32 index = 0; BOOL exists = FALSE;
+            if (SUCCEEDED(write_->GetSystemFontCollection(&fonts)) && SUCCEEDED(fonts->FindFamilyName(L"Segoe Fluent Icons", &index, &exists)) && exists) family = L"Segoe Fluent Icons";
+            write_->CreateTextFormat(family, nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 10, L"", &icons_);
+            if (icons_) { icons_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER); icons_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER); icons_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP); }
+        }
         if (factory_ && !target_) factory_->CreateHwndRenderTarget(D2D1::RenderTargetProperties(), D2D1::HwndRenderTargetProperties(surface, D2D1::SizeU(rc.right, rc.bottom)), &target_);
         if (target_) {
             const auto dpi = static_cast<float>(GetDpiForWindow(hwnd_)); target_->SetDpi(dpi, dpi);
@@ -188,15 +196,12 @@ void Window::paint(HWND surface) {
                 if (text_) target_->DrawTextW(title_.c_str(), static_cast<UINT32>(title_.size()), text_.Get(), D2D1::RectF(14, 0, std::max(14.f, size.width - 150), height), brush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
                 for (int i = 0; i < 3; ++i) {
                     const int hit = i == 0 ? HTMINBUTTON : i == 1 ? HTMAXBUTTON : HTCLOSE;
-                    const float x = size.width - 46.f * (3 - i), cx = x + 23, cy = height / 2;
+                    const float x = size.width - 46.f * (3 - i);
                     if (hot_ == hit) { brush->SetColor(D2D1::ColorF(hit == HTCLOSE ? 0xc42b1c : dark_ ? 0x2b2c30 : 0xe7e5e2)); target_->FillRectangle(D2D1::RectF(x, 0, x + 46, height), brush.Get()); }
-                    brush->SetColor(D2D1::ColorF(hot_ == HTCLOSE && hit == HTCLOSE ? 0xffffff : fg));
-                    if (i == 0) target_->DrawLine(D2D1::Point2F(cx - 5, cy), D2D1::Point2F(cx + 5, cy), brush.Get());
-                    else if (i == 2) { target_->DrawLine(D2D1::Point2F(cx - 5, cy - 5), D2D1::Point2F(cx + 5, cy + 5), brush.Get()); target_->DrawLine(D2D1::Point2F(cx - 5, cy + 5), D2D1::Point2F(cx + 5, cy - 5), brush.Get()); }
-                    else {
-                        if (IsZoomed(hwnd_)) { target_->DrawLine(D2D1::Point2F(cx - 2, cy - 5), D2D1::Point2F(cx + 5, cy - 5), brush.Get()); target_->DrawLine(D2D1::Point2F(cx + 5, cy - 5), D2D1::Point2F(cx + 5, cy + 2), brush.Get()); }
-                        target_->DrawRectangle(D2D1::RectF(cx - 5, cy - 3, cx + 3, cy + 5), brush.Get());
-                    }
+                    brush->SetColor(D2D1::ColorF(hot_ == HTCLOSE && hit == HTCLOSE ? 0xffffff : hot_ == hit || GetForegroundWindow() == hwnd_ ? fg : (dark_ ? 0x797b84 : 0x89858a)));
+                    // ChromeMinimize / ChromeMaximize / ChromeRestore / ChromeClose.
+                    const wchar_t glyph = i == 0 ? L'\xE921' : i == 2 ? L'\xE8BB' : IsZoomed(hwnd_) ? L'\xE923' : L'\xE922';
+                    if (icons_) target_->DrawTextW(&glyph, 1, icons_.Get(), D2D1::RectF(x, 0, x + 46, height), brush.Get(), D2D1_DRAW_TEXT_OPTIONS_NONE);
                 }
                 if (dimmed_) { brush->SetColor(D2D1::ColorF(0x000000, .5f)); target_->FillRectangle(D2D1::RectF(0, 0, size.width, height), brush.Get()); }
             }

@@ -2,6 +2,7 @@ import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
 import { mkdir, writeFile, rm, readFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { createServer as createHttpServer } from 'node:http';
 import { once } from 'node:events';
 import path from 'node:path';
 import assert from 'node:assert/strict';
@@ -44,6 +45,32 @@ await writeFile(path.join(lyricsRoot, 'lrc.red', 's', 'CNA000000001.ttml'), '<tt
 await writeFile(path.join(root, 'songs', '午后散步.lrc'), '[00:00.00]测试歌词第一句\n[00:04.00]测试歌词第二句\n[00:08.00]测试歌词第三句\n[00:12.00]最后一句');
 await writeFile(path.join(root, 'songs', '夜色温柔.ttml'), '<tt xmlns="http://www.w3.org/ns/ttml"><body><div><p begin="00:01.000" end="00:03.000"><span begin="00:01.000" end="00:02.000">你好</span><span begin="00:02.000" end="00:03.000">世界</span></p></div></body></tt>');
 const server = createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening'); const port = server.address().port; await new Promise(resolve => server.close(resolve));
+// Stand-in Ollama (version / tags / pull / generate) for the local translation model.
+const ollama = { port: 0, installed: false, pulled: [], prompts: [], failPull: true };
+const ollamaServer = createHttpServer((request, response) => {
+  let body = ''; request.on('data', chunk => body += chunk);
+  request.on('end', () => {
+    const json = body ? JSON.parse(body) : {};
+    if (request.url === '/api/version') return response.end(JSON.stringify({ version: '0.0.0-smoke' }));
+    if (request.url === '/api/tags') return response.end(JSON.stringify({ models: ollama.installed ? [{ name: 'hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M', size: 1.1e9 }] : [] }));
+    if (request.url === '/api/pull') {
+      if (ollama.failPull) { ollama.failPull = false; return response.end(JSON.stringify({ error: 'pull model manifest: Get "https://hf.co/v2/tencent/Hy-MT2-1.8B-GGUF/manifests/Q4_K_M": EOF' }) + '\n'); }
+      ollama.pulled.push(json.model); response.write(JSON.stringify({ status: 'pulling manifest' }) + '\n');
+      let done = 0; const timer = setInterval(() => {
+        done += 25; response.write(JSON.stringify({ status: 'downloading', completed: done, total: 100 }) + '\n');
+        if (done >= 100) { clearInterval(timer); ollama.installed = true; response.end(JSON.stringify({ status: 'success' }) + '\n'); }
+      }, 150);
+      return;
+    }
+    if (request.url === '/api/generate') {
+      ollama.prompts.push(json.prompt);
+      const text = json.prompt.slice(json.prompt.indexOf('\n\n') + 2, json.prompt.lastIndexOf('<'));
+      return response.end(JSON.stringify({ response: text.split('\n').map(line => `EN ${line}`).join('\n') }));
+    }
+    response.statusCode = 404; response.end('{}');
+  });
+});
+ollamaServer.listen(0, '127.0.0.1'); await once(ollamaServer, 'listening'); ollama.port = ollamaServer.address().port;
 let child, browser, page;
 const errors = [];
 try {
@@ -436,6 +463,8 @@ try {
   assert.equal(progressHover.transform, progressBefore.transform);
   // While hovered during playback the thumb keeps one crisp bar shape and steps every 200 ms,
   // always on whole device pixels (sub-pixel drift made the bar look like it kept swelling).
+  // Sample only once the hover transition into the bar shape has finished (slow frames can stretch it).
+  await page.waitForFunction(() => { const s = getComputedStyle(document.querySelector('.now-playing .progress-thumb').firstElementChild); return s.width === '4px' && s.height === '16px'; });
   const thumbSamples = await page.evaluate(() => new Promise(resolve => {
     const thumb = document.querySelector('.now-playing .progress-thumb'), bar = thumb.firstElementChild;
     const shapes = new Set(), positions = []; const start = performance.now();
@@ -635,7 +664,118 @@ try {
   await scriptSwitch.getByRole('button', { name: '原', exact: true }).click();
   await lyricText('测试歌词第一句');
   await page.waitForFunction(async () => (await window.music.getLibrary()).settings.lyricScript === 'o');
+  // 译 / 音 only appear while the pointer is near the top-right corner.
+  const toolsOpacity = () => page.locator('.lyric-ai-tools').evaluate(element => getComputedStyle(element).opacity);
+  await page.mouse.move(300, 500); await page.waitForTimeout(300);
+  assert.equal(await toolsOpacity(), '0');
+  const near = await page.getByRole('button', { name: '播放队列', exact: true }).last().boundingBox();
+  await page.mouse.move(near.x - 60, near.y + near.height / 2); await page.waitForTimeout(300);
+  assert.equal(await toolsOpacity(), '1');
+  // ← / → move the current song by 5 seconds.
+  await page.mouse.move(300, 500);
+  const progressInput = page.locator('.now-left input[aria-label="播放进度"]');
+  await progressInput.fill('3'); await progressInput.evaluate(element => element.blur());
+  await page.waitForFunction(() => Number(document.querySelector('.now-left input[aria-label="播放进度"]').value) < 4.5);
+  const at = await page.evaluate(() => Number(document.querySelector('.now-left input[aria-label="播放进度"]').value));
+  await page.keyboard.press('ArrowRight');
+  await page.waitForFunction(start => Number(document.querySelector('.now-left input[aria-label="播放进度"]').value) >= start + 4.5, at);
+  await page.keyboard.press('ArrowLeft');
+  await page.waitForFunction(start => Number(document.querySelector('.now-left input[aria-label="播放进度"]').value) < start + 4, at);
+  // 音: Cantonese Jyutping above each character, then on its own line (settings switch), then off.
+  const rubyText = () => page.evaluate(() => [...document.querySelectorAll('.now-playing .amll-lyric-player [class*="rubyWord"]')].map(e => e.textContent).join(' '));
+  await page.getByRole('button', { name: '注音', exact: true }).click();
+  await page.getByRole('menu', { name: '注音', exact: true }).getByRole('menuitem', { name: '粤语（粤拼）', exact: true }).click();
+  await page.waitForFunction(label => document.querySelector(`.now-playing button[aria-label="${label}"]`)?.getAttribute('aria-pressed') === 'true', '注音');
+  await page.waitForFunction(() => /caak1.*si3.*go1.*ci4/.test([...document.querySelectorAll('.now-playing .amll-lyric-player [class*="rubyWord"]')].map(e => e.textContent).join(' ')));
+  assert.equal(await page.getByRole('button', { name: '注音', exact: true }).getAttribute('aria-pressed'), 'true');
+  await page.waitForTimeout(250); await page.screenshot({ path: path.join(root, 'lyric-jyutping.png') });
+  // Keep this song current through the settings detour (音 / 译 belong to the current song).
+  if (await page.locator('.now-left .play-button[aria-label="暂停"]').count()) await page.locator('.now-left .play-button').click();
   await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: /设置与关于/ }).click();
+  // 工具 → 歌词翻译 (second-to-last tab). Local model first: no Ollama yet, so the install command is
+  // offered; then a stand-in Ollama on loopback (the real client only talks to 127.0.0.1 / localhost).
+  const settingsTabs = await page.getByRole('tab').evaluateAll(tabs => tabs.map(tab => tab.textContent.trim()));
+  assert.deepEqual(settingsTabs.slice(-2), ['工具', '关于']);
+  await page.getByRole('tab', { name: '工具', exact: true }).click();
+  const models = page.getByLabel('歌词翻译', { exact: true });
+  // A closed loopback port stands for "Ollama not installed" (this machine may run a real Ollama on 11434).
+  await models.getByLabel('Ollama 地址', { exact: true }).fill('http://127.0.0.1:9');
+  await models.getByRole('button', { name: '保存', exact: true }).click();
+  await models.locator('.install-command code').filter({ hasText: 'irm https://ollama.com/install.ps1 | iex' }).waitFor();
+  await models.getByLabel('Ollama 地址', { exact: true }).fill(`http://127.0.0.1:${ollama.port}`);
+  await models.getByRole('button', { name: '保存', exact: true }).click();
+  await page.waitForFunction(port => window.music.getLibrary().then(l => l.settings.translateEndpoint === `http://127.0.0.1:${port}`), ollama.port);
+  await models.getByText(/模型未下载/).waitFor();
+  // A registry Ollama cannot reach (hf.co blocked, proxy not used by the Ollama service) explains itself;
+  // the browser download + import route is always offered next to it.
+  await models.getByRole('button', { name: '下载翻译模型', exact: true }).click();
+  await models.getByRole('note', { name: '下载失败原因' }).waitFor();
+  assert.equal(await models.getByRole('button', { name: '导入模型文件', exact: true }).isEnabled(), true);
+  await models.getByRole('button', { name: '下载翻译模型', exact: true }).click();
+  await models.getByRole('progressbar').waitFor();
+  await models.getByText(/模型已就绪/).waitFor();
+  assert.deepEqual(ollama.pulled, ['hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M']);
+  assert.equal(await models.locator('.install-command').count(), 0);
+  await models.scrollIntoViewIfNeeded(); await page.waitForTimeout(200); await page.screenshot({ path: path.join(root, 'translation-models.png') });
+  // 小牛翻译: the key is saved (encrypted by the host) and never shown again; no request is made here.
+  await models.getByRole('combobox', { name: '翻译服务', exact: true }).click();
+  await page.getByRole('option', { name: '小牛翻译（在线）', exact: true }).click();
+  await page.waitForFunction(async () => (await window.music.getLibrary()).settings.translateProvider === 'niutrans');
+  await models.getByText('尚未填写 App ID 和 API Key').waitFor();
+  await models.getByLabel('小牛翻译 App ID', { exact: true }).fill('smokeApp1');
+  await models.getByLabel('小牛翻译 API Key', { exact: true }).fill('smokeKey2');
+  await models.getByRole('button', { name: '保存', exact: true }).click();
+  await models.getByText('已配置 · App ID smokeApp1').waitFor();
+  assert.equal(await models.getByLabel('小牛翻译 API Key', { exact: true }).inputValue(), '');
+  assert.equal(JSON.stringify(await page.evaluate(() => window.music.translateStatus())).includes('smokeKey2'), false);
+  assert.equal((await readFile(path.join(root, 'data', 'niutrans-key.bin'))).includes('smokeKey2'), false);
+  await page.waitForTimeout(200); await page.screenshot({ path: path.join(root, 'translation-niutrans.png') });
+  await models.getByRole('combobox', { name: '翻译服务', exact: true }).click();
+  await page.getByRole('option', { name: '混元 Hy-MT2（本地 Ollama）', exact: true }).click();
+  await page.waitForFunction(async () => (await window.music.getLibrary()).settings.translateProvider === 'local');
+  await page.getByRole('tab', { name: '外观', exact: true }).click();
+  const rubyBelow = page.getByRole('switch', { name: '注音另起一行', exact: true });
+  assert.equal(await rubyBelow.getAttribute('aria-checked'), 'false');
+  await rubyBelow.scrollIntoViewIfNeeded(); await rubyBelow.click();
+  await page.waitForFunction(async () => (await window.music.getLibrary()).settings.lyricRubyBelow === true);
+  await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+  await page.getByRole('button', { name: '打开歌词播放页', exact: true }).click();
+  await lyricText('caak1 si3 go1 ci4 dai6 jat1 geoi3');
+  assert.equal(await rubyText(), '');
+  await page.getByRole('button', { name: '注音', exact: true }).click();
+  await page.getByRole('menu', { name: '注音', exact: true }).getByRole('menuitem', { name: '不显示', exact: true }).click();
+  await page.waitForFunction(label => document.querySelector(`.now-playing button[aria-label="${label}"]`)?.getAttribute('aria-pressed') !== 'true', '注音');
+  await page.waitForFunction(() => !document.querySelector('.now-playing .amll-lyric-player [class*="rubyWord"]') && !document.querySelector('.now-playing .amll-lyric-player')?.textContent.includes('caak1'));
+  // 译: the local Hunyuan model translates every line.
+  const translateMenu = async () => { await page.getByRole('button', { name: '翻译', exact: true }).click(); const menu = page.getByRole('menu', { name: '翻译', exact: true }); await menu.waitFor(); return menu; };
+  let translation = await translateMenu();
+  await page.waitForFunction(() => ![...document.querySelectorAll('[role=menu] [role=menuitem]')].some(item => item.textContent.includes('检查中')));
+  assert.equal(await translation.getByRole('menuitem', { name: '翻译成中文', exact: true }).getAttribute('aria-disabled'), 'true'); // the lyric is already Chinese
+  await translation.getByRole('menuitem', { name: '翻译成英文', exact: true }).click();
+  await page.waitForFunction(label => document.querySelector(`.now-playing button[aria-label="${label}"]`)?.getAttribute('aria-pressed') === 'true', '翻译');
+  await lyricText('EN 测试歌词第一句');
+  assert.ok(ollama.prompts.some(prompt => prompt.includes('将以下文本翻译为英语') && prompt.includes('测试歌词第二句')));
+  assert.equal(await page.getByRole('button', { name: '翻译', exact: true }).getAttribute('aria-pressed'), 'true');
+  await page.waitForTimeout(250); await page.screenshot({ path: path.join(root, 'lyric-translate.png') });
+  translation = await translateMenu();
+  await translation.getByRole('menuitem', { name: '不翻译', exact: true }).click();
+  await page.waitForFunction(label => document.querySelector(`.now-playing button[aria-label="${label}"]`)?.getAttribute('aria-pressed') !== 'true', '翻译');
+  await page.waitForFunction(() => !document.querySelector('.now-playing .amll-lyric-player')?.textContent.includes('EN 测试'));
+  // 音 / 译 belong to the current song: another song starts with both off.
+  translation = await translateMenu();
+  await translation.getByRole('menuitem', { name: '翻译成英文', exact: true }).click();
+  await page.getByRole('button', { name: '注音', exact: true }).click();
+  await page.getByRole('menu', { name: '注音', exact: true }).getByRole('menuitem', { name: '粤语（粤拼）', exact: true }).click();
+  await page.waitForFunction(label => document.querySelector(`.now-playing button[aria-label="${label}"]`)?.getAttribute('aria-pressed') === 'true', '翻译');
+  await page.waitForFunction(label => document.querySelector(`.now-playing button[aria-label="${label}"]`)?.getAttribute('aria-pressed') === 'true', '注音');
+  await page.locator('.now-left').getByRole('button', { name: '下一首', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('.now-title h2')?.textContent !== '午后散步');
+  await page.waitForFunction(label => document.querySelector(`.now-playing button[aria-label="${label}"]`)?.getAttribute('aria-pressed') !== 'true', '翻译');
+  await page.waitForFunction(label => document.querySelector(`.now-playing button[aria-label="${label}"]`)?.getAttribute('aria-pressed') !== 'true', '注音');
+  assert.equal(await page.evaluate(() => document.querySelector('.now-playing .amll-lyric-player')?.textContent.includes('EN ') ?? false), false);
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: '播放 午后散步', exact: true }).click();
   // Disabling one provider drops it from the sources.
   await page.getByRole('button', { name: /设置与关于/ }).click();
   await page.getByRole('tab', { name: '音乐库', exact: true }).click();
@@ -647,6 +787,10 @@ try {
   await lrclibSwitch.click();
   await page.waitForFunction(async () => (await window.music.getLibrary()).settings.lyricProviders.includes('lrclib'));
   assert.equal((await page.evaluate(() => window.music.lyricsStatus())).appleToken, false);
+  // The Apple Music token is stored DPAPI-encrypted and read back (binary file, not text).
+  assert.equal((await page.evaluate(() => window.music.setAppleToken('smoke-token'))).appleToken, true);
+  assert.equal((await page.evaluate(() => window.music.lyricsStatus())).appleToken, true);
+  assert.equal((await page.evaluate(() => window.music.setAppleToken(''))).appleToken, false);
   await page.getByRole('button', { name: '关闭设置', exact: true }).click();  // Turning the setting off stops online lookups.
   await page.getByRole('button', { name: /设置与关于/ }).click();
   await page.getByRole('tab', { name: '音乐库', exact: true }).click();
@@ -843,4 +987,5 @@ try {
 } finally {
   if (browser) await browser.close();
   if (child && child.exitCode === null) { child.kill(); await once(child, 'exit').catch(() => {}); }
+  ollamaServer.closeAllConnections?.(); ollamaServer.close();
 }

@@ -1,4 +1,5 @@
 #include "lyric_crypto.h"
+#include <fstream>
 #include <windows.h>
 #include <bcrypt.h>
 #include <wincrypt.h>
@@ -124,6 +125,30 @@ std::string run(std::string data, uint32_t mode) {
     return data;
 }
 }
+}
+
+std::string sha256_file_hex(const fs::path &file, const std::function<void(uint64_t, uint64_t)> &progress) {
+    Algorithm sha(BCRYPT_SHA256_ALGORITHM);
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    if (!BCRYPT_SUCCESS(BCryptCreateHash(sha.handle, &hash, nullptr, 0, nullptr, 0, 0))) throw std::runtime_error("SHA-256 失败");
+    struct Closer { BCRYPT_HASH_HANDLE h; ~Closer() { BCryptDestroyHash(h); } } closer{hash};
+    std::ifstream in(file, std::ios::binary);
+    if (!in) throw std::runtime_error("无法读取文件：" + path_text(file));
+    const auto total = fs::file_size(file); uint64_t done = 0;
+    std::string chunk(4 << 20, '\0');
+    while (in) {
+        in.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+        const auto count = static_cast<ULONG>(in.gcount());
+        if (!count) break;
+        if (!BCRYPT_SUCCESS(BCryptHashData(hash, reinterpret_cast<PUCHAR>(chunk.data()), count, 0))) throw std::runtime_error("SHA-256 失败");
+        done += count; if (progress) progress(done, total);
+    }
+    unsigned char digest[32];
+    if (!BCRYPT_SUCCESS(BCryptFinishHash(hash, digest, sizeof(digest), 0))) throw std::runtime_error("SHA-256 失败");
+    static constexpr char hex[] = "0123456789abcdef";
+    std::string out;
+    for (auto b : digest) { out += hex[b >> 4]; out += hex[b & 15]; }
+    return out;
 }
 
 std::string md5_hex(std::string_view data) {

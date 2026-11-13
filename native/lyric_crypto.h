@@ -1,8 +1,12 @@
 #pragma once
+#include "common.h"
+#include <functional>
 #include <string>
 #include <string_view>
 namespace dr {
 // Codecs used by the online lyric providers. MD5 / AES come from Windows CNG; inflate from zlib.
+/** SHA-256 of a file as lowercase hex, reading it in chunks; `progress` gets bytes read / total. */
+std::string sha256_file_hex(const fs::path &file, const std::function<void(uint64_t, uint64_t)> &progress = {});
 std::string md5_hex(std::string_view data);
 /** AES-128-ECB with PKCS#7 padding (NetEase EAPI). */
 std::string aes128_ecb_encrypt(std::string_view data, std::string_view key);

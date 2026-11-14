@@ -297,7 +297,7 @@ button,input,select{transition:background-color .24s cubic-bezier(.22,1,.36,1),c
 .volume-popover[data-orientation=vertical] .volume-rail{width:4px;height:100%}
 .volume-popover[data-orientation=vertical] .volume-fill{left:0;right:0;bottom:0;height:var(--volume)}
 .volume-popover[data-orientation=vertical] .volume-thumb{left:50%;top:calc(100% - var(--vp-pad) - (100% - 2 * var(--vp-pad)) * var(--v))}
-.volume-popover[data-orientation=vertical] .volume-track:hover .volume-thumb,.volume-popover[data-orientation=vertical] .volume-track:focus-visible .volume-thumb,.volume-popover[data-orientation=vertical][data-open] .volume-thumb{width:16px;height:5px}
+.volume-popover[data-orientation=vertical] .volume-track:hover .volume-thumb,.volume-popover[data-orientation=vertical] .volume-track:focus-visible .volume-thumb,.volume-popover[data-orientation=vertical][data-open] .volume-thumb{width:16px;height:4px}
 
 .volume-popover[data-orientation=horizontal]{--vp-len:112px}
 .volume-popover[data-orientation=horizontal] .volume-panel{right:-6px;bottom:100%;padding-bottom:8px;transform:translateY(6px)}
@@ -307,7 +307,7 @@ button,input,select{transition:background-color .24s cubic-bezier(.22,1,.36,1),c
 .volume-popover[data-orientation=horizontal] .volume-rail{width:100%;height:4px}
 .volume-popover[data-orientation=horizontal] .volume-fill{top:0;bottom:0;left:0;width:var(--volume)}
 .volume-popover[data-orientation=horizontal] .volume-thumb{top:50%;left:calc(var(--vp-pad) + (100% - 2 * var(--vp-pad)) * var(--v))}
-.volume-popover[data-orientation=horizontal] .volume-track:hover .volume-thumb,.volume-popover[data-orientation=horizontal] .volume-track:focus-visible .volume-thumb,.volume-popover[data-orientation=horizontal][data-open] .volume-thumb{width:5px;height:16px}
+.volume-popover[data-orientation=horizontal] .volume-track:hover .volume-thumb,.volume-popover[data-orientation=horizontal] .volume-track:focus-visible .volume-thumb,.volume-popover[data-orientation=horizontal][data-open] .volume-thumb{width:4px;height:16px}
 .now-left .transport{position:relative}
 .now-left .transport-volume{position:absolute;right:0;top:50%;translate:0 -50%}
 /* Track rows: index stays put; the current track shows a live waveform, the cover carries play / pause. */
@@ -709,3 +709,16 @@ button,input,select{transition:background-color .24s cubic-bezier(.22,1,.36,1),c
    (the WebView caption when it is drawn in the page; otherwise the window's own, above the page) and from the window's sides. */
 .now-playing>header{align-items:flex-start;padding:10px 10px 0}
 .web-caption-mode .now-playing>header{padding-top:46px}
+
+/* Play button: never squeezed by a narrow transport row (it stays round), and always on its own compositing layer,
+   so it draws the same before, during and after the hover spring (no half-pixel jump when the transform ends). */
+.transport>*{flex-shrink:0}
+.play-button{aspect-ratio:1;will-change:transform}
+
+/* The page keeps its scrollbar's room whether or not it scrolls: switching from a long list (音乐库) to a short one
+   (我喜欢的) otherwise widened everything by the scrollbar once the old rows had faded out. */
+.page-scroll{scrollbar-gutter:stable}
+
+/* Volume thumb placed on whole device pixels (--thumb-at from VolumeControl), the percentage as the fallback. */
+.volume-popover[data-orientation=vertical] .volume-thumb{top:var(--thumb-at,calc(100% - var(--vp-pad) - (100% - 2 * var(--vp-pad)) * var(--v)))}
+.volume-popover[data-orientation=horizontal] .volume-thumb{left:var(--thumb-at,calc(var(--vp-pad) + (100% - 2 * var(--vp-pad)) * var(--v)))}

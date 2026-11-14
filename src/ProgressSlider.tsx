@@ -1,4 +1,24 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { NativePlayback } from './playback';
+import { formatTime } from './lib/queue';
+
+/** Elapsed time, slider and duration. Follows the playback clock itself so position ticks re-render only this. */
+export function PlaybackProgress({ audio, track, duration, disabled, onSeek }: { audio: NativePlayback; track?: string; duration: number; disabled: boolean; onSeek: (seconds: number) => void }) {
+  const [position, setPosition] = useState(() => audio.currentTime);
+  useEffect(() => {
+    // Ticks land on the slider's visible step so unchanged steps skip the render; seeks stay exact.
+    const tick = () => setPosition(Math.floor(audio.currentTime / STEP) * STEP);
+    const exact = () => setPosition(audio.currentTime);
+    audio.addEventListener('timeupdate', tick); audio.addEventListener('seeking', exact); audio.addEventListener('loadedmetadata', exact);
+    exact();
+    return () => { audio.removeEventListener('timeupdate', tick); audio.removeEventListener('seeking', exact); audio.removeEventListener('loadedmetadata', exact); };
+  }, [audio, track]);
+  return <div className="progress-control">
+    <span>{formatTime(position)}</span>
+    <ProgressSlider position={position} duration={duration} disabled={disabled} onSeek={onSeek}/>
+    <span>{formatTime(duration)}</span>
+  </div>;
+}
 
 const THUMB = 8; // width of the (invisible) native thumb, i.e. the travel inset on both ends
 const STEP = .2; // seconds between visible thumb / fill updates

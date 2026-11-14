@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Volume1, Volume2, VolumeX } from 'lucide-react';
 
 type Orientation = 'vertical' | 'horizontal';
@@ -51,6 +51,28 @@ export function VolumeControl({ value, onChange, label = '音量', orientation =
     }
   };
 
+  // The thumb's centre lands on whole device pixels, as the progress slider's does: placed by a percentage it fell
+  // between pixel columns at every other step, and the narrow hover bar looked thicker, then thinner again.
+  const [box, setBox] = useState<{ origin: number; length: number; pad: number }>();
+  useLayoutEffect(() => {
+    const element = track.current;
+    if (!element) return;
+    const measure = () => {
+      const rect = element.getBoundingClientRect(), vertical = orientation === 'vertical';
+      const pad = parseFloat(getComputedStyle(element).getPropertyValue('--vp-pad')) || 0;
+      setBox(old => { const next = { origin: vertical ? rect.bottom : rect.left, length: vertical ? rect.height : rect.width, pad }; return old && old.origin === next.origin && old.length === next.length && old.pad === next.pad ? old : next; });
+    };
+    measure();
+    const observer = new ResizeObserver(measure); observer.observe(element);
+    return () => observer.disconnect();
+  }, [orientation]);
+  const dpr = window.devicePixelRatio || 1;
+  const thumbAt = box ? (() => {
+    const along = box.pad + (box.length - 2 * box.pad) * value; // from the start of the track (bottom when vertical)
+    const page = orientation === 'vertical' ? box.origin - along : box.origin + along;
+    const snapped = Math.round(page * dpr) / dpr;
+    return orientation === 'vertical' ? snapped - (box.origin - box.length) : snapped - box.origin;
+  })() : undefined;
   const percent = Math.round(value * 100);
   // Muted shows the crossed speaker; any audible level keeps at least one sound wave.
   const Icon = value === 0 ? VolumeX : value < .5 ? Volume1 : Volume2;
@@ -69,7 +91,7 @@ export function VolumeControl({ value, onChange, label = '音量', orientation =
           aria-valuemax={100}
           aria-valuenow={percent}
           aria-valuetext={`${percent}%`}
-          style={{ '--volume': `${percent}%`, '--v': value } as React.CSSProperties}
+          style={{ '--volume': `${percent}%`, '--v': value, ...(thumbAt !== undefined ? { '--thumb-at': `${thumbAt}px` } : {}) } as React.CSSProperties}
           onPointerDown={event => { if (event.button) return; event.currentTarget.setPointerCapture(event.pointerId); setDragging(true); fromPointer(event); }}
           onPointerMove={event => { if (dragging) fromPointer(event); }}
           onPointerUp={event => { event.currentTarget.releasePointerCapture(event.pointerId); setDragging(false); }}

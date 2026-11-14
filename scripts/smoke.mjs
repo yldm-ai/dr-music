@@ -95,6 +95,23 @@ try {
   assert.equal(await page.title(), 'DR Music');
   assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()), '#ec4141');
   assert.equal((await page.evaluate(() => window.music.getLibrary())).tracks.length, 3);
+  // The page is as wide with a scrollbar as without (a long list switching to a short one must not widen it).
+  assert.equal(await page.evaluate(() => { const scroll = document.querySelector('.page-scroll'), width = scroll.clientWidth, spacer = document.createElement('div'); spacer.style.height = '5000px'; scroll.append(spacer); const scrolled = scroll.clientWidth; spacer.remove(); return scrolled - width; }), 0);
+  // At startup the bar has the library's first song (as listed, 最近添加 first) ready, without playing it.
+  const firstListed = (await page.evaluate(() => window.music.getLibrary())).tracks.sort((a, b) => b.addedAt - a.addedAt)[0].title;
+  await page.locator('.player-title strong', { hasText: firstListed }).waitFor();
+  assert.equal(await page.locator('.player-bar .play-button').getAttribute('aria-label'), '播放', 'startup song started playing');
+  // The play button grows under the pointer and comes back to exactly where it was (no pixel jump after the spring).
+  const playClip = await page.locator('.player-bar .play-button').boundingBox();
+  const clip = { x: Math.floor(playClip.x) - 4, y: Math.floor(playClip.y) - 4, width: Math.ceil(playClip.width) + 8, height: Math.ceil(playClip.height) + 8 };
+  const playBefore = await page.screenshot({ clip });
+  await page.locator('.player-bar .play-button').hover(); await page.waitForTimeout(500);
+  await page.mouse.move(5, 300);
+  const settlesAt = async (clip, before, name) => { let shot; for (const end = Date.now() + 2000; Date.now() < end; await page.waitForTimeout(100)) { shot = await page.screenshot({ clip }); if (before.equals(shot)) return true; } await writeFile(path.join(root, `-before.png`), before); await writeFile(path.join(root, `-after.png`), shot); return false; };
+  assert.ok(await settlesAt(clip, playBefore, 'play-button'), 'play button moved after the hover');
+  // A narrow window squeezes the transport row, never the play button: it stays round.
+  const squeezed = await page.evaluate(() => { const center = document.querySelector('.player-bar .player-center'); center.style.width = '200px'; const box = document.querySelector('.player-bar .play-button').getBoundingClientRect(); center.style.width = ''; return [box.width, box.height]; });
+  assert.equal(squeezed[0], squeezed[1], `play button squeezed to ${squeezed[0]}×${squeezed[1]}`);
   const searchField = page.locator('.search');
   const searchBefore = await searchField.evaluate(element => ({ border: getComputedStyle(element).borderColor, height: element.getBoundingClientRect().height }));
   await page.getByRole('textbox', { name: '搜索音乐' }).focus();
@@ -196,7 +213,9 @@ try {
   const playlistRow = page.locator('.track-row:not(.table-head)').first();
   await playlistRow.hover();
   await page.waitForTimeout(260);
-  assert.equal(await playlistRow.locator('.row-number-content>span').isVisible(), true);
+  // The song in the player bar (the startup one, if it is this) shows its paused bars in place of the number.
+  if (firstListed === '午后散步') assert.equal(await playlistRow.locator('.row-wave[data-playing="false"]').isVisible(), true);
+  else assert.equal(await playlistRow.locator('.row-number-content>span').isVisible(), true);
   assert.equal(await playlistRow.locator('.track-cover-overlay').evaluate(element => getComputedStyle(element).opacity), '1');
   await page.screenshot({ path: path.join(root, 'playlist.png') });
   await playlistRow.click({ button: 'right' });
@@ -300,7 +319,7 @@ try {
   await page.waitForFunction(async () => (await window.music.getLibrary()).playlists[0].trackIds.length === 1);
   await page.locator('.track-row.selected').first().waitFor({ state: 'detached' }).catch(() => {});
   assert.equal(await page.locator('.track-row.selected').count(), 0);
-  assert.equal(await playlistRow.locator('.row-wave').count(), 0);
+  assert.equal(await playlistRow.locator('.row-wave').count(), firstListed === '午后散步' ? 1 : 0); // bars only on the startup song
   await page.getByRole('button', { name: '播放 午后散步', exact: true }).click();
   await page.getByRole('button', { name: '暂停', exact: true }).waitFor();
   await playlistRow.locator('.row-wave[data-playing="true"]').waitFor();
@@ -427,6 +446,13 @@ try {
   assert.equal(await page.locator('.now-left .volume-value').innerText(), `${immersiveAfter}`);
   await page.waitForTimeout(80);
   await page.screenshot({ path: path.join(root, 'volume-horizontal.png') });
+  // Each wheel step leaves the thumb on whole device pixels the same way (it no longer looks thicker every other step).
+  const thumbPhases = new Set();
+  for (let step = 0; step < 4; ++step) {
+    await page.mouse.wheel(0, step % 2 ? 100 : -100); await page.waitForTimeout(260); // past the thumb's size transition
+    thumbPhases.add(await page.locator('.now-left .volume-thumb').evaluate(element => { const box = element.getBoundingClientRect(); return (Math.round((box.left + box.width / 2) * devicePixelRatio * 100) / 100 % 1).toFixed(2); }));
+  }
+  assert.equal(thumbPhases.size, 1, `volume thumb lands on different sub-pixel phases: ${[...thumbPhases]}`);
   await immersiveVolume.focus();
   await page.keyboard.press('End'); await page.mouse.wheel(0, -100);
   assert.equal(await volumeNow(immersiveVolume), 100);
@@ -564,6 +590,13 @@ try {
   await page.waitForFunction(() => Number(document.querySelector('.now-left input[aria-label="播放进度"]').value) >= 4);
   const toast = page.getByRole('button', { name: '关闭提示', exact: true }); if (await toast.count()) await toast.click();
   await page.screenshot({ path: path.join(root, 'lyrics.png') });
+  // The player page's play button also comes back to exactly where it was after growing under the pointer.
+  const nowPlayBox = await page.locator('.now-left .play-button').boundingBox();
+  const nowPlayClip = { x: Math.floor(nowPlayBox.x) - 4, y: Math.floor(nowPlayBox.y) - 4, width: Math.ceil(nowPlayBox.width) + 8, height: Math.ceil(nowPlayBox.height) + 8 };
+  const nowPlayBefore = await page.screenshot({ clip: nowPlayClip });
+  await page.locator('.now-left .play-button').hover(); await page.waitForTimeout(500);
+  await page.mouse.move(nowPlayBox.x + 200, nowPlayBox.y + nowPlayBox.height + 60);
+  assert.ok(await settlesAt(nowPlayClip, nowPlayBefore, 'now-play-button'), 'player page play button moved after the hover');
   await page.getByRole('button', { name: '暂停', exact: true }).last().click();
   await page.keyboard.press('Space'); await page.getByRole('button', { name: '暂停', exact: true }).last().waitFor();
   await page.getByRole('button', { name: '收起播放页', exact: true }).click();
@@ -673,6 +706,10 @@ try {
   await nowMenu.getByRole('menuitem', { name: '添加到歌单' }).waitFor();
   await page.keyboard.press('Escape');
   await nowMenu.waitFor({ state: 'detached' });
+  // 歌词偏移 is for this song only: set here, it is back to 0 for the next song, and never saved.
+  await page.locator('.lyric-toolbar').hover();
+  await page.getByRole('button', { name: '+', exact: true }).click();
+  await page.locator('.lyric-toolbar', { hasText: '偏移 0.5s' }).waitFor();
   await page.keyboard.press('Escape');
 
   // Online lyrics: a song without its own lyric shows the AMLL TTML DB match automatically.
@@ -680,6 +717,8 @@ try {
   await page.getByRole('button', { name: '播放 写给明天', exact: true }).click();
   await page.getByRole('button', { name: '打开歌词播放页', exact: true }).click();
   await lyricText('在线歌词第一句');
+  assert.match(await page.locator('.lyric-toolbar').innerText(), /偏移 0\.0s/);
+  assert.equal((await page.evaluate(() => window.music.getLibrary())).settings.lyricOffset || 0, 0);
   await page.locator('.lyric-toolbar').hover();
   await page.locator('.lyric-toolbar', { hasText: 'AMLL TTML DB' }).waitFor();
   await page.keyboard.press('Escape');

@@ -366,6 +366,8 @@ Json Library::update(const Json &patch) {
         if (s.contains("translateProvider") && s["translateProvider"].is_string()) { const auto v = s["translateProvider"].get<std::string>(); if (v == "local" || v == "niutrans") target["translateProvider"] = v; }
         if (s.contains("translateModel") && s["translateModel"].is_string() && LocalTranslator::valid_model(s["translateModel"].get<std::string>())) target["translateModel"] = s["translateModel"];
         if (s.contains("lyricTranslate") && s["lyricTranslate"].is_string()) { const auto v = s["lyricTranslate"].get<std::string>(); if (v.empty() || v == "zh" || v == "en") target["lyricTranslate"] = v; }
+        // The song the player bar has ready at startup: the library's first (as listed) or a random one.
+        if (s.contains("startupTrack") && s["startupTrack"].is_string()) { const auto v = s["startupTrack"].get<std::string>(); if (v == "first" || v == "random") target["startupTrack"] = v; }
         // The library hero's sheen on hover (off unless switched on).
         if (s.contains("heroSheen") && s["heroSheen"].is_boolean()) target["heroSheen"] = s["heroSheen"];
         // Player page layout: cover and lyrics, lyrics only, or cover only.

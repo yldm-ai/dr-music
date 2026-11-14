@@ -1,6 +1,6 @@
 import { NativePlayback } from './playback';
 import { VolumeControl } from './VolumeControl';
-import { ProgressSlider } from './ProgressSlider';
+import { PlaybackProgress } from './ProgressSlider';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion, MotionConfig, type Transition } from 'motion/react';
 import { Music2, Library as LibraryIcon, Heart, Disc3, Mic2, FolderPlus, Plus, Search, Play, Pause, SkipBack, SkipForward, Shuffle, Repeat, Repeat1, ListMusic, Maximize2, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Settings2, MoreHorizontal, FolderOpen, RefreshCw, X, Check, FileMusic, ArrowUpRight, Headphones, Trash2, Pencil, ListPlus, AudioLines, Folder, FolderSearch, Copy, ListX, Globe, Languages } from 'lucide-react';
@@ -113,7 +113,8 @@ export function App() {
   const [currentId, setCurrentId] = useState<string>();
   const [queue, setQueue] = useState<string[]>([]);
   const [playing, setPlaying] = useState(false);
-  const [position, setPosition] = useState(0);
+  // Only whether the song has started; the ticking position stays in PlaybackProgress so the whole app does not re-render 10x a second.
+  const [started, setStarted] = useState(false);
   const [duration, setDuration] = useState(0);
   const [nowPlaying, setNowPlaying] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
@@ -323,24 +324,37 @@ export function App() {
   }, [persist]);
   const seek = useCallback((seconds: number) => {
     if (!audio.src || !Number.isFinite(audio.duration)) return;
-    audio.currentTime = Math.max(0, Math.min(audio.duration, seconds)); setPosition(audio.currentTime);
+    audio.currentTime = Math.max(0, Math.min(audio.duration, seconds));
   }, [audio]);
   const playTrack = useCallback((id: string, ids?: string[]) => {
     const track = stateRef.current.library?.tracks.find(t => t.id === id);
     if (!track) return;
     if (ids) setQueue(ids);
     if (stateRef.current.currentId !== id || audio.error || !audio.src) {
-      audio.src = media(track); setCurrentId(id); setPosition(0); setDuration(track.duration);
+      audio.src = media(track); setCurrentId(id); setStarted(false); setDuration(track.duration);
     } else if (audio.ended) audio.currentTime = 0;
     void audio.play().catch(error => { if (error.name !== 'AbortError') notify(`无法播放 ${track.title}：文件可能已移动，或格式无法解码。`); });
   }, [audio, notify]);
   const togglePlay = useCallback(() => {
     if (!audio.src) {
-      const first = stateRef.current.library?.tracks[0];
-      if (first) playTrack(first.id, stateRef.current.library!.tracks.map(t => t.id));
+      // Nothing loaded yet: the song chosen at startup (or another one picked without playing), else the first one.
+      const { library, currentId } = stateRef.current;
+      const chosen = currentId && library?.tracks.some(t => t.id === currentId) ? currentId : library?.tracks[0]?.id;
+      if (chosen) playTrack(chosen, currentId === chosen && stateRef.current.queue.length ? undefined : library!.tracks.map(t => t.id));
     } else if (audio.paused) void audio.play().catch(() => notify('无法播放，请检查文件。'));
     else audio.pause();
   }, [audio, playTrack, notify]);
+  // At startup the bar shows a song ready to play (设置 → 播放与快捷键 → 启动时预选): the first of 音乐库 as listed
+  // (最近添加 first) or a random one, the library as its queue. Nothing is chosen while the library is empty.
+  const startupChosen = useRef(false);
+  useEffect(() => {
+    if (startupChosen.current || !library) return;
+    startupChosen.current = true;
+    if (!library.tracks.length || stateRef.current.currentId) return;
+    const ordered = [...library.tracks].sort((a, b) => b.addedAt - a.addedAt);
+    const track = library.settings.startupTrack === 'random' ? ordered[Math.floor(Math.random() * ordered.length)] : ordered[0];
+    setQueue(ordered.map(t => t.id)); setCurrentId(track.id); setStarted(false); setDuration(track.duration);
+  }, [library]);
   const advance = useCallback((direction: 1 | -1, ended = false) => {
     if (direction === -1 && audio.currentTime > 3) { seek(0); return; }
     const { queue, currentId, library } = stateRef.current;
@@ -357,7 +371,7 @@ export function App() {
     else if (action === 'seek' && position !== undefined) seek(position);
   }), [audio, advance, seek, notify]);
   useEffect(() => {
-    const time = () => setPosition(audio.currentTime);
+    const time = () => setStarted(audio.currentTime > 0);
     const loaded = () => { setDuration(Number.isFinite(audio.duration) ? audio.duration : 0); setCurrentId(audio.src || undefined); };
     const play = () => setPlaying(true); const pause = () => setPlaying(false);
     const ended = () => advance(1, true);
@@ -438,7 +452,7 @@ export function App() {
           setQueue(q => q.filter(id => valid.has(id)));
           setSelection(s => s.filter(id => valid.has(id)));
           const current = stateRef.current.currentId;
-          if (current && !valid.has(current)) { ++lyricRequest.current; audio.pause(); audio.removeAttribute('src'); audio.load(); setCurrentId(undefined); setPlaying(false); setPosition(0); setDuration(0); setNowPlaying(false); setLyricFile({ text: '', source: '', format: 'lrc' }); }
+          if (current && !valid.has(current)) { ++lyricRequest.current; audio.pause(); audio.removeAttribute('src'); audio.load(); setCurrentId(undefined); setPlaying(false); setStarted(false); setDuration(0); setNowPlaying(false); setLyricFile({ text: '', source: '', format: 'lrc' }); }
         }
         const summary = kind === 'rescan' ? `重新扫描完成，共 ${result.imported} 首音乐${result.removed ? `，已移除 ${result.removed} 首不存在的歌曲` : ''}` : `已加入 ${result.imported} 首音乐`;
         notify(`${summary}，歌曲信息将在后台补齐${result.warnings.length ? `，${result.warnings.length} 个文件存在读取问题：${result.warnings.slice(0, 2).join('；')}` : ''}`);
@@ -508,10 +522,12 @@ export function App() {
   }, [notify]);
   // 注音 is shown for lyrics with Han characters only; the choice itself is kept for the next song.
   // 音 / 译 apply to the song being played only: a different song starts with neither.
-  const [lyricTools, setLyricTools] = useState<{ id?: string; ruby: '' | RubyChoice; translate: '' | 'zh' | 'en' | 'source' }>({ ruby: '', translate: '' });
+  const [lyricTools, setLyricTools] = useState<{ id?: string; ruby: '' | RubyChoice; translate: '' | 'zh' | 'en' | 'source'; offset: number }>({ ruby: '', translate: '', offset: 0 });
   const rubyChoice = lyricTools.id === current?.id ? lyricTools.ruby : '';
   const translatePick = lyricTools.id === current?.id ? lyricTools.translate : '';
-  const setLyricTool = (patch: Partial<{ ruby: '' | RubyChoice; translate: '' | 'zh' | 'en' | 'source' }>) => setLyricTools(tools => ({ ...(tools.id === current?.id ? tools : { ruby: '', translate: '' }), ...patch, id: current?.id }));
+  // 歌词偏移, like 音 / 译, is for the song playing only: another song starts at 0.
+  const lyricOffset = lyricTools.id === current?.id ? lyricTools.offset : 0;
+  const setLyricTool = (patch: Partial<{ ruby: '' | RubyChoice; translate: '' | 'zh' | 'en' | 'source'; offset: number }>) => setLyricTools(tools => ({ ...(tools.id === current?.id ? tools : { ruby: '', translate: '', offset: 0 }), ...patch, id: current?.id }));
   // Which guides fit this lyric: 粤语 for Chinese (Han without kana), 罗马音 / 假名 for Japanese, and the
   // lyric's own romanization (TTML, NetEase, QQ Music, Kugou) when it has one.
   const lyricHasKana = useMemo(() => !!lyric.file && hasKana(lyric.file.text), [lyric.file]);
@@ -602,7 +618,7 @@ export function App() {
     }
     return covers;
   }, [filtered]);
-  const featureOurs = !!currentId && queue.length === filtered.length && queue.length > 0 && queue[0] === filtered[0].id && queue.includes(currentId);
+  const featureOurs = !!currentId && (playing || started) && queue.length === filtered.length && queue.length > 0 && queue[0] === filtered[0].id && queue.includes(currentId); // a song only chosen at startup is not playing the list yet
   const [heroHover, setHeroHover] = useState(false);
   // Player page: its layout, the switch shown as the pointer nears the top, and (WebView caption) its controls hidden while the pointer is out of the window.
   const nowLayout = settings?.nowLayout || 'default';
@@ -670,7 +686,7 @@ export function App() {
       for (const id of ids) data = await window.music.remove(id);
       if (data) setLibrary(data);
       setQueue(q => q.filter(x => !ids.includes(x))); setSelection([]);
-      if (currentId && ids.includes(currentId)) { audio.pause(); audio.removeAttribute('src'); audio.load(); setCurrentId(undefined); setPosition(0); setDuration(0); setNowPlaying(false); }
+      if (currentId && ids.includes(currentId)) { audio.pause(); audio.removeAttribute('src'); audio.load(); setCurrentId(undefined); setStarted(false); setDuration(0); setNowPlaying(false); }
       notify(ids.length > 1 ? `已从音乐库移除 ${ids.length} 首，磁盘文件已保留` : '已从音乐库移除，磁盘文件已保留');
     } catch (error) { notify(String(error)); }
   };
@@ -687,7 +703,7 @@ export function App() {
     if (removedCurrent) {
       ++lyricRequest.current;
       audio.pause(); audio.removeAttribute('src'); audio.load();
-      setCurrentId(undefined); setPlaying(false); setPosition(0); setDuration(0); setNowPlaying(false);
+      setCurrentId(undefined); setPlaying(false); setStarted(false); setDuration(0); setNowPlaying(false);
       setLyricFile({ text: '', source: '', format: 'lrc' }); setLyricLoading(false);
     }
     setBusy(true);
@@ -731,11 +747,7 @@ export function App() {
     <IconButton icon={settings?.repeat === 'one' ? Repeat1 : Repeat} label={`循环模式：${settings?.repeat === 'all' ? '列表循环' : settings?.repeat === 'one' ? '单曲循环' : '关闭'}`} active={settings?.repeat !== 'off'} onClick={() => setSettings({ repeat: settings?.repeat === 'off' ? 'all' : settings?.repeat === 'all' ? 'one' : 'off' })}/>
     {extra}
   </div>;
-  const renderProgress = () => <div className="progress-control">
-    <span>{formatTime(position)}</span>
-    <ProgressSlider position={position} duration={duration} disabled={!current || !duration} onSeek={seek}/>
-    <span>{formatTime(duration)}</span>
-  </div>;
+  const renderProgress = () => <PlaybackProgress audio={audio} track={currentId} duration={duration} disabled={!current || !duration} onSeek={seek}/>;
   const copySongText = async (text: string) => {
     try { await navigator.clipboard.writeText(text); notify('已复制'); }
     catch { notify('复制失败，请重试'); }
@@ -776,7 +788,7 @@ export function App() {
     const folder = single && folders.find(f => f.trackIds.includes(single.id));
     return [
       ...(single ? [] : [{ kind: 'header', label: `已选择 ${tracks.length} 首歌曲` } as MenuItem]),
-      { label: playingThis ? '暂停' : single ? '播放' : '播放所选', icon: playingThis ? Pause : Play, shortcut: 'Enter', onSelect: () => single && currentId === single.id ? togglePlay() : playTrack(ids[0], single && !fromNowPlaying ? filtered.map(t => t.id) : ids) },
+      { label: playingThis ? '暂停' : single ? '播放' : '播放所选', icon: playingThis ? Pause : Play, shortcut: 'Enter', onSelect: () => single && currentId === single.id && audio.src ? togglePlay() : playTrack(ids[0], single && !fromNowPlaying ? filtered.map(t => t.id) : ids) },
       { label: '下一首播放', icon: ListPlus, onSelect: () => playNext(ids) },
       { label: '添加到歌单', icon: ListMusic, submenu: playlistMenu(ids) },
       { kind: 'separator' },
@@ -818,7 +830,7 @@ export function App() {
       </AnimatePresence>
     </span>
     <div className="track-identity">
-      <PressableButton className="track-cover-play" data-state={currentId === track.id && playing ? 'playing' : 'idle'} aria-label={currentId === track.id && playing ? `暂停 ${track.title}` : `播放 ${track.title}`} onDoubleClick={event => event.stopPropagation()} onClick={event => { if (event.detail > 1) return; if (currentId === track.id) togglePlay(); else playTrack(track.id, filtered.map(t => t.id)); }}>
+      <PressableButton className="track-cover-play" data-state={currentId === track.id && playing ? 'playing' : 'idle'} aria-label={currentId === track.id && playing ? `暂停 ${track.title}` : `播放 ${track.title}`} onDoubleClick={event => event.stopPropagation()} onClick={event => { if (event.detail > 1) return; if (currentId === track.id && audio.src) togglePlay() /* loaded: pause / resume; only chosen at startup: play from this list */; else playTrack(track.id, filtered.map(t => t.id)); }}>
         <Cover track={track}/>
         <span className="track-cover-overlay" aria-hidden="true">{currentId === track.id && playing ? <Pause size={20} fill="currentColor"/> : <Play size={20} fill="currentColor"/>}</span>
       </PressableButton>
@@ -1040,7 +1052,7 @@ export function App() {
             <div className="now-right">
               <AnimatePresence mode="wait" initial={false}>
                 <motion.div key={lyric.file ? `lyrics:${current.id}:${lyric.source}:${lyric.file.source}` : `empty:${current.id}:${lyricLoading || lookingOnline}`} className="lyric-content" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={textTransition}>
-                  {shownLyric ? <Lyrics file={shownLyric} audio={audio} offset={settings?.lyricOffset || 0} active={nowPlaying} onSeek={seek} typography={{ font: settings?.lyricFont, weight: settings?.lyricWeight, scale: settings?.lyricScale }} ruby={lyricRuby} onRubyError={onRubyError} translate={translateChoice || undefined} onTranslateState={onTranslateState}/> : <div className="no-lyrics"><AudioLines size={38}/><h3>{lyricLoading ? '正在读取歌词' : lookingOnline ? '正在查找在线歌词' : '让文字也跟着旋律'}</h3><p>自动读取歌曲旁的同名歌词文件{settings?.onlineLyrics !== false ? '，没有时从 AMLL TTML DB 查找' : ''}<br/>也可以手动关联 LRC、TTML、YRC 或 TXT</p><PressableButton className="secondary-button" onClick={() => void attachLyrics()}><Plus size={16}/>关联歌词</PressableButton></div>}
+                  {shownLyric ? <Lyrics file={shownLyric} audio={audio} offset={lyricOffset} active={nowPlaying} onSeek={seek} typography={{ font: settings?.lyricFont, weight: settings?.lyricWeight, scale: settings?.lyricScale }} ruby={lyricRuby} onRubyError={onRubyError} translate={translateChoice || undefined} onTranslateState={onTranslateState}/> : <div className="no-lyrics"><AudioLines size={38}/><h3>{lyricLoading ? '正在读取歌词' : lookingOnline ? '正在查找在线歌词' : '让文字也跟着旋律'}</h3><p>自动读取歌曲旁的同名歌词文件{settings?.onlineLyrics !== false ? '，没有时从 AMLL TTML DB 查找' : ''}<br/>也可以手动关联 LRC、TTML、YRC 或 TXT</p><PressableButton className="secondary-button" onClick={() => void attachLyrics()}><Plus size={16}/>关联歌词</PressableButton></div>}
                 </motion.div>
               </AnimatePresence>
               <div className="lyric-toolbar">
@@ -1048,10 +1060,10 @@ export function App() {
                 <div>
                   {lyricHasHan && chineseAvailable && <div className="script-switch" role="group" aria-label="歌词写法">{(['o', 's', 't'] as const).map(script => <button key={script} type="button" className="script-option" aria-pressed={lyricScript === script} data-tooltip={script === 'o' ? '歌词原文' : script === 's' ? '转成简体' : `转成${TRADITIONAL_NAMES[lyricVariant]}`} onClick={() => setSettings({ lyricScript: script })}>{script === 'o' ? '原' : script === 's' ? '简' : '繁'}</button>)}<button type="button" className="script-more" aria-label="选择繁体标准" aria-haspopup="menu" aria-expanded={!!scriptMenu} onClick={event => { const box = event.currentTarget.getBoundingClientRect(); setScriptMenu(scriptMenu ? undefined : { x: box.left, y: box.top - 6 }); }}><ChevronDown size={12}/></button></div>}
                   {(lyric.switchable || settings?.onlineLyrics !== false) && <button type="button" className="lyric-source-button" aria-haspopup="menu" aria-expanded={!!lyricMenu} aria-label="歌词来源" onClick={event => { const box = event.currentTarget.getBoundingClientRect(); setLyricMenu(lyricMenu ? undefined : { x: box.left, y: box.top - 6 }); }}>{lookingOnline ? '查找中…' : lyric.results.length ? `${lyric.results.length + (lyricFile.text ? 1 : 0)} 个来源` : '来源'}<ChevronDown size={13}/></button>}
-                  <PressableButton data-tooltip="歌词延后 0.5 秒" onClick={() => setSettings({ lyricOffset: Math.max(-30000, (settings?.lyricOffset || 0) - 500) })}>−</PressableButton>
-                  <motion.span data-tooltip="正值让歌词提前显示" key={settings?.lyricOffset || 0} initial={{ opacity: .55, y: 1 }} animate={{ opacity: 1, y: 0 }} transition={quickTextTransition}>偏移 {((settings?.lyricOffset || 0) / 1000).toFixed(1)}s</motion.span>
-                  <PressableButton data-tooltip="歌词提前 0.5 秒" onClick={() => setSettings({ lyricOffset: Math.min(30000, (settings?.lyricOffset || 0) + 500) })}>+</PressableButton>
-                  <PressableButton data-tooltip="重置歌词偏移" onClick={() => setSettings({ lyricOffset: 0 })}>↺</PressableButton>
+                  <PressableButton data-tooltip="歌词延后 0.5 秒" onClick={() => setLyricTool({ offset: Math.max(-30000, lyricOffset - 500) })}>−</PressableButton>
+                  <motion.span data-tooltip="正值让歌词提前显示，只对当前歌曲有效" key={lyricOffset} initial={{ opacity: .55, y: 1 }} animate={{ opacity: 1, y: 0 }} transition={quickTextTransition}>偏移 {(lyricOffset / 1000).toFixed(1)}s</motion.span>
+                  <PressableButton data-tooltip="歌词提前 0.5 秒" onClick={() => setLyricTool({ offset: Math.min(30000, lyricOffset + 500) })}>+</PressableButton>
+                  <PressableButton data-tooltip="重置歌词偏移" onClick={() => setLyricTool({ offset: 0 })}>↺</PressableButton>
                 </div>
               </div>
             </div>
@@ -1107,7 +1119,7 @@ export function App() {
               </div>
               <div className="settings-field"><label htmlFor="amll-mirror">AMLL TTML DB 地址</label><div><input id="amll-mirror" type="url" spellCheck={false} placeholder="https://raw.githubusercontent.com/amll-dev/amll-ttml-db/main" value={mirrorDraft ?? settings?.amllMirror ?? ''} onChange={event => setMirrorDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') saveMirror(); }}/><PressableButton className="secondary-button" disabled={mirrorDraft === undefined} onClick={saveMirror}>保存</PressableButton></div><small>留空使用 GitHub 原始地址；也可以填写仓库根目录的镜像。</small></div>
               <div className="settings-field"><label htmlFor="apple-token">Apple Music media-user-token</label><div><input id="apple-token" type="password" autoComplete="off" spellCheck={false} placeholder={appleToken.set ? '已设置，输入新令牌可替换' : '从 music.apple.com 登录后的 Cookie 中复制'} value={appleToken.draft} onChange={event => setAppleToken(t => ({ ...t, draft: event.target.value }))}/><PressableButton className="secondary-button" disabled={!appleToken.draft.trim()} onClick={() => saveAppleToken(appleToken.draft)}>保存</PressableButton>{appleToken.set && <PressableButton className="text-button" onClick={() => saveAppleToken('')}>清除</PressableButton>}</div><small>只有 Apple Music 订阅用户需要；令牌用 Windows 数据保护加密保存，不会显示或发回页面。</small></div>
-              </section><section role="tabpanel" aria-label="播放与快捷键" hidden={settingsTab !== 'playback'}><h4>键盘与播放</h4><div className="shortcut-list"><span>播放 / 暂停 <kbd>Space</kbd></span><span>上一首 / 下一首 <kbd>Ctrl ← / →</kbd></span><span>打开 / 收起播放页 <kbd>Ctrl L</kbd></span><span>喜欢当前歌曲 <kbd>Ctrl D</kbd></span><span>搜索音乐 <kbd>Ctrl F</kbd></span><span>关闭面板 <kbd>Esc</kbd></span></div>
+              </section><section role="tabpanel" aria-label="播放与快捷键" hidden={settingsTab !== 'playback'}><h4>键盘与播放</h4><div className="shortcut-list"><span>播放 / 暂停 <kbd>Space</kbd></span><span>上一首 / 下一首 <kbd>Ctrl ← / →</kbd></span><span>打开 / 收起播放页 <kbd>Ctrl L</kbd></span><span>喜欢当前歌曲 <kbd>Ctrl D</kbd></span><span>搜索音乐 <kbd>Ctrl F</kbd></span><span>关闭面板 <kbd>Esc</kbd></span></div><h4>启动</h4><div className="settings-row"><span className="settings-row-label"><span>启动时预选</span><small>打开应用时，底部播放栏先选好一首歌（不会自动播放），按播放即可开始。音乐库还没有歌曲时不预选。</small></span><Select label="启动时预选" value={settings?.startupTrack || 'first'} onChange={value => setSettings({ startupTrack: value as Settings['startupTrack'] })} options={[{ value: 'first', label: '音乐库第一首' }, { value: 'random', label: '随机一首' }]}/></div>
               </section><section role="tabpanel" aria-label="工具" hidden={settingsTab !== 'tools'}><h4>工具</h4><p className="settings-hint">歌词翻译等附加功能的服务与模型。</p>
               <h5 className="settings-subheading">歌词翻译</h5>
               {settingsTab === 'tools' && <TranslationSettings settings={settings} setSettings={setSettings} notify={notify}/>}

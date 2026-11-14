@@ -31,3 +31,39 @@ test('native UI clock rejects stale switch/seek/stop snapshots and deduplicates 
   calls[3].resolve(snapshot(3, { id: '', position: 0, duration: 0, playing: false, serial: 105 })); await Promise.resolve();
   assert.equal(audio.src, ''); assert.equal(audio.paused, true); audio.dispose();
 });
+
+test('native UI clock never steps back on jittered snapshots, converges on drift and snaps on real jumps', async () => {
+  let listener: (state: PlaybackState) => void = () => {};
+  const calls: { command: PlaybackCommand; resolve: (state: PlaybackState) => void }[] = [];
+  Object.assign(globalThis, { window: { music: {
+    onPlayback: (callback: typeof listener) => { listener = callback; return () => { listener = () => {}; }; },
+    playback: (command: PlaybackCommand) => new Promise<PlaybackState>(resolve => calls.push({ command, resolve })),
+  } } });
+  let wall = 1000;
+  const realNow = performance.now;
+  Object.defineProperty(performance, 'now', { value: () => wall, configurable: true, writable: true });
+  try {
+    const audio = new NativePlayback();
+    const id = 'c'.repeat(24);
+    let serial = 0;
+    const snapshot = (position: number, extra: Partial<PlaybackState> = {}): PlaybackState => ({ id, duration: 600, position, playing: true, ended: false, volume: .7, error: '', serial: ++serial, request: calls[0].command.request, ...extra });
+    audio.src = `https://media.dr-music.local/audio/${id}`;
+    const play = audio.play(); calls[0].resolve(snapshot(0)); await play;
+    // Native reports every ~100 ms; arrival jitters and the reported position lags by up to 40 ms.
+    let previous = audio.currentTime, truth = 0;
+    for (let i = 0; i < 100; ++i) {
+      for (let frame = 0; frame < 6; ++frame) {
+        wall += 100 / 6; truth += 100 / 6000;
+        const now = audio.currentTime; assert.ok(now >= previous, `clock went back ${previous} -> ${now}`); previous = now;
+      }
+      listener(snapshot(truth - (i % 3) * .02));
+      const now = audio.currentTime; assert.ok(now >= previous, `clock went back on snapshot ${previous} -> ${now}`); previous = now;
+    }
+    assert.ok(Math.abs(audio.currentTime - truth) < .05, `clock drifted: ${audio.currentTime} vs ${truth}`);
+    // A position far from the prediction (device stall, external seek) snaps immediately.
+    listener(snapshot(truth - 3)); assert.ok(Math.abs(audio.currentTime - (truth - 3)) < 1e-9);
+    audio.dispose();
+  } finally {
+    Object.defineProperty(performance, 'now', { value: realNow, configurable: true, writable: true });
+  }
+});

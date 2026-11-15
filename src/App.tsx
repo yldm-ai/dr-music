@@ -263,7 +263,8 @@ export function App() {
   }, []);
   const trackById = useMemo(() => new Map((library?.tracks || []).map(track => [track.id, track])), [library?.tracks]);
   const current = currentId ? trackById.get(currentId) : undefined;
-  const lyric = chooseLyric(lyricFile, onlineLyrics, current?.lyricPreference);
+  // A song's own pick wins; otherwise the default source from 设置 → 音乐库 → 歌词.
+  const lyric = chooseLyric(lyricFile, onlineLyrics, current?.lyricPreference || library?.settings.lyricSource);
   const queueWindow = useMemo(() => virtualRange(queue.length, QUEUE_ROW_HEIGHT, queueViewport.scrollTop, queueViewport.height, QUEUE_OVERSCAN), [queue.length, queueViewport]);
   const settings = library?.settings;
   const lookingOnline = !lyricFile.text && onlineLyrics === undefined && settings?.onlineLyrics !== false;
@@ -359,7 +360,7 @@ export function App() {
     if (direction === -1 && audio.currentTime > 3) { seek(0); return; }
     const { queue, currentId, library } = stateRef.current;
     const s = library?.settings;
-    const id = nextTrack(queue, currentId, direction, s?.repeat || 'off', s?.shuffle || false, ended);
+    const id = nextTrack(queue, currentId, direction, s?.shuffle ? 'off' : s?.repeat || 'off', s?.shuffle || false, ended);
     if (id) { if (id === currentId) seek(0); playTrack(id); }
     else { audio.pause(); setPlaying(false); }
   }, [audio, playTrack, seek]);
@@ -520,14 +521,17 @@ export function App() {
     if (state.state === 'error' && translateError.current !== state.message) notify(`翻译失败：${state.message}`);
     if (state.state === 'error') translateError.current = state.message; else if (state.state === 'done') translateError.current = '';
   }, [notify]);
-  // 注音 is shown for lyrics with Han characters only; the choice itself is kept for the next song.
-  // 音 / 译 apply to the song being played only: a different song starts with neither.
-  const [lyricTools, setLyricTools] = useState<{ id?: string; ruby: '' | RubyChoice; translate: '' | 'zh' | 'en' | 'source'; offset: number }>({ ruby: '', translate: '', offset: 0 });
-  const rubyChoice = lyricTools.id === current?.id ? lyricTools.ruby : '';
-  const translatePick = lyricTools.id === current?.id ? lyricTools.translate : '';
+  // 音 / 译 picked by hand apply to the song being played only. Until picked (undefined), a song starts
+  // with its defaults: an online lyric's own translation / romanization / 粤拼 when it has them and
+  // 设置 → 音乐库 → 歌词 keeps them on; otherwise neither.
+  type LyricTools = { id?: string; ruby?: '' | RubyChoice; translate?: '' | 'zh' | 'en' | 'source'; offset: number };
+  const [lyricTools, setLyricTools] = useState<LyricTools>({ offset: 0 });
+  const ownTools = lyricTools.id === current?.id ? lyricTools : undefined;
   // 歌词偏移, like 音 / 译, is for the song playing only: another song starts at 0.
-  const lyricOffset = lyricTools.id === current?.id ? lyricTools.offset : 0;
-  const setLyricTool = (patch: Partial<{ ruby: '' | RubyChoice; translate: '' | 'zh' | 'en' | 'source'; offset: number }>) => setLyricTools(tools => ({ ...(tools.id === current?.id ? tools : { ruby: '', translate: '', offset: 0 }), ...patch, id: current?.id }));
+  const lyricOffset = ownTools?.offset ?? 0;
+  // Leaving a song forgets its picks, so coming back to it starts from the defaults too.
+  useEffect(() => setLyricTools(tools => tools.id === undefined || tools.id === currentId ? tools : { offset: 0 }), [currentId]);
+  const setLyricTool = (patch: Partial<Omit<LyricTools, 'id'>>) => setLyricTools(tools => ({ ...(tools.id === current?.id ? tools : { offset: 0 }), ...patch, id: current?.id }));
   // Which guides fit this lyric: 粤语 for Chinese (Han without kana), 罗马音 / 假名 for Japanese, and the
   // lyric's own romanization (TTML, NetEase, QQ Music, Kugou) when it has one.
   const lyricHasKana = useMemo(() => !!lyric.file && hasKana(lyric.file.text), [lyric.file]);
@@ -535,6 +539,13 @@ export function App() {
   const sourceLines = useMemo(() => { try { return lyric.file?.text ? parseLyrics(lyric.file, 0).lines : []; } catch { return []; } }, [lyric.file]);
   const lyricHasRoman = useMemo(() => hasSourceRoman(sourceLines), [sourceLines]);
   const lyricHasTranslation = useMemo(() => hasSourceTranslation(sourceLines), [sourceLines]);
+  // An online lyric's own romanization is 粤拼 for Chinese lyrics (Han without kana), else 罗马音.
+  const lyricOnline = !!lyric.source && lyric.source !== 'local';
+  const ownRomanIsJyutping = lyricHasHan && !lyricHasKana;
+  const defaultRuby: '' | RubyChoice = lyricOnline && lyricHasRoman && (ownRomanIsJyutping ? settings?.onlineJyutping !== false : settings?.onlineRomaji !== false) ? 'romaji-online' : '';
+  const defaultTranslate: '' | 'source' = lyricOnline && lyricHasTranslation && settings?.onlineTranslation !== false ? 'source' : '';
+  const rubyChoice = ownTools?.ruby ?? defaultRuby;
+  const translatePick = ownTools?.translate ?? defaultTranslate;
   const translateChoice = translatePick === 'source' && !lyricHasTranslation ? '' : translatePick;
   const rubyFits = (choice: RubyChoice) => choice === 'jyutping' ? lyricHasHan && !lyricHasKana : choice === 'romaji-online' ? lyricHasRoman : lyricHasKana;
   const lyricRuby = useMemo(() => rubyChoice && rubyFits(rubyChoice) ? { kind: rubyChoice, below: !!settings?.lyricRubyBelow } : undefined, [rubyChoice, settings?.lyricRubyBelow, lyricHasHan, lyricHasKana, lyricHasRoman]);
@@ -733,8 +744,10 @@ export function App() {
     persist({ playlists }); setPlaylistDialog(undefined);
     if (!playlistDialog.id && playlistDialog.trackIds?.length) notify(`已创建「${playlistDialog.name.trim()}」并加入 ${playlistDialog.trackIds.length} 首`);
   };
+  // 随机播放 and 循环 are one play mode: while shuffling, 循环 shows (and acts) as off.
+  const repeatMode = settings?.shuffle ? 'off' : settings?.repeat || 'off';
   const renderTransport = (extra?: React.ReactNode) => <div className="transport">
-    <IconButton icon={Shuffle} label="随机播放" active={settings?.shuffle} onClick={() => setSettings({ shuffle: !settings?.shuffle })}/>
+    <IconButton icon={Shuffle} label="随机播放" active={settings?.shuffle} aria-pressed={!!settings?.shuffle} onClick={() => setSettings(settings?.shuffle ? { shuffle: false } : { shuffle: true, repeat: 'off' })}/>
     <IconButton icon={SkipBack} label="上一首" disabled={!current} onClick={() => advance(-1)}/>
     <PressableButton className="play-button" aria-label={playing ? '暂停' : '播放'} disabled={!library?.tracks.length} whileHover={{ scale: 1.08 }} whileTap={{ scale: .9 }} transition={playTransition} onClick={togglePlay}>
       <AnimatePresence mode="sync" initial={false}>
@@ -744,7 +757,7 @@ export function App() {
       </AnimatePresence>
     </PressableButton>
     <IconButton icon={SkipForward} label="下一首" disabled={!current} onClick={() => advance(1)}/>
-    <IconButton icon={settings?.repeat === 'one' ? Repeat1 : Repeat} label={`循环模式：${settings?.repeat === 'all' ? '列表循环' : settings?.repeat === 'one' ? '单曲循环' : '关闭'}`} active={settings?.repeat !== 'off'} onClick={() => setSettings({ repeat: settings?.repeat === 'off' ? 'all' : settings?.repeat === 'all' ? 'one' : 'off' })}/>
+    <IconButton icon={repeatMode === 'one' ? Repeat1 : Repeat} label={`循环模式：${repeatMode === 'all' ? '列表循环' : repeatMode === 'one' ? '单曲循环' : '关闭'}`} active={repeatMode !== 'off'} aria-pressed={repeatMode !== 'off'} onClick={() => { const repeat = repeatMode === 'off' ? 'all' : repeatMode === 'all' ? 'one' : 'off'; setSettings(repeat === 'off' ? { repeat } : { repeat, shuffle: false }); }}/>
     {extra}
   </div>;
   const renderProgress = () => <PlaybackProgress audio={audio} track={currentId} duration={duration} disabled={!current || !duration} onSeek={seek}/>;
@@ -948,11 +961,11 @@ export function App() {
                 {selectedFolder && <p className="hero-path" data-tooltip={selectedFolder.path}>{selectedFolder.path}</p>}
                 <div className="hero-actions">
                   <PressableButton className="primary-button" disabled={!filtered.length} onClick={() => playTrack(filtered[0].id, filtered.map(t => t.id))}><Play size={16} fill="currentColor"/>播放全部</PressableButton>
-                  {collectionPage ? <PressableButton className="secondary-button" disabled={!filtered.length} onClick={() => { setSettings({ shuffle: true }); playTrack(filtered[Math.floor(Math.random() * filtered.length)].id, filtered.map(t => t.id)); }}><Shuffle size={17}/>随机播放</PressableButton> : <PressableButton className="secondary-button" disabled={busy} onClick={() => void runImport('folder')}><FolderPlus size={17}/>导入文件夹</PressableButton>}
+                  {collectionPage ? <PressableButton className="secondary-button" disabled={!filtered.length} onClick={() => { setSettings({ shuffle: true, repeat: 'off' }); playTrack(filtered[Math.floor(Math.random() * filtered.length)].id, filtered.map(t => t.id)); }}><Shuffle size={17}/>随机播放</PressableButton> : <PressableButton className="secondary-button" disabled={busy} onClick={() => void runImport('folder')}><FolderPlus size={17}/>导入文件夹</PressableButton>}
                   <AnimatePresence>{selectedPlaylist && <motion.span className="hero-playlist-actions" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }}><IconButton icon={Pencil} label="重命名歌单" onClick={() => setPlaylistDialog({ id: selectedPlaylist.id, name: selectedPlaylist.name })}/><IconButton icon={Trash2} label="删除歌单" onClick={() => setDeletePlaylist(selectedPlaylist)}/></motion.span>}{selectedFolder && <motion.span className="hero-playlist-actions" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }}><IconButton icon={FolderSearch} label="在资源管理器中打开" disabled={!selectedFolder.trackIds.length} onClick={() => void window.music.reveal(selectedFolder.trackIds[0]).catch(e => notify(String(e)))}/></motion.span>}</AnimatePresence>
                 </div>
               </motion.div>
-            {!collectionPage && <FeatureStack covers={featureCovers} hovered={heroHover} ours={featureOurs} playing={featureOurs && playing}/>}
+            {!collectionPage && <FeatureStack covers={featureCovers} record={current && { src: current.cover ? media(current, 'cover') : undefined }} hovered={heroHover} ours={featureOurs} playing={featureOurs && playing}/>}
           </motion.section>
 
           <AnimatePresence initial={false}>
@@ -1111,6 +1124,7 @@ export function App() {
               <div className="settings-actions"><PressableButton className="secondary-button" disabled={busy} onClick={() => void runImport('folder')}><FolderPlus size={16}/>添加文件夹</PressableButton><PressableButton className="secondary-button" disabled={busy || !library?.folders.length} onClick={() => void runImport('rescan')}><RefreshCw size={16}/>重新扫描</PressableButton><PressableButton className="text-button" onClick={() => void window.music.openData().catch(e => notify(String(e)))}>打开数据目录</PressableButton></div>
               <h5 className="settings-subheading">搜索</h5><div className="settings-row settings-toggle-row"><span className="settings-row-label"><span>简繁通搜</span><small>{chineseAvailable ? '输入简体或繁体都能找到另一种写法的歌曲，例如「后来」也能搜到「後來」。' : '未找到 OpenCC 数据（程序目录下的 opencc 文件夹），简繁通搜不可用。'}</small></span><button type="button" role="switch" className="switch" aria-label="简繁通搜" aria-checked={chineseSearch} disabled={!chineseAvailable} onClick={() => setSettings({ chineseSearch: !settings?.chineseSearch })}><span/></button></div>
               <h5 className="settings-subheading">歌词</h5><div className="settings-row settings-toggle-row"><span className="settings-row-label"><span>在线歌词</span><small>歌曲没有歌词时，从下面开启的歌词源同时查找并缓存到本地，选用匹配度最高的；可在播放页右下角切换来源。只会连接这些歌词源的接口。</small></span><button type="button" role="switch" className="switch" aria-label="在线歌词" aria-checked={settings?.onlineLyrics !== false} onClick={() => setSettings({ onlineLyrics: settings?.onlineLyrics === false })}><span/></button></div>
+              <div className="settings-row"><span className="settings-row-label"><span>默认歌词来源</span><small>歌曲有多份歌词时默认显示哪一份；所选来源没有找到歌词时，先用本地歌词，再用匹配度最高的在线歌词。在播放页为某首歌单独选过的来源不受影响。</small></span><Select label="默认歌词来源" value={settings?.lyricSource || 'local'} onChange={value => setSettings({ lyricSource: value })} options={[{ value: 'local', label: '本地歌词优先' }, { value: 'online', label: '在线最佳匹配' }, ...LYRIC_PROVIDERS.map(p => ({ value: p.id, label: p.name }))]}/></div>
               <div className="lyric-provider-list" aria-label="歌词源" data-disabled={settings?.onlineLyrics === false ? 'true' : undefined}>
                 {LYRIC_PROVIDERS.map(provider => { const enabled = (settings?.lyricProviders ?? LYRIC_PROVIDERS.map(p => p.id)).includes(provider.id); return <div key={provider.id} className="lyric-provider-row">
                   <span className="settings-row-label"><span>{provider.name}</span><small>{provider.id === 'apple' ? (appleToken.set ? '已设置 media-user-token（加密保存在本机）' : provider.hint) : provider.hint}</small></span>
@@ -1119,6 +1133,11 @@ export function App() {
               </div>
               <div className="settings-field"><label htmlFor="amll-mirror">AMLL TTML DB 地址</label><div><input id="amll-mirror" type="url" spellCheck={false} placeholder="https://raw.githubusercontent.com/amll-dev/amll-ttml-db/main" value={mirrorDraft ?? settings?.amllMirror ?? ''} onChange={event => setMirrorDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') saveMirror(); }}/><PressableButton className="secondary-button" disabled={mirrorDraft === undefined} onClick={saveMirror}>保存</PressableButton></div><small>留空使用 GitHub 原始地址；也可以填写仓库根目录的镜像。</small></div>
               <div className="settings-field"><label htmlFor="apple-token">Apple Music media-user-token</label><div><input id="apple-token" type="password" autoComplete="off" spellCheck={false} placeholder={appleToken.set ? '已设置，输入新令牌可替换' : '从 music.apple.com 登录后的 Cookie 中复制'} value={appleToken.draft} onChange={event => setAppleToken(t => ({ ...t, draft: event.target.value }))}/><PressableButton className="secondary-button" disabled={!appleToken.draft.trim()} onClick={() => saveAppleToken(appleToken.draft)}>保存</PressableButton>{appleToken.set && <PressableButton className="text-button" onClick={() => saveAppleToken('')}>清除</PressableButton>}</div><small>只有 Apple Music 订阅用户需要；令牌用 Windows 数据保护加密保存，不会显示或发回页面。</small></div>
+              {([
+                ['onlineTranslation', '默认显示在线译文', '在线歌词自带翻译时，直接显示在每行下面。'],
+                ['onlineRomaji', '默认显示在线罗马音', '在线歌词自带罗马音（如日文歌）时，直接标在歌词上。'],
+                ['onlineJyutping', '默认显示在线粤拼', '中文在线歌词自带粤语拼音时，直接标在歌词上。'],
+              ] as const).map(([key, label, hint]) => <div key={key} className="settings-row settings-toggle-row"><span className="settings-row-label"><span>{label}</span><small>{hint}仍可在播放页右上角「音」「译」中为当前歌曲单独切换。</small></span><button type="button" role="switch" className="switch" aria-label={label} aria-checked={settings?.[key] !== false} disabled={settings?.onlineLyrics === false} onClick={() => setSettings({ [key]: settings?.[key] === false })}><span/></button></div>)}
               </section><section role="tabpanel" aria-label="播放与快捷键" hidden={settingsTab !== 'playback'}><h4>键盘与播放</h4><div className="shortcut-list"><span>播放 / 暂停 <kbd>Space</kbd></span><span>上一首 / 下一首 <kbd>Ctrl ← / →</kbd></span><span>打开 / 收起播放页 <kbd>Ctrl L</kbd></span><span>喜欢当前歌曲 <kbd>Ctrl D</kbd></span><span>搜索音乐 <kbd>Ctrl F</kbd></span><span>关闭面板 <kbd>Esc</kbd></span></div><h4>启动</h4><div className="settings-row"><span className="settings-row-label"><span>启动时预选</span><small>打开应用时，底部播放栏先选好一首歌（不会自动播放），按播放即可开始。音乐库还没有歌曲时不预选。</small></span><Select label="启动时预选" value={settings?.startupTrack || 'first'} onChange={value => setSettings({ startupTrack: value as Settings['startupTrack'] })} options={[{ value: 'first', label: '音乐库第一首' }, { value: 'random', label: '随机一首' }]}/></div>
               </section><section role="tabpanel" aria-label="工具" hidden={settingsTab !== 'tools'}><h4>工具</h4><p className="settings-hint">歌词翻译等附加功能的服务与模型。</p>
               <h5 className="settings-subheading">歌词翻译</h5>

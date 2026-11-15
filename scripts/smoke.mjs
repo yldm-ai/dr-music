@@ -711,6 +711,26 @@ try {
   await page.getByRole('button', { name: '+', exact: true }).click();
   await page.locator('.lyric-toolbar', { hasText: '偏移 0.5s' }).waitFor();
   await page.keyboard.press('Escape');
+  // 随机播放 and 循环 are one play mode: turning either on turns the other off (shown and saved).
+  {
+    const bar = page.locator('.player-bar');
+    const shuffle = bar.getByRole('button', { name: '随机播放', exact: true }), repeat = bar.getByRole('button', { name: /^循环模式/ });
+    const saved = () => page.evaluate(async () => { const s = (await window.music.getLibrary()).settings; return [s.shuffle, s.repeat]; });
+    await repeat.click();
+    await page.waitForFunction(async () => (await window.music.getLibrary()).settings.repeat === 'all');
+    assert.equal(await repeat.getAttribute('aria-label'), '循环模式：列表循环');
+    await shuffle.click();
+    await page.waitForFunction(async () => (await window.music.getLibrary()).settings.shuffle === true);
+    assert.deepEqual(await saved(), [true, 'off']);
+    assert.equal(await shuffle.getAttribute('aria-pressed'), 'true');
+    assert.equal(await repeat.getAttribute('aria-pressed'), 'false');
+    await repeat.click();
+    await page.waitForFunction(async () => (await window.music.getLibrary()).settings.shuffle === false);
+    assert.deepEqual(await saved(), [false, 'all']);
+    assert.equal(await shuffle.getAttribute('aria-pressed'), 'false');
+    await repeat.click(); await repeat.click();
+    await page.waitForFunction(async () => (await window.music.getLibrary()).settings.repeat === 'off');
+  }
 
   // Online lyrics: a song without its own lyric shows the AMLL TTML DB match automatically.
   const lyricText = text => page.waitForFunction(value => document.querySelector('.now-playing .amll-lyric-player')?.textContent.includes(value), text);
@@ -735,6 +755,29 @@ try {
   assert.deepEqual(sourceItems.slice(1, 4).sort(), ['AMLL TTML DB', 'LRCLIB', 'lrc.red']); // ordered by match score
   assert.deepEqual(sourceItems.slice(4), ['重新搜索在线歌词', '关联本地歌词…']);
   await page.waitForTimeout(150); await page.screenshot({ path: path.join(root, 'lyric-sources.png') });
+  // 默认歌词来源 (设置 → 音乐库 → 歌词): a song without its own pick shows the chosen provider instead of its
+  // own lyric; 本地歌词优先 brings the song's lyric back.
+  {
+    await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+    const pickSource = async option => {
+      await page.getByRole('button', { name: /设置与关于/ }).click();
+      await page.getByRole('tab', { name: '音乐库', exact: true }).click();
+      const trigger = page.getByRole('combobox', { name: '默认歌词来源', exact: true });
+      await trigger.scrollIntoViewIfNeeded(); await page.waitForTimeout(60); await trigger.click();
+      await page.getByRole('option', { name: option, exact: true }).click();
+      await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+      await page.getByRole('button', { name: '打开歌词播放页', exact: true }).click();
+    };
+    await pickSource('LRCLIB');
+    await page.waitForFunction(async () => (await window.music.getLibrary()).settings.lyricSource === 'lrclib');
+    await lyricText('LRCLIB 午后');
+    assert.equal((await page.evaluate(() => window.music.getLibrary())).tracks.find(t => t.title === '午后散步').lyricPreference, undefined);
+    await page.keyboard.press('Escape');
+    await pickSource('本地歌词优先');
+    await page.waitForFunction(async () => (await window.music.getLibrary()).settings.lyricSource === 'local');
+    await lyricText('测试歌词第一句');
+    sources = await openSources();
+  }
   await sources.getByRole('menuitem', { name: 'LRCLIB', exact: true }).click();
   await lyricText('LRCLIB 午后');
   await page.waitForFunction(async () => (await window.music.getLibrary()).tracks.find(t => t.title === '午后散步').lyricPreference === 'lrclib');
@@ -748,9 +791,22 @@ try {
   const rubyWords = () => page.evaluate(() => [...document.querySelectorAll('.now-playing .amll-lyric-player [class*="rubyWord"]')].map(e => e.textContent).join(' '));
   const openRuby = async () => { await page.getByRole('button', { name: '注音', exact: true }).click(); const menu = page.getByRole('menu', { name: '注音', exact: true }); await menu.waitFor(); return menu; };
   const menuLabels = menu => menu.getByRole('menuitem').evaluateAll(items => items.map(item => item.getAttribute('aria-label')));
+  // An online lyric's own romanization and translation show by default (设置 → 音乐库 → 歌词).
   await lyricText('君の名前を呼ぶ');
-  assert.equal(/wu\s*hou/.test(await playerText()), false);
+  await page.waitForFunction(() => /wu[\s\S]*hou/.test(document.querySelector('.now-playing .amll-lyric-player')?.textContent ?? ''));
+  await lyricText('呼唤你的名字');
+  assert.equal(await page.getByRole('button', { name: '注音', exact: true }).getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.getByRole('button', { name: '翻译', exact: true }).getAttribute('aria-pressed'), 'true');
   let rubyMenu = await openRuby();
+  await rubyMenu.getByRole('menuitem', { name: '不显示', exact: true }).click();
+  await page.waitForFunction(() => !/wu[\s\S]*hou/.test(document.querySelector('.now-playing .amll-lyric-player')?.textContent ?? ''));
+  {
+    await page.getByRole('button', { name: '翻译', exact: true }).click();
+    const items = page.getByRole('menu', { name: '翻译', exact: true }); await items.waitFor();
+    await items.getByRole('menuitem', { name: '不翻译', exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('.now-playing .amll-lyric-player')?.textContent.includes('呼唤你的名字'));
+  }
+  rubyMenu = await openRuby();
   assert.deepEqual(await menuLabels(rubyMenu), ['不显示', '罗马音', '假名注音']);
   await rubyMenu.getByRole('menuitem', { name: '罗马音', exact: true }).click();
   let romajiMenu = page.getByRole('menu', { name: '罗马音', exact: true }); await romajiMenu.waitFor();
@@ -772,7 +828,7 @@ try {
   rubyMenu = await openRuby();
   await rubyMenu.getByRole('menuitem', { name: '不显示', exact: true }).click();
   await page.waitForFunction(() => !document.querySelector('.now-playing .amll-lyric-player [class*="rubyWord"]'));
-  // 译 → 在线译文: the lyric's own translation, hidden until chosen.
+  // 译 → 在线译文: the lyric's own translation; turned off above for this song, so hidden until chosen again.
   assert.equal((await playerText()).includes('呼唤你的名字'), false);
   await page.getByRole('button', { name: '翻译', exact: true }).click();
   let translateItems = page.getByRole('menu', { name: '翻译', exact: true }); await translateItems.waitFor();
@@ -930,6 +986,31 @@ try {
   assert.deepEqual(await page.evaluate(async () => { const t = (await window.music.getLibrary()).tracks.find(x => x.title === '午后散步'); return (await window.music.onlineLyrics(t.id)).map(r => r.provider).sort(); }), ['amll', 'lrcred']);
   await lrclibSwitch.click();
   await page.waitForFunction(async () => (await window.music.getLibrary()).settings.lyricProviders.includes('lrclib'));
+  // Online translation / 罗马音 / 粤拼 defaults: each on, switched and persisted on its own.
+  for (const [label, key] of [['默认显示在线译文', 'onlineTranslation'], ['默认显示在线罗马音', 'onlineRomaji'], ['默认显示在线粤拼', 'onlineJyutping']]) {
+    const toggle = page.getByRole('switch', { name: label, exact: true });
+    assert.equal(await toggle.getAttribute('aria-checked'), 'true');
+    await toggle.scrollIntoViewIfNeeded(); await toggle.click();
+    await page.waitForFunction(k => window.music.getLibrary().then(l => l.settings[k] === false), key);
+  }
+  await page.getByRole('switch', { name: '默认显示在线罗马音', exact: true }).click();
+  await page.waitForFunction(async () => { const s = (await window.music.getLibrary()).settings; return s.onlineRomaji === true && s.onlineTranslation === false && s.onlineJyutping === false; });
+  // With 译文 off by default, the lrc.red lyric now starts with its romanization but no translation.
+  await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+  await page.getByRole('button', { name: '打开歌词播放页', exact: true }).click();
+  await lyricText('测试歌词第一句');
+  sources = await openSources();
+  await sources.getByRole('menuitem', { name: 'lrc.red', exact: true }).click();
+  await page.waitForFunction(() => /wu[\s\S]*hou/.test(document.querySelector('.now-playing .amll-lyric-player')?.textContent ?? ''));
+  assert.equal((await playerText()).includes('呼唤你的名字'), false);
+  sources = await openSources();
+  await sources.getByRole('menuitem', { name: '本地歌词', exact: true }).click();
+  await lyricText('测试歌词第一句');
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: /设置与关于/ }).click();
+  await page.getByRole('tab', { name: '音乐库', exact: true }).click();
+  for (const label of ['默认显示在线译文', '默认显示在线粤拼']) await page.getByRole('switch', { name: label, exact: true }).click();
+  await page.waitForFunction(async () => { const s = (await window.music.getLibrary()).settings; return s.onlineTranslation && s.onlineRomaji && s.onlineJyutping; });
   assert.equal((await page.evaluate(() => window.music.lyricsStatus())).appleToken, false);
   // The Apple Music token is stored DPAPI-encrypted and read back (binary file, not text).
   assert.equal((await page.evaluate(() => window.music.setAppleToken('smoke-token'))).appleToken, true);

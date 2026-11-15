@@ -64,7 +64,7 @@ void enable_new_providers(Json &settings, const Json &saved) {
 }
 Json Library::defaults() {
     return {{"version", 1}, {"tracks", Json::array()}, {"folders", Json::array()}, {"favorites", Json::array()}, {"playlists", Json::array()},
-        {"settings", {{"volume", 0.7}, {"repeat", "off"}, {"shuffle", false}, {"lyricOffset", 0}, {"theme", "dark"}, {"titleBar", "direct2d"}, {"lyricFont", ""}, {"lyricWeight", 0}, {"lyricScale", 1}, {"chineseSearch", false}, {"lyricScript", "o"}, {"lyricVariant", "t"}, {"lyricRuby", ""}, {"lyricRubyBelow", false}, {"lyricTranslate", ""}, {"translateProvider", "local"}, {"translateEndpoint", LocalTranslator::kDefaultEndpoint}, {"translateModel", LocalTranslator::kDefaultModel}, {"onlineLyrics", true}, {"lyricProviders", OnlineLyrics::provider_ids()}, {"lyricProvidersSeen", OnlineLyrics::provider_ids()}, {"amllMirror", ""}}}};
+        {"settings", {{"volume", 0.7}, {"repeat", "off"}, {"shuffle", false}, {"lyricOffset", 0}, {"theme", "dark"}, {"titleBar", "direct2d"}, {"lyricFont", ""}, {"lyricWeight", 0}, {"lyricScale", 1}, {"chineseSearch", false}, {"lyricScript", "o"}, {"lyricVariant", "t"}, {"lyricRuby", ""}, {"lyricRubyBelow", false}, {"lyricTranslate", ""}, {"translateProvider", "local"}, {"translateEndpoint", LocalTranslator::kDefaultEndpoint}, {"translateModel", LocalTranslator::kDefaultModel}, {"onlineLyrics", true}, {"onlineTranslation", true}, {"onlineRomaji", true}, {"onlineJyutping", true}, {"lyricSource", "local"}, {"lyricProviders", OnlineLyrics::provider_ids()}, {"lyricProvidersSeen", OnlineLyrics::provider_ids()}, {"amllMirror", ""}}}};
 }
 Library::Library(fs::path directory) : directory_(std::move(directory)), state_(defaults()) {}
 Json Library::load() {
@@ -376,11 +376,21 @@ Json Library::update(const Json &patch) {
         if (s.contains("shuffle") && s["shuffle"].is_boolean()) target["shuffle"] = s["shuffle"];
         if (s.contains("chineseSearch") && s["chineseSearch"].is_boolean()) target["chineseSearch"] = s["chineseSearch"];
         if (s.contains("onlineLyrics") && s["onlineLyrics"].is_boolean()) target["onlineLyrics"] = s["onlineLyrics"];
+        // Whether an online lyric's own translation / romanization / 粤拼 shows by default (all on unless switched off).
+        static constexpr const char *online_defaults[]{"onlineTranslation", "onlineRomaji", "onlineJyutping"};
+        for (const char *name : online_defaults)
+            if (s.contains(name) && s[name].is_boolean()) target[name] = s[name];
         if (s.contains("lyricProviders") && s["lyricProviders"].is_array()) {
             const auto &known = OnlineLyrics::provider_ids();
             Json providers = Json::array();
             for (const auto &id : known) if (std::any_of(s["lyricProviders"].begin(), s["lyricProviders"].end(), [&](const Json &p) { return p == id; })) providers.push_back(id);
             target["lyricProviders"] = providers; // known ids only, in a fixed order
+        }
+        // Default lyric source for songs without their own pick: the song's lyric file ("local"), the best
+        // online match ("online"), or one provider (falling back to the others when it has nothing).
+        if (s.contains("lyricSource") && s["lyricSource"].is_string()) {
+            const auto v = s["lyricSource"].get<std::string>(); const auto &known = OnlineLyrics::provider_ids();
+            if (v == "local" || v == "online" || std::find(known.begin(), known.end(), v) != known.end()) target["lyricSource"] = v;
         }
         if (s.contains("amllMirror") && s["amllMirror"].is_string()) { const auto url = s["amllMirror"].get<std::string>(); if (url.empty() || OnlineLyrics::valid_base(url)) target["amllMirror"] = url; }
         // Lyric typography: "" / 0 mean "follow the app default".

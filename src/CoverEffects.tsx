@@ -53,8 +53,9 @@ function Record({ src, angle }: { src?: string; angle: MotionValue<number> }) {
 /**
  * The covers of the hero card. `hovered`: the pointer is on the card (covers fan, record out a little,
  * turning slowly); `ours`: the card's songs are what plays (record out); `playing`: and not paused (it turns).
+ * `record`: the song in the player bar, whose cover is the record's label (else the first cover's).
  */
-export function FeatureStack({ covers, hovered, ours, playing }: { covers: StackCover[]; hovered: boolean; ours: boolean; playing: boolean }) {
+export function FeatureStack({ covers, record, hovered, ours, playing }: { covers: StackCover[]; record?: { src?: string }; hovered: boolean; ours: boolean; playing: boolean }) {
   const still = useReducedMotion();
   const fanned = hovered && !still;
   const out = ours ? 1 : hovered ? .6 : 0;
@@ -75,7 +76,7 @@ export function FeatureStack({ covers, hovered, ours, playing }: { covers: Stack
       </motion.div>;
     })}
     <motion.div className="feature-record-slot" style={{ top: (SLEEVE - RECORD) / 2, width: RECORD, height: RECORD }} initial={false} animate={{ x: recordX }} transition={recordSpring}>
-      <Record src={first?.src} angle={angle}/>
+      <Record src={record ? record.src : first?.src} angle={angle}/>
     </motion.div>
     <motion.div className="feature-sleeve" style={{ left: SLEEVE_LEFT, width: SLEEVE, height: SLEEVE }} initial={false} animate={{ rotate: fanned ? -2 : 0, y: fanned ? -3 : 0 }} transition={stackSpring}>
       {first?.src && <img src={first.src} alt={first.label} draggable={false}/>}

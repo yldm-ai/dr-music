@@ -69,6 +69,12 @@ Music/
 
 输入框内不会拦截空格。系统媒体键与播放信息通过 Windows 原生 SMTC 接入，WebView 保留 Media Session 元数据同步。
 
+## Logo 资源
+
+`assets/icon.svg` 保存原始 logo，侧边栏、设置页与页面图标直接使用 SVG；`assets/icon.png` 是 1024 × 1024 透明 PNG，`assets/icon.ico` 是原生程序使用的多尺寸 Windows 图标。
+
+更新 SVG 后，在已安装 ImageMagick（`magick` 在 PATH 中）的环境执行 `./scripts/make-icon.ps1`，即可重新生成 PNG 和 ICO。也可使用 `./scripts/convert-png-to-ico.ps1 ./assets/icon.svg ./assets/icon.ico -Force` 单独转换 ICO。
+
 ## 架构与验证
 
 ```text

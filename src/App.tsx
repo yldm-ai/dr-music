@@ -1,4 +1,5 @@
 import { NativePlayback } from './playback';
+import logoUrl from '../assets/icon.svg?no-inline';
 import { VolumeControl } from './VolumeControl';
 import { PlaybackProgress } from './ProgressSlider';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -906,7 +907,7 @@ export function App() {
       </header>}
       <aside className="sidebar">
         <PressableButton className="brand" onClick={() => navigate('songs')}>
-          <span className="brand-icon"><AudioLines size={25}/></span>
+          <img className="brand-icon" src={logoUrl} alt=""/>
           <span>DR Music<small>音乐，随心而动。</small></span>
         </PressableButton>
         <div className="sidebar-section">我的音乐</div>
@@ -1108,7 +1109,7 @@ export function App() {
             <header className="modal-header settings-caption"><h2>设置与关于</h2><button type="button" className="caption-close" aria-label="关闭设置" data-tooltip="关闭" onClick={() => setSettingsOpen(false)}>{'\uE8BB'}</button></header>
             <div className="settings-tabs" role="tablist" aria-label="设置分类">{[{ id: 'appearance', label: '外观', icon: Settings2 }, { id: 'library', label: '音乐库', icon: LibraryIcon }, { id: 'playback', label: '播放与快捷键', icon: Headphones }, { id: 'tools', label: '工具', icon: Languages }, { id: 'about', label: '关于', icon: Music2 }].map(({ id, label, icon: Icon }) => <button key={id} role="tab" aria-selected={settingsTab === id} tabIndex={settingsTab === id ? 0 : -1} onClick={() => setSettingsTab(id)} onKeyDown={event => { const buttons = Array.from(event.currentTarget.parentElement!.querySelectorAll<HTMLButtonElement>('[role=tab]')); const index = buttons.indexOf(event.currentTarget); if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const target = buttons[event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length]; target.click(); target.focus(); } }}><Icon size={16}/>{label}</button>)}</div>
             <div className="settings-body">
-              <div className="settings-brand"><span className="brand-icon"><AudioLines size={25}/></span><div><h3>DR Music <small>0.2.0</small></h3><p>你的音乐，你的节奏。个人音乐播放器。</p></div></div>
+              <div className="settings-brand"><img className="brand-icon" src={logoUrl} alt=""/><div><h3>DR Music <small>0.2.0</small></h3><p>你的音乐，你的节奏。个人音乐播放器。</p></div></div>
               <section role="tabpanel" aria-label="外观" hidden={settingsTab !== 'appearance'}><h4>外观</h4><p className="settings-hint">选择适合你的配色和窗口风格。</p>
               <div className="settings-row"><span>应用主题</span><Select label="应用主题" value={settings?.theme || 'dark'} onChange={value => setSettings({ theme: value as Settings['theme'] })} options={[{ value: 'dark', label: '深色 · 夜间唱片店' }, { value: 'light', label: '浅色 · 午后音乐室' }]}/></div>
               <div className="settings-row"><span>原生标题栏</span><Select label="原生标题栏" value={settings?.titleBar || 'direct2d'} onChange={value => setSettings({ titleBar: value as Settings['titleBar'] })} options={[{ value: 'direct2d', label: 'Direct2D 自绘' }, { value: 'webview2', label: 'WebView2 沉浸式' }, { value: 'system', label: 'Windows 系统标题栏' }]}/></div>

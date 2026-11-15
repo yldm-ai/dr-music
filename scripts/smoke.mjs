@@ -731,6 +731,13 @@ try {
     await repeat.click(); await repeat.click();
     await page.waitForFunction(async () => (await window.music.getLibrary()).settings.repeat === 'off');
   }
+  // A song row's ⋯ has no hover box.
+  {
+    const more = page.locator('.track-row .track-more').first();
+    await more.hover();
+    assert.equal(await more.evaluate(e => getComputedStyle(e).backgroundColor), 'rgba(0, 0, 0, 0)');
+    await page.mouse.move(0, 0);
+  }
 
   // Online lyrics: a song without its own lyric shows the AMLL TTML DB match automatically.
   const lyricText = text => page.waitForFunction(value => document.querySelector('.now-playing .amll-lyric-player')?.textContent.includes(value), text);

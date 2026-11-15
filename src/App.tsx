@@ -63,8 +63,8 @@ function Cover({ track, className = '', enableLayout = true, loadImage = true }:
   </motion.div>;
 }
 
-function IconButton({ icon: Icon, label, active, ...props }: { icon: LucideIcon; label: string; active?: boolean } & Omit<MotionButtonProps, 'children'>) {
-  return <PressableButton type="button" className={`icon-button ${active ? 'active' : ''}`} data-tooltip={label} aria-label={label} whileHover={{ opacity: .92 }} whileTap={{ opacity: .7 }} {...props}>
+function IconButton({ icon: Icon, label, active, className = '', ...props }: { icon: LucideIcon; label: string; active?: boolean } & Omit<MotionButtonProps, 'children'>) {
+  return <PressableButton type="button" className={`icon-button ${active ? 'active' : ''} ${className}`} data-tooltip={label} aria-label={label} whileHover={{ opacity: .92 }} whileTap={{ opacity: .7 }} {...props}>
     <motion.span className="icon-button-glyph" animate={{ rotate: active ? -2 : 0 }} transition={pressTransition}><Icon size={19}/></motion.span>
   </PressableButton>;
 }
@@ -852,7 +852,7 @@ export function App() {
     <span className="album-cell" data-tooltip={track.album}>{track.album}</span><span className="format-label">{track.format}</span>
     <IconButton icon={Heart} label={`${library?.favorites.includes(track.id) ? '取消喜欢' : '喜欢'} ${track.title}`} active={library?.favorites.includes(track.id)} onClick={() => favorite(track.id)}/>
     <span className="track-duration">{formatTime(track.duration)}</span>
-    <IconButton icon={MoreHorizontal} label={`${track.title} 更多操作`} active={!!menu && menu.ids.includes(track.id)} onClick={event => { const box = (event.currentTarget as HTMLElement).getBoundingClientRect(); openMenu({ x: box.right - 4, y: box.bottom + 4 }, track.id); }}/>
+    <IconButton icon={MoreHorizontal} className="track-more" label={`${track.title} 更多操作`} active={!!menu && menu.ids.includes(track.id)} onClick={event => { const box = (event.currentTarget as HTMLElement).getBoundingClientRect(); openMenu({ x: box.right - 4, y: box.bottom + 4 }, track.id); }}/>
   </motion.div>);
   const renderSelectionBar = () => <AnimatePresence>
     {orderedSelection.length > 1 && <motion.div key="selection" className="selection-bar" role="toolbar" aria-label="批量操作" initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={layoutTransition}>

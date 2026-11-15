@@ -86,7 +86,7 @@ add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/frontend.stamp"
   COMMAND "${DR_NPM}" run notices
   COMMAND ${CMAKE_COMMAND} -E touch "${CMAKE_BINARY_DIR}/frontend.stamp"
   WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
-  DEPENDS ${DR_WEB_SOURCES} assets/icon.svg index.html package.json package-lock.json tsconfig.json vite.config.ts scripts/licenses.mjs
+  DEPENDS ${DR_WEB_SOURCES} assets/icon.svg assets/icon-sidebar.svg index.html package.json package-lock.json tsconfig.json vite.config.ts scripts/licenses.mjs
   VERBATIM)
 add_custom_target(dr-music-assets
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${PROJECT_SOURCE_DIR}/dist" "$<TARGET_FILE_DIR:dr-music>/web"

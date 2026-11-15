@@ -1,5 +1,6 @@
 import { NativePlayback } from './playback';
 import logoUrl from '../assets/icon.svg?no-inline';
+import sidebarLogoUrl from '../assets/icon-sidebar.svg?no-inline';
 import { VolumeControl } from './VolumeControl';
 import { PlaybackProgress } from './ProgressSlider';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -907,7 +908,7 @@ export function App() {
       </header>}
       <aside className="sidebar">
         <PressableButton className="brand" onClick={() => navigate('songs')}>
-          <img className="brand-icon" src={logoUrl} alt=""/>
+          <img className="brand-icon" src={sidebarLogoUrl} alt=""/>
           <span>DR Music<small>音乐，随心而动。</small></span>
         </PressableButton>
         <div className="sidebar-section">我的音乐</div>

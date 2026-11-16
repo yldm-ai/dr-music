@@ -86,7 +86,7 @@ function attachByTime(lines: LyricLine[], text: string, format: string, attach: 
   }
   return out;
 }
-function parseLocalTTML(text: string): LyricLine[] {
+function parseLocalTTML(text: string): { lines: LyricLine[]; romanLanguage?: string } {
   const document = new DOMParser().parseFromString(text, 'application/xml');
   if (document.getElementsByTagName('parsererror').length) throw new Error('TTML XML 格式无效');
   // AMLL's parser silently drops standard TTML paragraphs without Apple's
@@ -100,7 +100,8 @@ function parseLocalTTML(text: string): LyricLine[] {
     const key = p.getAttributeNS(ns, 'key') ? null : Array.from(p.attributes).find(a => a.localName === 'key')?.value;
     if (key && !used.has(key)) { used.add(key); p.setAttributeNS(ns, 'itunes:key', key); }
   }
-  for (const source of Array.from(document.getElementsByTagNameNS('*', 'sourceMetadata'))) {
+  const sourceMetadata = [...Array.from(document.getElementsByTagNameNS('*', 'sourceMetadata')), ...Array.from(document.getElementsByTagNameNS('*', 'iTunesMetadata'))];
+  for (const source of sourceMetadata) {
     // Rebuilt in Apple's namespace: moved as they are, they would serialize as lrc:transliterations.
     const adopt = (node: Node): Node => {
       const element = node as Element;
@@ -111,6 +112,9 @@ function parseLocalTTML(text: string): LyricLine[] {
       return copy;
     };
     const meta = document.createElementNS(ns, 'iTunesMetadata');
+    // AMLL looks up these tags by unprefixed name. An inherited itunes: binding
+    // must not cause XMLSerializer to prefix the reconstructed metadata.
+    meta.setAttributeNS('http://www.w3.org/2000/xmlns/', 'xmlns', ns);
     for (const child of Array.from(source.childNodes)) meta.appendChild(adopt(child));
     source.replaceWith(meta);
   }
@@ -121,12 +125,18 @@ function parseLocalTTML(text: string): LyricLine[] {
       used.add(key); p.setAttributeNS(ns, 'itunes:key', key);
     }
   });
-  return parseTTML(new XMLSerializer().serializeToString(document)).lines;
+  const romanLanguages = Array.from(document.getElementsByTagNameNS('*', 'transliteration'))
+    .filter(element => element.textContent?.trim())
+    .map(element => element.getAttributeNS('http://www.w3.org/XML/1998/namespace', 'lang') || '');
+  // Do not guess Cantonese merely because the main lyric contains Chinese characters.
+  const romanLanguage = romanLanguages.length && romanLanguages.every(language => language === romanLanguages[0]) ? romanLanguages[0] : undefined;
+  return { lines: parseTTML(new XMLSerializer().serializeToString(document)).lines, romanLanguage: romanLanguage || undefined };
 }
-export function parseLyrics(file: LyricFile, durationMs: number): { lines: LyricLine[]; plain: string; estimated: boolean } {
+export function parseLyrics(file: LyricFile, durationMs: number): { lines: LyricLine[]; plain: string; estimated: boolean; romanLanguage?: string } {
   if (!file.text.trim()) return { lines: [], plain: '', estimated: false };
   if (file.format === 'txt' || (file.format === 'lrc' && !/\[\d+:\d+/.test(file.text))) return { lines: [], plain: file.text, estimated: false };
-  let lines: LyricLine[] = file.format === 'ttml' ? parseLocalTTML(file.text)
+  const ttml = file.format === 'ttml' ? parseLocalTTML(file.text) : undefined;
+  let lines: LyricLine[] = ttml ? ttml.lines
     : file.format === 'yrc' ? parseYrc(file.text)
     : file.format === 'qrc' ? parseQrc(file.text)
     : file.format === 'krc' ? parseKrc(file.text)
@@ -157,5 +167,5 @@ export function parseLyrics(file: LyricFile, durationMs: number): { lines: Lyric
   if (!lines.length) throw new Error('没有识别到有效的时间轴歌词，请检查文件格式。');
   if (file.roman && file.romanFormat) lines = attachByTime(lines, file.roman, file.romanFormat, withRoman);
   if (file.translation && file.translationFormat) lines = attachByTime(lines, file.translation, file.translationFormat, withTranslation);
-  return { lines, plain: '', estimated };
+  return { lines, plain: '', estimated, ...(ttml?.romanLanguage ? { romanLanguage: ttml.romanLanguage } : {}) };
 }

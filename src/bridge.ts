@@ -73,6 +73,7 @@ window.music = Object.freeze({
   lyricsStatus: () => call('lyrics:status'),
   setAppleToken: (token: string) => call('lyrics:apple-token', { token }),
   setLyricPreference: (id: string, source: string) => call('lyrics:preference', { id, source }),
+  setLyricRuby: (id: string, ruby: NonNullable<Track['lyricRuby']>) => call('lyrics:ruby', { id, ruby }),
   reveal: (id: string) => call('track:reveal', { id }),
   openData: () => call('app:data'),
   notices: () => call('app:notices'),

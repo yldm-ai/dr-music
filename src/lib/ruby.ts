@@ -125,6 +125,25 @@ export function annotate(lines: LyricLine[], readings: Segment[][], below: boole
   });
 }
 
+// Distinctive Cantonese syllables also seen in unlabelled NetEase/QQ readings.
+// Include their nonstandard spellings (zoe / hvn), but avoid shared Mandarin syllables.
+const cantoneseClues = new Set('ngo heoi ceot zoek zoeng soeng seoi syu syut jyut jyun dim loi leoi loeng pui mun zoi goek gau zoe hvn syn'.split(' '));
+
+/** Honour declared language first; only infer Cantonese from several distinct phonetic clues. */
+export function sourceRomanKind(language?: string, lines: LyricLine[] = [], chineseOnly = false): 'jyutping' | 'pinyin' | 'romaji' | 'unknown' {
+  const parts = language?.toLowerCase().split(/[-_]/) || [];
+  if (parts.includes('jyutping') || parts.includes('yue')) return 'jyutping';
+  if (parts.includes('pinyin')) return 'pinyin';
+  if (parts[0] === 'ja') return 'romaji';
+  if (!chineseOnly) return 'romaji';
+  const text = lines.map(line => [line.romanLyric || '', ...line.words.map(word => word.romanWord || '')].join(' ')).join(' ');
+  const syllables = text.toLowerCase().match(/[a-z]+[1-6]?/g) || [];
+  const clues = syllables.map(word => word.replace(/[1-6]$/, '')).filter(word => cantoneseClues.has(word));
+  // A lone borrowed word or name is insufficient evidence. Main lyric text is never counted.
+  if (new Set(clues).size >= 3 && clues.length >= syllables.length * 0.08) return 'jyutping';
+  return 'unknown';
+}
+
 /** Whether the lyric came with its own romanization. */
 export const hasSourceRoman = (lines: LyricLine[]) => lines.some(line => line.romanLyric?.trim() || line.words.some(w => w.romanWord?.trim()));
 

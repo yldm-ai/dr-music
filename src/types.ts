@@ -7,6 +7,8 @@ export interface Track {
   coverRevision?: number; coverHash?: string; coverSource?: string; coverError?: string;
   /** Lyric source shown when several exist: 'local' or an online provider id. */
   lyricPreference?: string;
+  /** Per-song pronunciation choice; undefined follows the lyric defaults. */
+  lyricRuby?: '' | import('./lib/ruby').RubyChoice;
 }
 export interface Playlist { id: string; name: string; trackIds: string[] }
 export interface Settings { volume: number; repeat: 'off' | 'all' | 'one'; shuffle: boolean; lyricOffset: number; nowLayout?: 'default' | 'lyrics' | 'cover'; heroSheen?: boolean; startupTrack?: 'first' | 'random'; theme: 'dark' | 'light'; titleBar: 'direct2d' | 'system' | 'webview2'; lyricFont?: string; lyricWeight?: number; lyricScale?: number; chineseSearch?: boolean; lyricScript?: 'o' | 's' | 't'; lyricVariant?: 't' | 'tw' | 'twp' | 'hk'; lyricRuby?: '' | 'jyutping'; lyricRubyBelow?: boolean; lyricTranslate?: '' | 'zh' | 'en'; translateEndpoint?: string; translateModel?: string; translateProvider?: 'local' | 'niutrans'; onlineLyrics?: boolean; onlineTranslation?: boolean; onlineRomaji?: boolean; onlineJyutping?: boolean; lyricSource?: string; lyricProviders?: string[]; amllMirror?: string }
@@ -36,6 +38,7 @@ declare global {
       attachLyrics(id: string): Promise<LyricFile | null>;
       onlineLyrics(id: string, refresh?: boolean): Promise<Omit<OnlineLyricResult, 'source'>[]>;
       setLyricPreference(id: string, source: string): Promise<Track>;
+      setLyricRuby(id: string, ruby: NonNullable<Track['lyricRuby']>): Promise<Track>;
       lyricsStatus(): Promise<{ appleToken: boolean; providers: string[]; amllDefault: string }>;
       setAppleToken(token: string): Promise<{ appleToken: boolean }>;
       reveal(id: string): Promise<void>;

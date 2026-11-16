@@ -17,8 +17,9 @@ import { ContextMenu, type MenuItem } from './ContextMenu';
 import { FeatureStack, TiltCover, type StackCover } from './CoverEffects';
 import { Lyrics, lyricTypographyStyle, type TranslateState } from './Lyrics';
 import { parseLyrics } from './lib/lyrics';
-import { hasSourceRoman, type RubyChoice } from './lib/ruby';
+import { hasSourceRoman, sourceRomanKind, type RubyChoice, type RubyKind } from './lib/ruby';
 import { hasKana } from './lib/japanese';
+import { readingSources, findReadingSource, type ReadingKind } from './lib/rubySources';
 import { hasSourceTranslation, READINESS_LABEL, sourceLanguage, translateState as translateReadiness, translatorStatus, type TranslatorStatus } from './lib/translate';
 import { TranslationSettings } from './TranslationModels';
 import { Select } from './Select';
@@ -157,10 +158,13 @@ export function App() {
   const [fonts, setFonts] = useState<FontFamily[]>();
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<Progress>();
-  const [lyricFile, setLyricFile] = useState<LyricFile>({ text: '', source: '', format: 'lrc' });
+  const [localLyric, setLocalLyric] = useState<{ id: string; file: LyricFile }>();
+  // Never render the preceding song's lyrics while the new song's effects start.
+  const lyricFile = localLyric?.id === currentId ? localLyric?.file : undefined;
   const [lyricLoading, setLyricLoading] = useState(false);
   // AMLL TTML DB lyric for the current song: undefined while looking, null when there is none.
-  const [onlineLyrics, setOnlineLyrics] = useState<OnlineLyricResult[] | null>();
+  const [onlineLyric, setOnlineLyric] = useState<{ id?: string; results: OnlineLyricResult[] | null | undefined }>();
+  const onlineLyrics = onlineLyric?.id === currentId ? onlineLyric?.results : undefined;
   const [lyricMenu, setLyricMenu] = useState<{ x: number; y: number }>();
   const [appleToken, setAppleToken] = useState<{ set: boolean; draft: string }>({ set: false, draft: '' });
   const [mirrorDraft, setMirrorDraft] = useState<string>();
@@ -269,7 +273,7 @@ export function App() {
   const lyric = chooseLyric(lyricFile, onlineLyrics, current?.lyricPreference || library?.settings.lyricSource);
   const queueWindow = useMemo(() => virtualRange(queue.length, QUEUE_ROW_HEIGHT, queueViewport.scrollTop, queueViewport.height, QUEUE_OVERSCAN), [queue.length, queueViewport]);
   const settings = library?.settings;
-  const lookingOnline = !lyricFile.text && onlineLyrics === undefined && settings?.onlineLyrics !== false;
+  const lookingOnline = !lyricFile?.text && onlineLyrics === undefined && settings?.onlineLyrics !== false;
   useEffect(() => { if (settings?.titleBar !== 'webview2') { setCaptionHot(false); setCaptionActive(false); } }, [settings?.titleBar]);
   useEffect(() => {
     if (settings?.titleBar !== 'webview2' || !window.music) return;
@@ -384,23 +388,23 @@ export function App() {
   }, [audio, advance, notify]);
   useEffect(() => {
     const token = ++lyricRequest.current;
-    setLyricFile({ text: '', source: '', format: 'lrc' });
+    setLocalLyric(undefined);
     if (!currentId) { setLyricLoading(false); return; }
     setLyricLoading(true);
-    window.music.lyrics(currentId).then(file => { if (token === lyricRequest.current) setLyricFile(file); }).catch(e => { if (token === lyricRequest.current) notify(String(e)); }).finally(() => { if (token === lyricRequest.current) setLyricLoading(false); });
+    window.music.lyrics(currentId).then(file => { if (token === lyricRequest.current) setLocalLyric({ id: currentId, file }); }).catch(e => { if (token === lyricRequest.current) notify(String(e)); }).finally(() => { if (token === lyricRequest.current) setLyricLoading(false); });
   }, [currentId, current?.metadataPending, notify]);
   const loadOnlineLyrics = useCallback((id: string, refresh: boolean) => {
     const token = ++onlineRequest.current;
-    setOnlineLyrics(undefined);
+    setOnlineLyric({ id, results: undefined });
     window.music.onlineLyrics(id, refresh)
-      .then(results => { if (token === onlineRequest.current) setOnlineLyrics(results.map(r => ({ ...r, source: providerName(r.provider) }))); })
-      .catch(() => { if (token === onlineRequest.current) setOnlineLyrics(null); });
+      .then(results => { if (token === onlineRequest.current) setOnlineLyric({ id, results: results.map(r => ({ ...r, source: providerName(r.provider) })) }); })
+      .catch(() => { if (token === onlineRequest.current) setOnlineLyric({ id, results: null }); });
   }, []);
   const providerKey = (settings?.lyricProviders || []).join(",") + "|" + (settings?.amllMirror || "");
   useEffect(() => {
-    if (!currentId || settings?.onlineLyrics === false || !window.music) { ++onlineRequest.current; setOnlineLyrics(null); return; }
+    if (!currentId || settings?.onlineLyrics === false || !window.music) { ++onlineRequest.current; setOnlineLyric({ id: currentId, results: null }); return; }
     // Matching uses tag metadata, so wait for it rather than search by file name.
-    if (current?.metadataPending) { ++onlineRequest.current; setOnlineLyrics(undefined); return; }
+    if (current?.metadataPending) { ++onlineRequest.current; setOnlineLyric({ id: currentId, results: undefined }); return; }
     loadOnlineLyrics(currentId, false);
   }, [currentId, current?.title, current?.artist, current?.album, current?.metadataPending, settings?.onlineLyrics, providerKey, loadOnlineLyrics]);
   const chooseLyricSource = (source: LyricSource) => {
@@ -455,7 +459,7 @@ export function App() {
           setQueue(q => q.filter(id => valid.has(id)));
           setSelection(s => s.filter(id => valid.has(id)));
           const current = stateRef.current.currentId;
-          if (current && !valid.has(current)) { ++lyricRequest.current; audio.pause(); audio.removeAttribute('src'); audio.load(); setCurrentId(undefined); setPlaying(false); setStarted(false); setDuration(0); setNowPlaying(false); setLyricFile({ text: '', source: '', format: 'lrc' }); }
+          if (current && !valid.has(current)) { ++lyricRequest.current; audio.pause(); audio.removeAttribute('src'); audio.load(); setCurrentId(undefined); setPlaying(false); setStarted(false); setDuration(0); setNowPlaying(false); setLocalLyric(undefined); }
         }
         const summary = kind === 'rescan' ? `重新扫描完成，共 ${result.imported} 首音乐${result.removed ? `，已移除 ${result.removed} 首不存在的歌曲` : ''}` : `已加入 ${result.imported} 首音乐`;
         notify(`${summary}，歌曲信息将在后台补齐${result.warnings.length ? `，${result.warnings.length} 个文件存在读取问题：${result.warnings.slice(0, 2).join('；')}` : ''}`);
@@ -466,7 +470,7 @@ export function App() {
   const attachLyrics = async () => {
     if (!currentId) return;
     const id = currentId; const token = ++lyricRequest.current;
-    try { const file = await window.music.attachLyrics(id); if (file && stateRef.current.currentId === id && token === lyricRequest.current) { setLyricFile(file); chooseLyricSource('local'); notify(`已载入 ${file.source}`); } }
+    try { const file = await window.music.attachLyrics(id); if (file && stateRef.current.currentId === id && token === lyricRequest.current) { setLocalLyric({ id, file }); chooseLyricSource('local'); notify(`已载入 ${file.source}`); } }
     catch (error) { notify(String(error)); }
   };
   const toggleQueue = () => {
@@ -523,35 +527,63 @@ export function App() {
     if (state.state === 'error' && translateError.current !== state.message) notify(`翻译失败：${state.message}`);
     if (state.state === 'error') translateError.current = state.message; else if (state.state === 'done') translateError.current = '';
   }, [notify]);
-  // 音 / 译 picked by hand apply to the song being played only. Until picked (undefined), a song starts
-  // with its defaults: an online lyric's own translation / romanization / 粤拼 when it has them and
-  // 设置 → 音乐库 → 歌词 keeps them on; otherwise neither.
-  type LyricTools = { id?: string; ruby?: '' | RubyChoice; translate?: '' | 'zh' | 'en' | 'source'; offset: number };
+  // Ruby is persisted per track; translation and offset remain session choices.
+  // A track without a saved ruby choice follows the online lyric defaults.
+  type LyricTools = { id?: string; translate?: '' | 'zh' | 'en' | 'source'; offset: number };
   const [lyricTools, setLyricTools] = useState<LyricTools>({ offset: 0 });
   const ownTools = lyricTools.id === current?.id ? lyricTools : undefined;
-  // 歌词偏移, like 音 / 译, is for the song playing only: another song starts at 0.
   const lyricOffset = ownTools?.offset ?? 0;
-  // Leaving a song forgets its picks, so coming back to it starts from the defaults too.
   useEffect(() => setLyricTools(tools => tools.id === undefined || tools.id === currentId ? tools : { offset: 0 }), [currentId]);
   const setLyricTool = (patch: Partial<Omit<LyricTools, 'id'>>) => setLyricTools(tools => ({ ...(tools.id === current?.id ? tools : { offset: 0 }), ...patch, id: current?.id }));
+  const rubySaveRequest = useRef(new Map<string, number>());
+  const setRubyChoice = (ruby: '' | RubyChoice) => {
+    if (!current) return;
+    const { id, lyricRuby: previousRuby } = current;
+    const request = (rubySaveRequest.current.get(id) ?? 0) + 1;
+    rubySaveRequest.current.set(id, request);
+    setLibrary(previous => previous && { ...previous, tracks: previous.tracks.map(track => track.id === id ? { ...track, lyricRuby: ruby } : track) });
+    void window.music.setLyricRuby(id, ruby).catch(error => {
+      if (rubySaveRequest.current.get(id) === request) {
+        setLibrary(previous => previous && { ...previous, tracks: previous.tracks.map(track => track.id === id ? { ...track, lyricRuby: previousRuby } : track) });
+      }
+      notify(`注音设置保存失败：${String(error)}`);
+    });
+  };
   // Which guides fit this lyric: 粤语 for Chinese (Han without kana), 罗马音 / 假名 for Japanese, and the
   // lyric's own romanization (TTML, NetEase, QQ Music, Kugou) when it has one.
   const lyricHasKana = useMemo(() => !!lyric.file && hasKana(lyric.file.text), [lyric.file]);
   // The lyric's own romanization / translation (TTML, LRC pairs, NetEase, QQ Music, Kugou), offered in 音 / 译.
-  const sourceLines = useMemo(() => { try { return lyric.file?.text ? parseLyrics(lyric.file, 0).lines : []; } catch { return []; } }, [lyric.file]);
+  const parsedSource = useMemo(() => { try { return lyric.file?.text ? parseLyrics(lyric.file, 0) : undefined; } catch { return undefined; } }, [lyric.file]);
+  const sourceLines = parsedSource?.lines || [];
+  const inferredReading = sourceRomanKind(parsedSource?.romanLanguage, sourceLines, lyricHasHan && !lyricHasKana);
+  const sourceReading: ReadingKind = inferredReading === 'unknown' ? 'romaji' : inferredReading;
   const lyricHasRoman = useMemo(() => hasSourceRoman(sourceLines), [sourceLines]);
+  const sourceIsJyutping = lyricHasRoman && sourceReading === 'jyutping';
   const lyricHasTranslation = useMemo(() => hasSourceTranslation(sourceLines), [sourceLines]);
-  // An online lyric's own romanization is 粤拼 for Chinese lyrics (Han without kana), else 罗马音.
+  // Follow the reading system declared by the source, independently of the lyric's script.
   const lyricOnline = !!lyric.source && lyric.source !== 'local';
-  const ownRomanIsJyutping = lyricHasHan && !lyricHasKana;
-  const defaultRuby: '' | RubyChoice = lyricOnline && lyricHasRoman && (ownRomanIsJyutping ? settings?.onlineJyutping !== false : settings?.onlineRomaji !== false) ? 'romaji-online' : '';
+  const defaultRuby: '' | RubyChoice = lyricOnline && lyricHasRoman && (sourceIsJyutping ? settings?.onlineJyutping !== false : settings?.onlineRomaji !== false) ? 'romaji-online' : '';
   const defaultTranslate: '' | 'source' = lyricOnline && lyricHasTranslation && settings?.onlineTranslation !== false ? 'source' : '';
-  const rubyChoice = ownTools?.ruby ?? defaultRuby;
+  const rubyChoice = current?.lyricRuby ?? defaultRuby;
   const translatePick = ownTools?.translate ?? defaultTranslate;
   const translateChoice = translatePick === 'source' && !lyricHasTranslation ? '' : translatePick;
-  const rubyFits = (choice: RubyChoice) => choice === 'jyutping' ? lyricHasHan && !lyricHasKana : choice === 'romaji-online' ? lyricHasRoman : lyricHasKana;
-  const lyricRuby = useMemo(() => rubyChoice && rubyFits(rubyChoice) ? { kind: rubyChoice, below: !!settings?.lyricRubyBelow } : undefined, [rubyChoice, settings?.lyricRubyBelow, lyricHasHan, lyricHasKana, lyricHasRoman]);
-  const rubyAvailable = rubyFits('jyutping') || lyricHasKana || lyricHasRoman;
+  const canGenerateRomaji = lyricHasKana || /^ja(?:-|$)/i.test(parsedSource?.romanLanguage || '');
+  const rubyFits = (choice: RubyChoice) => choice === 'jyutping' ? lyricHasHan && !lyricHasKana : choice === 'romaji-online' ? lyricHasRoman : choice === 'romaji' ? canGenerateRomaji : lyricHasKana;
+  const lyricRuby = useMemo(() => rubyChoice && rubyFits(rubyChoice) ? { kind: rubyChoice, below: !!settings?.lyricRubyBelow } : undefined, [rubyChoice, settings?.lyricRubyBelow, lyricHasHan, lyricHasKana, lyricHasRoman, canGenerateRomaji]);
+  const availableReadings = useMemo(() => readingSources(lyricFile, onlineLyrics), [lyricFile, onlineLyrics]);
+  const sourceRuby = lyricRuby?.kind === 'romaji-online';
+  const sourceItems = (kind: ReadingKind, generated?: RubyKind): MenuItem[] => {
+    const local = findReadingSource(availableReadings, kind, 'local');
+    const online = findReadingSource(availableReadings, kind, 'online', lyric.source);
+    const useSource = (source: string) => { chooseLyricSource(source); setRubyChoice('romaji-online'); };
+    return [
+      { label: '本地', disabled: !local, checked: sourceRuby && lyric.source === 'local' && sourceReading === kind, onSelect: () => local && useSource(local.source) },
+      { label: '在线', disabled: !online, checked: sourceRuby && lyricOnline && sourceReading === kind, onSelect: () => online && useSource(online.source) },
+      { label: '本地生成', disabled: !generated, checked: !!generated && lyricRuby?.kind === generated, onSelect: () => generated && setRubyChoice(generated) },
+    ];
+  };
+  const hasReading = (kind: ReadingKind) => availableReadings.some(source => source.kind === kind);
+  const rubyAvailable = rubyFits('jyutping') || lyricHasKana || lyricHasRoman || availableReadings.length > 0;
   const rubyError = useRef('');
   const onRubyError = useCallback((message: string) => { if (rubyError.current !== message) notify(`注音失败：${message}`); rubyError.current = message; }, [notify]);
   const folded = useRef(new Map<string, { key: string; text: string }>());
@@ -717,7 +749,7 @@ export function App() {
       ++lyricRequest.current;
       audio.pause(); audio.removeAttribute('src'); audio.load();
       setCurrentId(undefined); setPlaying(false); setStarted(false); setDuration(0); setNowPlaying(false);
-      setLyricFile({ text: '', source: '', format: 'lrc' }); setLyricLoading(false);
+      setLocalLyric(undefined); setLyricLoading(false);
     }
     setBusy(true);
     // Queue the mutation with settings/favorites writes, while the UI is
@@ -997,7 +1029,7 @@ export function App() {
       {menu && <ContextMenu items={menu.playlistsOnly ? playlistMenu(menu.ids) : menuItems(menu.ids, menu.fromNowPlaying)} point={menu.point} label={menu.playlistsOnly ? '添加到歌单' : menu.ids.length > 1 ? `已选 ${menu.ids.length} 首歌曲菜单` : `${trackById.get(menu.ids[0])?.title || ''} 歌曲菜单`} onClose={() => setMenu(undefined)}/>}
       {lyricMenu && current && <ContextMenu label="歌词来源" point={lyricMenu} onClose={() => setLyricMenu(undefined)} items={[
         { kind: 'header', label: '歌词来源' },
-        ...(lyricFile.text ? [{ label: '本地歌词', icon: FileMusic, checked: lyric.source === 'local', onSelect: () => chooseLyricSource('local') } as MenuItem] : []),
+        ...(lyricFile?.text ? [{ label: '本地歌词', icon: FileMusic, checked: lyric.source === 'local', onSelect: () => chooseLyricSource('local') } as MenuItem] : []),
         ...lyric.results.map((r): MenuItem => ({ label: r.source, icon: Globe, checked: lyric.source === r.provider, shortcut: `${r.score}%`, onSelect: () => chooseLyricSource(r.provider) })),
         ...(lookingOnline ? [{ kind: 'header', label: '正在查找在线歌词…' } as MenuItem] : settings?.onlineLyrics !== false && !lyric.results.length ? [{ kind: 'header', label: '没有找到在线歌词' } as MenuItem] : []),
         { kind: 'separator' },
@@ -1017,15 +1049,15 @@ export function App() {
       ]}/>}
       {rubyMenu && <ContextMenu label="注音" point={rubyMenu} onClose={() => setRubyMenu(undefined)} items={[
         { kind: 'header', label: '注音' },
-        { label: '不显示', checked: !lyricRuby, onSelect: () => setLyricTool({ ruby: '' }) },
-        ...(rubyFits('jyutping') ? [{ label: '粤语（粤拼）', checked: lyricRuby?.kind === 'jyutping', onSelect: () => setLyricTool({ ruby: 'jyutping' }) } as MenuItem] : []),
-        // 罗马音: a submenu only when the lyric has its own romanization besides the local reading.
-        ...(lyricHasKana && lyricHasRoman ? [{ label: '罗马音', checked: lyricRuby?.kind === 'romaji' || lyricRuby?.kind === 'romaji-online', submenu: [
-          { label: lyric.source === 'local' ? '歌词自带' : '在线', checked: lyricRuby?.kind === 'romaji-online', onSelect: () => setLyricTool({ ruby: 'romaji-online' }) },
-          { label: '本地', checked: lyricRuby?.kind === 'romaji', onSelect: () => setLyricTool({ ruby: 'romaji' }) },
-        ] } as MenuItem]
-          : lyricHasKana || lyricHasRoman ? [{ label: '罗马音', checked: lyricRuby?.kind === 'romaji' || lyricRuby?.kind === 'romaji-online', onSelect: () => setLyricTool({ ruby: lyricHasKana ? 'romaji' : 'romaji-online' }) } as MenuItem] : []),
-        ...(lyricHasKana ? [{ label: '假名注音', checked: lyricRuby?.kind === 'kana', onSelect: () => setLyricTool({ ruby: 'kana' }) } as MenuItem] : []),
+        { label: '不显示', checked: !lyricRuby, onSelect: () => setRubyChoice('') },
+        ...(rubyFits('jyutping') || hasReading('jyutping') ? [{ label: '粤语（粤拼）', checked: lyricRuby?.kind === 'jyutping' || sourceRuby && sourceIsJyutping,
+          ...(hasReading('jyutping') ? { submenu: sourceItems('jyutping', rubyFits('jyutping') ? 'jyutping' : undefined) } : { onSelect: () => setRubyChoice('jyutping') }),
+        } as MenuItem] : []),
+        ...(canGenerateRomaji || hasReading('romaji') ? [{ label: '罗马音', checked: lyricRuby?.kind === 'romaji' || sourceRuby && sourceReading === 'romaji',
+          ...(hasReading('romaji') ? { submenu: sourceItems('romaji', canGenerateRomaji ? 'romaji' : undefined) } : { onSelect: () => setRubyChoice('romaji') }),
+        } as MenuItem] : []),
+        ...(hasReading('pinyin') ? [{ label: '拼音', checked: sourceRuby && sourceReading === 'pinyin', submenu: sourceItems('pinyin') } as MenuItem] : []),
+        ...(lyricHasKana ? [{ label: '假名注音', checked: lyricRuby?.kind === 'kana', onSelect: () => setRubyChoice('kana') } as MenuItem] : []),
       ]}/>}
       {scriptMenu && <ContextMenu label="繁体标准" point={scriptMenu} onClose={() => setScriptMenu(undefined)} items={[
         { kind: 'header', label: '繁体标准' },
@@ -1067,14 +1099,14 @@ export function App() {
             <div className="now-right">
               <AnimatePresence mode="wait" initial={false}>
                 <motion.div key={lyric.file ? `lyrics:${current.id}:${lyric.source}:${lyric.file.source}` : `empty:${current.id}:${lyricLoading || lookingOnline}`} className="lyric-content" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={textTransition}>
-                  {shownLyric ? <Lyrics file={shownLyric} audio={audio} offset={lyricOffset} active={nowPlaying} onSeek={seek} typography={{ font: settings?.lyricFont, weight: settings?.lyricWeight, scale: settings?.lyricScale }} ruby={lyricRuby} onRubyError={onRubyError} translate={translateChoice || undefined} onTranslateState={onTranslateState}/> : <div className="no-lyrics"><AudioLines size={38}/><h3>{lyricLoading ? '正在读取歌词' : lookingOnline ? '正在查找在线歌词' : '让文字也跟着旋律'}</h3><p>自动读取歌曲旁的同名歌词文件{settings?.onlineLyrics !== false ? '，没有时从 AMLL TTML DB 查找' : ''}<br/>也可以手动关联 LRC、TTML、YRC 或 TXT</p><PressableButton className="secondary-button" onClick={() => void attachLyrics()}><Plus size={16}/>关联歌词</PressableButton></div>}
+                  {shownLyric ? <Lyrics key={currentId} file={shownLyric} audio={audio} offset={lyricOffset} active={nowPlaying} onSeek={seek} typography={{ font: settings?.lyricFont, weight: settings?.lyricWeight, scale: settings?.lyricScale }} ruby={lyricRuby} onRubyError={onRubyError} translate={translateChoice || undefined} onTranslateState={onTranslateState}/> : <div className="no-lyrics"><AudioLines size={38}/><h3>{lyricLoading ? '正在读取歌词' : lookingOnline ? '正在查找在线歌词' : '让文字也跟着旋律'}</h3><p>自动读取歌曲旁的同名歌词文件{settings?.onlineLyrics !== false ? '，没有时从 AMLL TTML DB 查找' : ''}<br/>也可以手动关联 LRC、TTML、YRC 或 TXT</p><PressableButton className="secondary-button" onClick={() => void attachLyrics()}><Plus size={16}/>关联歌词</PressableButton></div>}
                 </motion.div>
               </AnimatePresence>
               <div className="lyric-toolbar">
-                {(() => { const online = lyric.source && lyric.source !== 'local' ? lyric.results.find(r => r.provider === lyric.source) : undefined; return <PressableButton className="text-button" data-tooltip={online ? `${online.source} · ${online.title} - ${online.artists}（匹配 ${online.score}%）` : undefined} onClick={() => void attachLyrics()}>{online ? <Globe size={15}/> : <FileMusic size={15}/>}{online ? online.source : lyricFile.source || '选择歌词'}</PressableButton>; })()}
+                {(() => { const online = lyric.source && lyric.source !== 'local' ? lyric.results.find(r => r.provider === lyric.source) : undefined; return <PressableButton className="text-button" data-tooltip={online ? `${online.source} · ${online.title} - ${online.artists}（匹配 ${online.score}%）` : undefined} onClick={() => void attachLyrics()}>{online ? <Globe size={15}/> : <FileMusic size={15}/>}{online ? online.source : lyricFile?.source || '选择歌词'}</PressableButton>; })()}
                 <div>
                   {lyricHasHan && chineseAvailable && <div className="script-switch" role="group" aria-label="歌词写法">{(['o', 's', 't'] as const).map(script => <button key={script} type="button" className="script-option" aria-pressed={lyricScript === script} data-tooltip={script === 'o' ? '歌词原文' : script === 's' ? '转成简体' : `转成${TRADITIONAL_NAMES[lyricVariant]}`} onClick={() => setSettings({ lyricScript: script })}>{script === 'o' ? '原' : script === 's' ? '简' : '繁'}</button>)}<button type="button" className="script-more" aria-label="选择繁体标准" aria-haspopup="menu" aria-expanded={!!scriptMenu} onClick={event => { const box = event.currentTarget.getBoundingClientRect(); setScriptMenu(scriptMenu ? undefined : { x: box.left, y: box.top - 6 }); }}><ChevronDown size={12}/></button></div>}
-                  {(lyric.switchable || settings?.onlineLyrics !== false) && <button type="button" className="lyric-source-button" aria-haspopup="menu" aria-expanded={!!lyricMenu} aria-label="歌词来源" onClick={event => { const box = event.currentTarget.getBoundingClientRect(); setLyricMenu(lyricMenu ? undefined : { x: box.left, y: box.top - 6 }); }}>{lookingOnline ? '查找中…' : lyric.results.length ? `${lyric.results.length + (lyricFile.text ? 1 : 0)} 个来源` : '来源'}<ChevronDown size={13}/></button>}
+                  {(lyric.switchable || settings?.onlineLyrics !== false) && <button type="button" className="lyric-source-button" aria-haspopup="menu" aria-expanded={!!lyricMenu} aria-label="歌词来源" onClick={event => { const box = event.currentTarget.getBoundingClientRect(); setLyricMenu(lyricMenu ? undefined : { x: box.left, y: box.top - 6 }); }}>{lookingOnline ? '查找中…' : lyric.results.length ? `${lyric.results.length + (lyricFile?.text ? 1 : 0)} 个来源` : '来源'}<ChevronDown size={13}/></button>}
                   <PressableButton data-tooltip="歌词延后 0.5 秒" onClick={() => setLyricTool({ offset: Math.max(-30000, lyricOffset - 500) })}>−</PressableButton>
                   <motion.span data-tooltip="正值让歌词提前显示，只对当前歌曲有效" key={lyricOffset} initial={{ opacity: .55, y: 1 }} animate={{ opacity: 1, y: 0 }} transition={quickTextTransition}>偏移 {(lyricOffset / 1000).toFixed(1)}s</motion.span>
                   <PressableButton data-tooltip="歌词提前 0.5 秒" onClick={() => setLyricTool({ offset: Math.min(30000, lyricOffset + 500) })}>+</PressableButton>

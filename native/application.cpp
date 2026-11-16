@@ -424,6 +424,7 @@ void Application::receive(const Json &request) {
                 }
                 else if (method == "lyrics:get") reply(id, library_.lyrics(params.at("id").get<std::string>()));
                 else if (method == "lyrics:preference") reply(id, library_.set_lyric_preference(params.at("id").get<std::string>(), params.at("source").get<std::string>()));
+                else if (method == "lyrics:ruby") reply(id, library_.set_lyric_ruby(params.at("id").get<std::string>(), params.at("ruby").get<std::string>()));
                 else if (method == "app:notices") reply(id, read_text(assets_.parent_path() / L"THIRD_PARTY_NOTICES.md"));
                 else if (method == "chinese:status") reply(id, {{"available", chinese_.available()}});
                 else if (method == "chinese:simplify") {

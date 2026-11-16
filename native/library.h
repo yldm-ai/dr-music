@@ -30,6 +30,7 @@ public:
     Json attach_lyrics(const std::string &id, const fs::path &file);
     /** Which lyric source a track shows when several exist: "local", a provider id, or "" (automatic). */
     Json set_lyric_preference(const std::string &id, const std::string &source);
+    Json set_lyric_ruby(const std::string &id, const std::string &ruby);
     const fs::path &directory() const { return directory_; }
     static Json defaults();
 private:

@@ -308,6 +308,9 @@ Json Library::enrich_metadata(const Json &candidate) {
     // A removal or a newer import invalidates old work before it can write a
     // cover or put a track back. Keep lyrics attached during the read as well.
     if (current.contains("lyricPath")) t["lyricPath"] = current["lyricPath"];
+    for (const auto *field : {"lyricRuby", "lyricPreference"}) {
+        if (current.contains(field)) t[field] = current[field]; else t.erase(field);
+    }
     if (cover.image) {
         try {
             const auto hash = content_hash(cover.image->bytes);
@@ -468,6 +471,18 @@ Json Library::set_lyric_preference(const std::string &id, const std::string &sou
     if (found == track_index_.end()) throw std::runtime_error("歌曲不存在");
     auto next = state_; auto &t = next["tracks"][found->second];
     if (source.empty()) t.erase("lyricPreference"); else t["lyricPreference"] = source;
+    write_atomic(directory_ / L"library.json", next.dump(2, ' ', false, Json::error_handler_t::replace));
+    state_ = std::move(next);
+    return state_["tracks"][found->second];
+}
+Json Library::set_lyric_ruby(const std::string &id, const std::string &ruby) {
+    if (ruby != "" && ruby != "jyutping" && ruby != "romaji" && ruby != "kana" && ruby != "romaji-online") throw std::runtime_error("无效的歌词注音");
+    std::lock_guard lock(mutex_);
+    const auto found = track_index_.find(id);
+    if (found == track_index_.end()) throw std::runtime_error("歌曲不存在");
+    auto next = state_;
+    // Empty explicitly disables ruby; an absent field follows the defaults.
+    next["tracks"][found->second]["lyricRuby"] = ruby;
     write_atomic(directory_ / L"library.json", next.dump(2, ' ', false, Json::error_handler_t::replace));
     state_ = std::move(next);
     return state_["tracks"][found->second];

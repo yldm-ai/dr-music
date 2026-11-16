@@ -278,6 +278,21 @@ void library_test(const dr::fs::path &root) {
     library.flush_metadata(); tracks = library.snapshot()["tracks"];
     auto t = tracks[0]; const auto id = t["id"].get<std::string>(); CHECK(t["artist"] == "测试艺术家"); CHECK(t["duration"].get<double>() >= 15.9); CHECK(id.size() == 24);
     CHECK(library.lyrics(id)["text"] == "[00:01.00]本地歌词");
+    CHECK(!library.track(id).contains("lyricRuby"));
+    for (const auto *choice : {"jyutping", "romaji", "kana", "romaji-online", ""}) {
+        CHECK(library.set_lyric_ruby(id, choice)["lyricRuby"] == choice);
+        dr::Library reopened(root / L"data"); reopened.load();
+        CHECK(reopened.track(id)["lyricRuby"] == choice);
+    }
+    CHECK(throws([&] { library.set_lyric_ruby(id, "invalid"); }));
+    CHECK(throws([&] { library.set_lyric_ruby("missing", "jyutping"); }));
+    CHECK(library.track(id)["lyricRuby"] == "");
+    library.set_lyric_ruby(id, "jyutping");
+    auto refreshed = library.import_paths({audio});
+    for (const auto &candidate : refreshed["pending"]) library.enrich_metadata(candidate);
+    library.flush_metadata();
+    CHECK(library.track(id)["lyricRuby"] == "jyutping");
+
     library.update({{"favorites", {id, id, "unknown"}}, {"playlists", {{{"id", "mix"}, {"name", "Mix"}, {"trackIds", {id}}}}}, {"settings", {{"volume", 20}, {"theme", "light"}, {"titleBar", "system"}}}});
     dr::Library fresh(root / L"data"); fresh.load(); auto saved = fresh.snapshot(); CHECK(saved["favorites"].size() == 1); CHECK(saved["settings"]["volume"] == 1); CHECK(saved["settings"]["titleBar"] == "system");
     fresh.update({{"settings", {{"titleBar", "webview2"}}}});

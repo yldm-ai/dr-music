@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { LyricLine } from '@applemusic-like-lyrics/core';
-import { annotate, hasSourceRoman, lineText, loadReader, sourceRoman, type Segment } from '../src/lib/ruby';
+import { annotate, hasSourceRoman, lineText, loadReader, sourceRoman, sourceRomanKind, type Segment } from '../src/lib/ruby';
 
 const line = (words: [string, number, number][]): LyricLine => ({
   words: words.map(([word, startTime, endTime]) => ({ word, startTime, endTime })),
@@ -61,4 +61,40 @@ test("the lyric's own romanization is hidden unless chosen, then shown above the
   const [w2] = sourceRoman([worded], 'below');
   assert.equal(w2.romanLyric, 'kimi no');
   assert.equal(w2.words.some(w => w.romanWord || w.ruby), false);
+});
+
+test('source reading labels follow explicit language metadata, without treating every Chinese reading as Cantonese', () => {
+  assert.equal(sourceRomanKind('zh-Latn-jyutping'), 'jyutping');
+  assert.equal(sourceRomanKind('yue-Latn'), 'jyutping');
+  assert.equal(sourceRomanKind('zh-Latn-pinyin'), 'pinyin');
+  assert.equal(sourceRomanKind('ja-Latn'), 'romaji');
+  assert.equal(sourceRomanKind('zh-Latn'), 'romaji');
+  assert.equal(sourceRomanKind(), 'romaji');
+});
+
+test('unlabelled Chinese provider readings use several Cantonese clues, and otherwise keep a neutral label', () => {
+  const withReading = (romanLyric: string): LyricLine[] => [{ ...line([['中文歌词', 0, 1000]]), romanLyric }];
+  const netease = withReading('mei mu lui ci hu ba ci hu wan kei kao sam mo sv ba co pui zoe nei hing fu zoe yin hvn dou sun bin gong ba co mun zu nei di wan yao zam ho yi bou zu yv loi yv gan koe cong ba zi cu');
+  assert.equal(sourceRomanKind(undefined, netease, true), 'jyutping');
+  assert.equal(sourceRomanKind(undefined, withReading('mei muk leoi ci huk bat ci huk waan kei kau sam mo syut bat ceot pui zoek nei hing fu zoek yin hyun'), true), 'jyutping');
+  assert.equal(sourceRomanKind(undefined, withReading('wo de xin li zhi you ni pei zhe ni zai ye li chang ge'), true), 'unknown');
+  assert.equal(sourceRomanKind(undefined, withReading('ngo hello world'), true), 'unknown');
+  assert.equal(sourceRomanKind(undefined, withReading('gei hei hou mou'), true), 'unknown');
+  assert.equal(sourceRomanKind(undefined, withReading('kimi no namae o yobu'), false), 'romaji');
+  assert.equal(sourceRomanKind('zh-Latn-pinyin', netease, true), 'pinyin');
+  assert.equal(sourceRomanKind(undefined, [line([['ngo mou heoi', 0, 1000]])], true), 'unknown');
+});
+
+test('local-file and online reading sources remain distinct from local generation', async () => {
+  const { readingSources, findReadingSource } = await import('../src/lib/rubySources');
+  const japanese = { format: 'lrc', source: '', text: '[00:01.00]君の名前', roman: '[00:01.00]kimi no namae', romanFormat: 'lrc' };
+  const online = (provider: string) => ({ ...japanese, provider, title: '', artists: '', album: '', score: 100, reference: '' });
+  const sources = readingSources(japanese, [online('qq'), online('netease')]);
+  assert.equal(findReadingSource(sources, 'romaji', 'local')?.source, 'local');
+  assert.equal(findReadingSource(sources, 'romaji', 'online', 'netease')?.source, 'netease');
+  assert.equal(findReadingSource(sources, 'romaji', 'online', 'absent')?.source, 'qq');
+  const onlineOnly = readingSources(undefined, [online('qq')]);
+  assert.equal(findReadingSource(onlineOnly, 'romaji', 'local'), undefined);
+  assert.equal(findReadingSource(onlineOnly, 'romaji', 'online')?.source, 'qq');
+  assert.deepEqual(readingSources({ ...japanese, roman: '' }, null), []);
 });

@@ -8,10 +8,10 @@ import { AnimatePresence, motion, MotionConfig, type Transition } from 'motion/r
 import { Music2, Library as LibraryIcon, Heart, Disc3, Mic2, FolderPlus, Plus, Search, Play, Pause, SkipBack, SkipForward, Shuffle, Repeat, Repeat1, ListMusic, Maximize2, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Settings2, MoreHorizontal, FolderOpen, RefreshCw, X, Check, FileMusic, ArrowUpRight, Headphones, Trash2, Pencil, ListPlus, AudioLines, Folder, FolderSearch, Copy, ListX, Globe, Languages } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { Library, Track, Settings, LyricFile, Progress, Playlist, FontFamily, OnlineLyricResult } from './types';
-import { chooseLyric, providerName, LYRIC_PROVIDERS, type LyricSource } from './lib/lyricSource';
+import { chooseLyric, orderedProviders, providerName, LYRIC_PROVIDERS, type LyricSource } from './lib/lyricSource';
 import { formatTime, nextTrack } from './lib/queue';
 import { virtualRange } from './lib/virtual';
-import { withoutFolder, withMetadata, musicFolders } from './lib/library';
+import { asSort, musicFolders, sortTracks, TRACK_SORTS, withDisplayTitles, withMetadata, withoutFolder } from './lib/library';
 import { searchText, hasHan, matchesQuery } from './lib/search';
 import { ContextMenu, type MenuItem } from './ContextMenu';
 import { FeatureStack, TiltCover, type StackCover } from './CoverEffects';
@@ -20,7 +20,7 @@ import { parseLyrics } from './lib/lyrics';
 import { hasSourceRoman, sourceRomanKind, type RubyChoice, type RubyKind } from './lib/ruby';
 import { hasKana } from './lib/japanese';
 import { readingSources, findReadingSource, type ReadingKind } from './lib/rubySources';
-import { hasSourceTranslation, READINESS_LABEL, sourceLanguage, translateState as translateReadiness, translatorStatus, type TranslatorStatus } from './lib/translate';
+import { DEFAULT_MODEL, hasSourceTranslation, modelSize, READINESS_LABEL, sourceLanguage, translateState as translateReadiness, translatorStatus, type TranslatorStatus } from './lib/translate';
 import { TranslationSettings } from './TranslationModels';
 import { Select } from './Select';
 import { onCaptionButton, onWindowPointer, onWindowState } from './bridge';
@@ -111,7 +111,6 @@ export function App() {
   const [page, setPage] = useState('songs');
   const [group, setGroup] = useState('');
   const [query, setQuery] = useState('');
-  const [sort, setSort] = useState('added');
   const [limit, setLimit] = useState(100);
   const [currentId, setCurrentId] = useState<string>();
   const [queue, setQueue] = useState<string[]>([]);
@@ -186,7 +185,7 @@ export function App() {
   const removingFolder = useRef<string | undefined>(undefined);
   const projectLibrary = useCallback((data: Library) => {
     for (const { patch } of pendingWrites.current) data = { ...data, ...patch, settings: { ...data.settings, ...patch.settings } };
-    return removingFolder.current ? withoutFolder(data, removingFolder.current) : data;
+    return withDisplayTitles(removingFolder.current ? withoutFolder(data, removingFolder.current) : data);
   }, []);
   const notify = useCallback((message: string) => setToast(message), []);
   useEffect(() => { if (settingsOpen && window.music) window.music.lyricsStatus().then(status => setAppleToken(t => ({ ...t, set: status.appleToken }))).catch(() => {}); }, [settingsOpen]);
@@ -270,7 +269,7 @@ export function App() {
   const trackById = useMemo(() => new Map((library?.tracks || []).map(track => [track.id, track])), [library?.tracks]);
   const current = currentId ? trackById.get(currentId) : undefined;
   // A song's own pick wins; otherwise the default source from 设置 → 音乐库 → 歌词.
-  const lyric = chooseLyric(lyricFile, onlineLyrics, current?.lyricPreference || library?.settings.lyricSource);
+  const lyric = chooseLyric(lyricFile, onlineLyrics, current?.lyricPreference || library?.settings.lyricSource, library?.settings.lyricProviderOrder);
   const queueWindow = useMemo(() => virtualRange(queue.length, QUEUE_ROW_HEIGHT, queueViewport.scrollTop, queueViewport.height, QUEUE_OVERSCAN), [queue.length, queueViewport]);
   const settings = library?.settings;
   const lookingOnline = !lyricFile?.text && onlineLyrics === undefined && settings?.onlineLyrics !== false;
@@ -325,6 +324,12 @@ export function App() {
     });
   }, [notify, projectLibrary]);
   const setSettings = useCallback((patch: Partial<Settings>) => persist({ settings: patch }), [persist]);
+  // 歌曲排序 is remembered; the play queue follows the order the list shows.
+  const sort = asSort(settings?.librarySort);
+  // 歌词源顺序: the providers' priority, changed with the arrows in settings.
+  const providerOrder = orderedProviders(settings?.lyricProviderOrder);
+  const moveProvider = (index: number, step: -1 | 1) => { const ids = providerOrder.map(p => p.id); [ids[index], ids[index + step]] = [ids[index + step], ids[index]]; setSettings({ lyricProviderOrder: ids }); };
+  const setSort = (value: string) => setSettings({ librarySort: asSort(value) });
   const favorite = useCallback((id: string) => {
     const ids = stateRef.current.library?.favorites || [];
     persist({ favorites: ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id] });
@@ -346,8 +351,9 @@ export function App() {
     if (!audio.src) {
       // Nothing loaded yet: the song chosen at startup (or another one picked without playing), else the first one.
       const { library, currentId } = stateRef.current;
-      const chosen = currentId && library?.tracks.some(t => t.id === currentId) ? currentId : library?.tracks[0]?.id;
-      if (chosen) playTrack(chosen, currentId === chosen && stateRef.current.queue.length ? undefined : library!.tracks.map(t => t.id));
+      const listed = library ? sortTracks(library.tracks, asSort(library.settings.librarySort)) : [];
+      const chosen = currentId && listed.some(t => t.id === currentId) ? currentId : listed[0]?.id;
+      if (chosen) playTrack(chosen, currentId === chosen && stateRef.current.queue.length ? undefined : listed.map(t => t.id));
     } else if (audio.paused) void audio.play().catch(() => notify('无法播放，请检查文件。'));
     else audio.pause();
   }, [audio, playTrack, notify]);
@@ -358,7 +364,7 @@ export function App() {
     if (startupChosen.current || !library) return;
     startupChosen.current = true;
     if (!library.tracks.length || stateRef.current.currentId) return;
-    const ordered = [...library.tracks].sort((a, b) => b.addedAt - a.addedAt);
+    const ordered = sortTracks(library.tracks, asSort(library.settings.librarySort));
     const track = library.settings.startupTrack === 'random' ? ordered[Math.floor(Math.random() * ordered.length)] : ordered[0];
     setQueue(ordered.map(t => t.id)); setCurrentId(track.id); setStarted(false); setDuration(track.duration);
   }, [library]);
@@ -510,7 +516,7 @@ export function App() {
   const shownLyric = useMemo(() => lyric.file && scriptedText !== undefined ? { ...lyric.file, text: scriptedText } : lyric.file, [lyric.file, scriptedText]);
   const [scriptMenu, setScriptMenu] = useState<{ x: number; y: number }>();
   const [rubyMenu, setRubyMenu] = useState<{ x: number; y: number }>();
-  // 译: the local Hunyuan model (Ollama). The menu checks, each time it opens, whether Ollama runs and has the model.
+  // 译: 哔哩哔哩 Index-Translate or 小牛翻译. The menu checks, each time it opens, whether the chosen service is set up.
   const [translateMenu, setTranslateMenu] = useState<{ x: number; y: number; status?: TranslatorStatus }>();
   const [translateState, setTranslateState] = useState<TranslateState>({ state: 'idle' });
   const lyricSource = useMemo(() => lyric.file ? sourceLanguage(lyric.file.text) : 'en', [lyric.file]);
@@ -636,7 +642,7 @@ export function App() {
     if (group) tracks = tracks.filter(t => (page === 'artists' ? t.artist : t.album) === group);
     const q = query.trim().toLocaleLowerCase();
     if (q) tracks = tracks.filter(t => matchesQuery(searchText(t), chineseSearch ? folded.current.get(t.id)?.text : undefined, searchForms));
-    return [...tracks].sort((a, b) => sort === 'title' ? a.title.localeCompare(b.title, 'zh-CN') : sort === 'artist' ? a.artist.localeCompare(b.artist, 'zh-CN') : selectedPlaylist || selectedFolder ? 0 : b.addedAt - a.addedAt);
+    return sortTracks(tracks, sort, !!(selectedPlaylist || selectedFolder));
   }, [library, page, group, query, sort, selectedPlaylist, selectedFolder, chineseSearch, searchForms, foldedVersion]);
   // Folder names are searchable too; matches are offered as shortcuts above the song results.
   const matchedFolders = useMemo(() => searchForms.length && !collectionPage
@@ -966,7 +972,7 @@ export function App() {
           </motion.nav>}
         </AnimatePresence>
         </div>
-        <div className="sidebar-bottom"><NavButton onClick={() => setSettingsOpen(true)}><Settings2 size={18}/><span>设置与关于</span><small>0.2.0</small></NavButton></div>
+        <div className="sidebar-bottom"><NavButton onClick={() => setSettingsOpen(true)}><Settings2 size={18}/><span>设置与关于</span><small>0.3.0</small></NavButton></div>
       </aside>
 
       <main className="main-content">
@@ -1010,7 +1016,7 @@ export function App() {
             {renderSelectionBar()}
             <motion.div className="collection-toolbar">
               <div><h2>{query ? `找到 ${filtered.length} 首歌曲` : group || collectionPage ? '歌曲' : page === 'albums' ? '所有专辑' : page === 'artists' ? '所有艺术家' : '全部歌曲'}</h2><AnimatePresence mode="wait" initial={false}><motion.span key={filtered.length} initial={{ opacity: 0, y: 2 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -2 }} transition={quickTextTransition}>{filtered.length.toString().padStart(2, '0')}</motion.span></AnimatePresence></div>
-              <div><PressableButton className="text-button" disabled={busy} onClick={() => void runImport('files')}><Plus size={16}/>添加音乐</PressableButton><Select label="歌曲排序" value={sort} onChange={setSort} options={[{ value: 'added', label: '最近添加' }, { value: 'title', label: '歌曲名称' }, { value: 'artist', label: '艺术家' }]}/></div>
+              <div><PressableButton className="text-button" disabled={busy} onClick={() => void runImport('files')}><Plus size={16}/>添加音乐</PressableButton><Select label="歌曲排序" value={sort} onChange={setSort} options={TRACK_SORTS}/></div>
             </motion.div>
             <AnimatePresence initial={false}>{matchedFolders.length > 0 && <motion.div key="folder-results" className="folder-results" role="group" aria-label="匹配的文件夹" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={quickTextTransition}>
               <h3>文件夹<span>{matchedFolders.length}</span></h3>
@@ -1037,7 +1043,7 @@ export function App() {
         { label: '关联本地歌词…', icon: Plus, onSelect: () => void attachLyrics() },
       ]}/>}
       {translateMenu && <ContextMenu label="翻译" point={translateMenu} onClose={() => setTranslateMenu(undefined)} items={[
-        { kind: 'header', label: settings?.translateProvider === 'niutrans' ? '翻译（小牛翻译）' : '翻译（混元本地模型）' },
+        { kind: 'header', label: settings?.translateProvider === 'niutrans' ? '翻译（小牛翻译）' : `翻译（哔哩哔哩 ${modelSize(settings?.translateModel || DEFAULT_MODEL)}）` },
         { label: '不翻译', checked: !translateChoice, onSelect: () => setLyricTool({ translate: '' }) },
         ...(lyricHasTranslation ? [{ label: lyric.source === 'local' ? '歌词自带译文' : '在线译文', checked: translateChoice === 'source', onSelect: () => setLyricTool({ translate: 'source' }) } as MenuItem] : []),
         ...(['zh', 'en'] as const).map((target): MenuItem => {
@@ -1142,7 +1148,7 @@ export function App() {
             <header className="modal-header settings-caption"><h2>设置与关于</h2><button type="button" className="caption-close" aria-label="关闭设置" data-tooltip="关闭" onClick={() => setSettingsOpen(false)}>{'\uE8BB'}</button></header>
             <div className="settings-tabs" role="tablist" aria-label="设置分类">{[{ id: 'appearance', label: '外观', icon: Settings2 }, { id: 'library', label: '音乐库', icon: LibraryIcon }, { id: 'playback', label: '播放与快捷键', icon: Headphones }, { id: 'tools', label: '工具', icon: Languages }, { id: 'about', label: '关于', icon: Music2 }].map(({ id, label, icon: Icon }) => <button key={id} role="tab" aria-selected={settingsTab === id} tabIndex={settingsTab === id ? 0 : -1} onClick={() => setSettingsTab(id)} onKeyDown={event => { const buttons = Array.from(event.currentTarget.parentElement!.querySelectorAll<HTMLButtonElement>('[role=tab]')); const index = buttons.indexOf(event.currentTarget); if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const target = buttons[event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length]; target.click(); target.focus(); } }}><Icon size={16}/>{label}</button>)}</div>
             <div className="settings-body">
-              <div className="settings-brand"><img className="brand-icon" src={logoUrl} alt=""/><div><h3>DR Music <small>0.2.0</small></h3><p>你的音乐，你的节奏。个人音乐播放器。</p></div></div>
+              <div className="settings-brand"><img className="brand-icon" src={logoUrl} alt=""/><div><h3>DR Music <small>0.3.0</small></h3><p>你的音乐，你的节奏。个人音乐播放器。</p></div></div>
               <section role="tabpanel" aria-label="外观" hidden={settingsTab !== 'appearance'}><h4>外观</h4><p className="settings-hint">选择适合你的配色和窗口风格。</p>
               <div className="settings-row"><span>应用主题</span><Select label="应用主题" value={settings?.theme || 'dark'} onChange={value => setSettings({ theme: value as Settings['theme'] })} options={[{ value: 'dark', label: '深色 · 夜间唱片店' }, { value: 'light', label: '浅色 · 午后音乐室' }]}/></div>
               <div className="settings-row"><span>原生标题栏</span><Select label="原生标题栏" value={settings?.titleBar || 'direct2d'} onChange={value => setSettings({ titleBar: value as Settings['titleBar'] })} options={[{ value: 'direct2d', label: 'Direct2D 自绘' }, { value: 'webview2', label: 'WebView2 沉浸式' }, { value: 'system', label: 'Windows 系统标题栏' }]}/></div>
@@ -1156,11 +1162,13 @@ export function App() {
               </section><section role="tabpanel" aria-label="音乐库" hidden={settingsTab !== 'library'}><h4>音乐库</h4><p className="settings-hint">添加文件夹时包含子目录，歌曲先加入，标签和封面在后台补齐。重新扫描会更新标签和新增歌曲。移除文件夹会同时清理子目录、收藏和歌单中的歌曲记录，磁盘音乐会保留。</p>
               <div className="folder-list">{library?.folders.map(folder => <div key={folder}><FolderOpen size={16}/><span data-tooltip={folder}>{folder}</span><IconButton icon={X} label={`移除文件夹 ${folder}`} disabled={busy} onClick={() => void removeFolder(folder)}/></div>)}{!library?.folders.length && <p>还没有导入音乐文件夹</p>}</div>
               <div className="settings-actions"><PressableButton className="secondary-button" disabled={busy} onClick={() => void runImport('folder')}><FolderPlus size={16}/>添加文件夹</PressableButton><PressableButton className="secondary-button" disabled={busy || !library?.folders.length} onClick={() => void runImport('rescan')}><RefreshCw size={16}/>重新扫描</PressableButton><PressableButton className="text-button" onClick={() => void window.music.openData().catch(e => notify(String(e)))}>打开数据目录</PressableButton></div>
+              <h5 className="settings-subheading">歌曲列表</h5><div className="settings-row"><span className="settings-row-label"><span>歌曲名称</span><small>列表、播放栏和播放页显示的歌曲名。选「文件名」时直接显示音频文件名（不含扩展名），不使用标签里的标题。</small></span><Select label="歌曲名称" value={settings?.titleSource || 'tag'} onChange={value => setSettings({ titleSource: value as Settings['titleSource'] })} options={[{ value: 'tag', label: '标签中的标题' }, { value: 'file', label: '文件名' }]}/></div>
               <h5 className="settings-subheading">搜索</h5><div className="settings-row settings-toggle-row"><span className="settings-row-label"><span>简繁通搜</span><small>{chineseAvailable ? '输入简体或繁体都能找到另一种写法的歌曲，例如「后来」也能搜到「後來」。' : '未找到 OpenCC 数据（程序目录下的 opencc 文件夹），简繁通搜不可用。'}</small></span><button type="button" role="switch" className="switch" aria-label="简繁通搜" aria-checked={chineseSearch} disabled={!chineseAvailable} onClick={() => setSettings({ chineseSearch: !settings?.chineseSearch })}><span/></button></div>
               <h5 className="settings-subheading">歌词</h5><div className="settings-row settings-toggle-row"><span className="settings-row-label"><span>在线歌词</span><small>歌曲没有歌词时，从下面开启的歌词源同时查找并缓存到本地，选用匹配度最高的；可在播放页右下角切换来源。只会连接这些歌词源的接口。</small></span><button type="button" role="switch" className="switch" aria-label="在线歌词" aria-checked={settings?.onlineLyrics !== false} onClick={() => setSettings({ onlineLyrics: settings?.onlineLyrics === false })}><span/></button></div>
-              <div className="settings-row"><span className="settings-row-label"><span>默认歌词来源</span><small>歌曲有多份歌词时默认显示哪一份；所选来源没有找到歌词时，先用本地歌词，再用匹配度最高的在线歌词。在播放页为某首歌单独选过的来源不受影响。</small></span><Select label="默认歌词来源" value={settings?.lyricSource || 'local'} onChange={value => setSettings({ lyricSource: value })} options={[{ value: 'local', label: '本地歌词优先' }, { value: 'online', label: '在线最佳匹配' }, ...LYRIC_PROVIDERS.map(p => ({ value: p.id, label: p.name }))]}/></div>
+              <div className="settings-row"><span className="settings-row-label"><span>默认歌词来源</span><small>歌曲有多份歌词时默认显示哪一份；「按歌词源顺序」选下面列表中最靠前、找到了歌词的来源。所选来源没有找到歌词时，先用本地歌词，再用匹配度最高的在线歌词。在播放页为某首歌单独选过的来源不受影响。</small></span><Select label="默认歌词来源" value={settings?.lyricSource || 'local'} onChange={value => setSettings({ lyricSource: value })} options={[{ value: 'local', label: '本地歌词优先' }, { value: 'online', label: '在线最佳匹配' }, { value: 'ordered', label: '按歌词源顺序' }, ...LYRIC_PROVIDERS.map(p => ({ value: p.id, label: p.name }))]}/></div>
               <div className="lyric-provider-list" aria-label="歌词源" data-disabled={settings?.onlineLyrics === false ? 'true' : undefined}>
-                {LYRIC_PROVIDERS.map(provider => { const enabled = (settings?.lyricProviders ?? LYRIC_PROVIDERS.map(p => p.id)).includes(provider.id); return <div key={provider.id} className="lyric-provider-row">
+                {providerOrder.map((provider, index) => { const enabled = (settings?.lyricProviders ?? LYRIC_PROVIDERS.map(p => p.id)).includes(provider.id); return <div key={provider.id} className="lyric-provider-row">
+                  <span className="lyric-provider-move"><IconButton icon={ChevronUp} label={`上移 ${provider.name}`} disabled={index === 0} onClick={() => moveProvider(index, -1)}/><IconButton icon={ChevronDown} label={`下移 ${provider.name}`} disabled={index === providerOrder.length - 1} onClick={() => moveProvider(index, 1)}/></span>
                   <span className="settings-row-label"><span>{provider.name}</span><small>{provider.id === 'apple' ? (appleToken.set ? '已设置 media-user-token（加密保存在本机）' : provider.hint) : provider.hint}</small></span>
                   <button type="button" role="switch" className="switch" aria-label={provider.name} aria-checked={enabled} disabled={settings?.onlineLyrics === false} onClick={() => { const current = settings?.lyricProviders ?? LYRIC_PROVIDERS.map(p => p.id); setSettings({ lyricProviders: enabled ? current.filter(id => id !== provider.id) : [...current, provider.id] }); }}><span/></button>
                 </div>; })}

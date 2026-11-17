@@ -1,21 +1,23 @@
-// Lyric translation for 「译」: either 小牛翻译 (NiuTrans, online, the user's own App ID / API Key)
-// or Tencent's Hunyuan model (Hy-MT2 1.8B) in a local Ollama. All requests are made by the C++
-// host (native/niutrans.cpp, native/local_translator.cpp); this module picks languages and calls
-// the fixed bridge methods.
+// Lyric translation for 「译」: 哔哩哔哩 Index-Translate (the default; a free public API, no key, the
+// user picks one of its models) or 小牛翻译 (NiuTrans, the user's own App ID / API Key). All requests
+// are made by the C++ host (native/index_translate.cpp, native/niutrans.cpp); this module picks
+// languages and calls the fixed bridge methods.
 export type TranslateTarget = 'zh' | 'en';
-export type TranslateProvider = 'local' | 'niutrans';
-export interface LocalStatus { reachable: boolean; installed: boolean; version: string; model: string; endpoint: string; error: string; size?: number }
-export interface TranslatorStatus { provider: TranslateProvider; local: LocalStatus | null; niutrans: { configured: boolean; appId: string }; systemProxy?: string }
-/** PowerShell that makes the Ollama service use a proxy (it ignores the Windows proxy setting); Ollama must be restarted after. */
-export const ollamaProxyCommand = (proxy: string) => `[Environment]::SetEnvironmentVariable('HTTPS_PROXY', '${proxy}', 'User')`;
-/** Whether an Ollama pull error looks like the registry could not be reached (blocked / needs a proxy). */
-export const unreachableRegistry = (message: string) => /EOF|hf\.co|huggingface|registry|connection|timeout|tls|handshake|dial tcp/i.test(message);
-export interface PullProgress { status: string; completed: number; total: number }
+export type TranslateProvider = 'bilibili' | 'niutrans';
+export interface TranslatorStatus {
+  provider: TranslateProvider;
+  bilibili: { model: string; models: string[] };
+  niutrans: { configured: boolean; appId: string };
+}
 export const PROVIDERS: { value: TranslateProvider; label: string }[] = [
-  { value: 'niutrans', label: '小牛翻译（在线）' },
-  { value: 'local', label: '混元 Hy-MT2（本地 Ollama）' },
+  { value: 'bilibili', label: '哔哩哔哩 Index-Translate' },
+  { value: 'niutrans', label: '小牛翻译' },
 ];
-export const OLLAMA_INSTALL = 'irm https://ollama.com/install.ps1 | iex';
+export const DEFAULT_MODEL = 'Index-Translate-2B';
+/** Index-Translate-2B → 2B, Index-Translate-35B-A3B → 35B-A3B. */
+export const modelSize = (model: string) => model.replace(/^Index-Translate-/, '');
+/** The chosen provider as stored (older libraries said 'local' for the removed Ollama model). */
+export const providerOf = (value?: string): TranslateProvider => value === 'niutrans' ? 'niutrans' : 'bilibili';
 
 /** The lyric's main language, from its script: enough to pick the prompt and skip same-language lyrics. */
 export function sourceLanguage(text: string): 'zh' | 'ja' | 'ko' | 'en' {
@@ -25,22 +27,20 @@ export function sourceLanguage(text: string): 'zh' | 'ja' | 'ko' | 'en' {
   return 'en';
 }
 
-export type Readiness = 'checking' | 'same' | 'no-key' | 'no-ollama' | 'no-model' | 'ready';
+export type Readiness = 'checking' | 'same' | 'no-key' | 'ready';
 /** Whether translating a lyric in `source` to `target` works with the chosen provider as it is now. */
 export function translateState(status: TranslatorStatus | undefined, source: string, target: TranslateTarget): Readiness {
   if (source === target) return 'same';
   if (!status) return 'checking';
   if (status.provider === 'niutrans') return status.niutrans.configured ? 'ready' : 'no-key';
-  if (!status.local?.reachable) return 'no-ollama';
-  return status.local.installed ? 'ready' : 'no-model';
+  return 'ready';
 }
-export const READINESS_LABEL: Record<Readiness, string> = { same: '已是原文', checking: '检查中', 'no-key': '未填写密钥', 'no-ollama': '未运行 Ollama', 'no-model': '未下载模型', ready: '' };
+export const READINESS_LABEL: Record<Readiness, string> = { same: '已是原文', checking: '检查中', 'no-key': '未填写密钥', ready: '' };
 
 /** Whether the lyric came with its own translation (TTML, LRC pairs, NetEase, QQ Music, Kugou). */
 export const hasSourceTranslation = (lines: { translatedLyric?: string }[]) => lines.some(line => line.translatedLyric?.trim());
 
-export const translatorStatus = (local = false) => window.music.translateStatus(local);
-export const downloadModel = () => window.music.translatePull();
+export const translatorStatus = () => window.music.translateStatus();
 
 /** One translation per line ("" for blank lines); results for a superseded request are dropped by the caller. */
 export async function translateLines(lines: string[], source: string, target: TranslateTarget, signal: AbortSignal): Promise<string[]> {

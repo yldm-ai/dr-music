@@ -26,6 +26,19 @@ int wmain(int argc, wchar_t **argv) {
             decoder.seek(0); CHECK(decoder.read(pcm, 1024) == 1024);
             std::cout << "PASS decode/seek: " << dr::path_text(name) << '\n';
         }
+        // A CUE track: only [start, end) of the file, with duration, reads and seeks relative to it.
+        {
+            float pcm[2048]{}; size_t total = 0, got = 0;
+            dr::AudioDecoder range(root / L"pcm.wav"); range.set_range(.5, 1.5); CHECK(std::abs(range.duration() - 1) < 1e-9);
+            while ((got = range.read(pcm, 1024)) != 0) total += got;
+            CHECK(total == 48000);
+            range.seek(.5); total = 0; while ((got = range.read(pcm, 1024)) != 0) total += got;
+            CHECK(total == 24000);
+            dr::AudioDecoder tail(root / L"pcm.wav"); tail.set_range(1, 0); CHECK(tail.duration() > .8 && tail.duration() < 1.3);
+            total = 0; while ((got = tail.read(pcm, 1024)) != 0) total += got;
+            CHECK(total > 38000 && total < 62000);
+            CHECK(throws([&] { tail.set_range(1, .5); }));
+        }
         CHECK(throws([&] { dr::AudioDecoder invalid(root / L"broken.wav"); }));
         CHECK(throws([&] { dr::AudioDecoder invalid(root / L"missing.wav"); }));
         // The custom AVIO path must handle Unicode without URL/path guessing.
@@ -53,6 +66,13 @@ int wmain(int argc, wchar_t **argv) {
         CHECK(throws([&] { command("seek", {{"position", -1}}); }));
         CHECK(throws([&] { command("volume", {{"volume", 2}}); }));
         CHECK(throws([&] { command("unknown"); }));
+        // The transport reports a CUE track's own length and position.
+        const auto cue = player.command({{"action", "play"}, {"id", "cue-02"}, {"request", ++request}}, root / L"pcm.wav", .5, 1.5);
+        CHECK(cue["duration"] == 1.0 && cue["position"].get<double>() < .1);
+        CHECK(std::abs(command("seek", {{"position", .9}})["position"].get<double>() - .9) < .1);
+        ended = false;
+        for (int i = 0; i < 100; ++i) { auto state = command("state"); if (state["ended"] == true) { ended = true; CHECK(state["position"].get<double>() <= 1.0); break; } std::this_thread::sleep_for(10ms); }
+        CHECK(ended);
         const auto reloaded = player.command({{"action", "play"}, {"id", "reloaded"}, {"request", 1ULL}, {"session", "new-main-page"}}, root / L"pcm.wav");
         CHECK(reloaded["id"] == "reloaded"); CHECK(reloaded["playing"] == true);
         std::cout << "PASS: native transport, clock, pause, seek, volume, EOF/replay, stale requests, local-only audio build\n";

@@ -9,7 +9,8 @@
 #include "online_lyrics.h"
 #include "lyric_crypto.h"
 #include "http.h"
-#include "local_translator.h"
+#include "index_translate.h"
+#include "cue.h"
 #include "niutrans.h"
 #include <zlib.h>
 #include <fileref.h>
@@ -409,90 +410,114 @@ void recovery_test(const dr::fs::path &root) {
     for (const auto &p : dr::fs::directory_iterator(data)) if (p.path().filename().wstring().starts_with(L"library.corrupt-")) { CHECK(dr::read_text(p.path()) == "{broken"); backup = true; }
     CHECK(backup); library.update({{"settings", {{"volume", .4}}}}); CHECK(dr::Json::parse(dr::read_text(data / L"library.json"))["version"] == 1);
 }
-// Local Hunyuan translation through Ollama: loopback only, Hy-MT prompt, chunking with a per-line
-// fallback when the model merges lines, a persistent cache, and pull progress / errors.
-void local_translator_test(const dr::fs::path &root) {
-    CHECK(dr::LocalTranslator::valid_endpoint("http://127.0.0.1:11434") && dr::LocalTranslator::valid_endpoint("http://localhost:8080/"));
-    CHECK(!dr::LocalTranslator::valid_endpoint("http://example.com:11434") && !dr::LocalTranslator::valid_endpoint("http://127.0.0.1:11434/api") && !dr::LocalTranslator::valid_endpoint("ftp://127.0.0.1"));
-    CHECK(dr::LocalTranslator::valid_model("hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M") && !dr::LocalTranslator::valid_model("a b") && !dr::LocalTranslator::valid_model(""));
-    const auto zh = dr::LocalTranslator::prompt("你好", "zh", "en");
-    CHECK(zh.starts_with("<\xEF\xBD\x9Chy_begin\xE2\x96\x81of\xE2\x96\x81sentence\xEF\xBD\x9C><\xEF\xBD\x9Chy_User\xEF\xBD\x9C>"));
-    CHECK(zh.find("将以下文本翻译为英语，注意只需要输出翻译后的结果，不要额外解释：\n\n你好<\xEF\xBD\x9Chy_Assistant\xEF\xBD\x9C>") != std::string::npos);
-    CHECK(dr::LocalTranslator::prompt("夜", "ja", "en").find("Translate the following segment into English, without additional explanation.") != std::string::npos);
-    int generated = 0; std::vector<std::string> hosts;
+// Whole-CD rips: a .cue splits its audio file into songs with the sheet's names and ranges.
+void cue_test(const dr::fs::path &root) {
+    const auto sheet = dr::parse_cue("REM DATE 2004\nREM DISCNUMBER 2\nPERFORMER \"周杰伦\"\nTITLE \"七里香\"\nFILE \"disc.flac\" WAVE\n  TRACK 01 AUDIO\n    TITLE \"我的地盘\"\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    TITLE \"七里香\"\n    PERFORMER \"Jay\"\n    INDEX 00 00:04:00\n    INDEX 01 00:05:00\n  TRACK 03 AUDIO\n    TITLE \"借口\"\n    INDEX 01 01:02:37\n", L"C:\\music");
+    CHECK(sheet.title == "七里香" && sheet.performer == "周杰伦" && sheet.year == 2004 && sheet.disc == 2 && sheet.files.size() == 1);
+    CHECK(sheet.files[0].audio == dr::fs::path(L"C:\\music\\disc.flac"));
+    const auto &tracks = sheet.files[0].tracks;
+    CHECK(tracks.size() == 3 && tracks[0].start == 0 && tracks[0].end == 5 && tracks[1].performer == "Jay" && tracks[1].end == 62 + 37 / 75.0 && tracks[2].end == 0);
+    // GBK sheets (what most Chinese rippers write) are read as text, not rejected.
+    std::wstring wide_sheet = L"TITLE \"七里香\"\r\nFILE \"a.wav\" WAVE\r\nTRACK 01 AUDIO\r\nTITLE \"借口\"\r\nINDEX 01 00:00:00\r\n";
+    std::string gbk(WideCharToMultiByte(936, 0, wide_sheet.data(), static_cast<int>(wide_sheet.size()), nullptr, 0, nullptr, nullptr), '\0');
+    WideCharToMultiByte(936, 0, wide_sheet.data(), static_cast<int>(wide_sheet.size()), gbk.data(), static_cast<int>(gbk.size()), nullptr, nullptr);
+    CHECK(dr::parse_cue(dr::cue_text(gbk), L".").files.at(0).tracks.at(0).title == "借口");
+    // Imported first as one long file, then with its sheet: the file is replaced by the sheet's songs.
+    const auto music = root / L"cue-music"; dr::fs::create_directories(music);
+    wave(music / L"disc.wav"); // 16 s
+    dr::Library library(root / L"cue-data"); library.load(); library.import_paths({music});
+    const auto whole = library.snapshot()["tracks"].at(0)["id"].get<std::string>();
+    library.update({{"favorites", {whole}}});
+    // The sheet names the rip's original .flac; the .wav next to it is used.
+    write(music / L"disc.cue", "PERFORMER \"Band\"\nTITLE \"Live\"\nFILE \"disc.flac\" WAVE\nTRACK 01 AUDIO\nTITLE \"One\"\nINDEX 01 00:00:00\nTRACK 02 AUDIO\nTITLE \"Two\"\nINDEX 01 00:05:00\nTRACK 03 AUDIO\nTITLE \"Three\"\nINDEX 01 00:10:00\n");
+    auto result = library.import_paths({music});
+    CHECK(result["imported"] == 3 && result["removed"] == 1);
+    auto state = library.snapshot(); CHECK(state["tracks"].size() == 3 && state["favorites"].empty());
+    for (const auto &candidate : result["pending"]) library.enrich_metadata(candidate);
+    std::map<std::string, dr::Json> by_title;
+    const auto enriched = library.snapshot();
+    for (const auto &t : enriched["tracks"]) by_title[t["title"].get<std::string>()] = t;
+    CHECK(by_title.contains("One") && by_title.contains("Two") && by_title.contains("Three")); // the file's tags do not overwrite the sheet
+    CHECK(by_title["Two"]["artist"] == "Band" && by_title["Two"]["album"] == "Live" && by_title["Two"]["trackNumber"] == 2);
+    CHECK(by_title["Two"]["cue"]["start"] == 5.0 && by_title["Two"]["cue"]["end"] == 10.0 && by_title["Two"]["duration"] == 5.0);
+    CHECK(std::abs(by_title["Three"]["duration"].get<double>() - 6) < .1); // the last song runs to the end of the file
+    CHECK(dr::path_key(library.audio_path(by_title["One"]["id"].get<std::string>())) == dr::path_key(music / L"disc.wav"));
+    // A song's lyric file is named after its title.
+    write(music / L"Two.lrc", "[00:00.00]第二首");
+    CHECK(library.lyrics(by_title["Two"]["id"].get<std::string>())["text"] == "[00:00.00]第二首" && library.lyrics(by_title["One"]["id"].get<std::string>())["text"] == "");
+    // Rescans keep the songs (same ids); without the sheet the file is one song again.
+    const auto two = by_title["Two"]["id"].get<std::string>();
+    CHECK(library.import_paths({music}, {}, {}, true)["removed"] == 0);
+    CHECK(library.snapshot()["tracks"].size() == 3 && library.track(two)["title"] == "Two");
+    dr::fs::remove(music / L"disc.cue");
+    CHECK(library.import_paths({music}, {}, {}, true)["removed"] == 3);
+    CHECK(library.snapshot()["tracks"].size() == 1 && !library.snapshot()["tracks"][0].contains("cue"));
+    // 修改日期 sorting reads each file's time; 歌曲排序 / 歌曲名称 / 歌词源顺序 are validated settings.
+    CHECK(library.snapshot()["tracks"][0].value("modifiedAt", 0LL) > 0);
+    library.update({{"settings", {{"librarySort", "modified"}, {"titleSource", "file"}, {"lyricProviderOrder", {"qq", "bogus", "qq"}}, {"lyricSource", "ordered"}}}});
+    library.update({{"settings", {{"librarySort", "random"}, {"titleSource", "tags"}}}});
+    const auto saved = library.settings();
+    CHECK(saved["librarySort"] == "modified" && saved["titleSource"] == "file" && saved["lyricSource"] == "ordered");
+    CHECK(saved["lyricProviderOrder"][0] == "qq" && saved["lyricProviderOrder"].size() == dr::OnlineLyrics::provider_ids().size());
+}// 哔哩哔哩 Index-Translate: call_api.py's request (one user message, temperature 0, thinking off),
+// the chosen model, lines kept one per line and cached per model, errors surfaced, its host only.
+void index_translate_test(const dr::fs::path &root) {
+    CHECK(dr::IndexTranslate::prompt("  你好 ", "zh", "en") == "请将以下中文文本翻译为英语，直接输出翻译结果，不要进行任何解释。\n\n你好");
+    CHECK(dr::IndexTranslate::prompt("夜", "ja", "zh") == "请将以下日语文本翻译为中文，直接输出翻译结果，不要进行任何解释。\n\n夜");
+    CHECK(dr::IndexTranslate::strip_think("<think>\nhmm\n</think>\n\nHello") == "Hello" && dr::IndexTranslate::strip_think(" <think> Hi ") == "Hi");
+    CHECK(dr::IndexTranslate::valid_model("Index-Translate-9B") && !dr::IndexTranslate::valid_model("hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M"));
+    int requests = 0; std::string fail; std::vector<std::string> models;
     auto fake = [&](const dr::HttpRequest &r) -> dr::HttpResponse {
-        hosts.push_back(dr::parse_url(r.url)->host);
-        const auto path = dr::parse_url(r.url)->path;
-        if (path == "/api/version") return {200, R"({"version":"0.9.1"})"};
-        if (path == "/api/tags") return {200, R"({"models":[{"name":"hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M","size":1100000000}]})"};
-        if (path == "/api/pull") {
-            r.on_data("{\"status\":\"pulling manifest\"}\n{\"status\":\"downloading\",\"completed\":50,\"total\":100}\n");
-            r.on_data(dr::Json::parse(r.body).value("model", "") == "missing" ? "{\"error\":\"pull model manifest: file does not exist\"}\n" : "{\"status\":\"success\"}\n");
-            return {200, {}};
-        }
-        if (path == "/api/generate") {
-            ++generated;
-            const auto body = dr::Json::parse(r.body);
-            CHECK(body["raw"] == true && body["options"]["top_k"] == 20 && body["options"]["stop"].size() == 2);
-            auto text = body["prompt"].get<std::string>();
-            text = text.substr(text.find("\n\n") + 2); text.resize(text.find("<\xEF\xBD\x9Chy_Assistant"));
-            if (text.find("合并") != std::string::npos && text.find('\n') != std::string::npos) return {200, R"({"response":"merged into one line"})"};
-            std::string out; std::istringstream in(text);
-            for (std::string line; std::getline(in, line);) out += (out.empty() ? "" : "\n") + ("EN " + line);
-            return {200, dr::Json{{"response", out + "<\xEF\xBD\x9Chy_place\xE2\x96\x81holder\xE2\x96\x81no\xE2\x96\x81" "2\xEF\xBD\x9C>"}}.dump()};
-        }
-        return {404, {}};
+        ++requests;
+        CHECK(r.method == "POST" && r.url == "https://index-translate.bilibili.com/v1/chat/completions" && !r.direct);
+        const auto body = dr::Json::parse(r.body);
+        models.push_back(body["model"].get<std::string>());
+        CHECK(body["temperature"] == 0.0 && body["stream"] == false && body["chat_template_kwargs"]["enable_thinking"] == false);
+        CHECK(body["messages"].size() == 1 && body["messages"][0]["role"] == "user");
+        if (fail == "429") return {429, R"({"error":{"message":"rate limited"}})"};
+        if (fail == "500") return {500, R"({"error":{"message":"model overloaded"}})"};
+        if (fail == "empty") return {200, R"({"choices":[]})"};
+        auto text = body["messages"][0]["content"].get<std::string>();
+        CHECK(text.starts_with("请将以下中文文本翻译为英语"));
+        text = text.substr(text.find("\n\n") + 2);
+        if (text.find("合并") != std::string::npos && text.find('\n') != std::string::npos) return {200, R"({"choices":[{"message":{"content":"merged into one line"}}]})"};
+        std::string out; std::istringstream in(text);
+        for (std::string line; std::getline(in, line);) out += (out.empty() ? "" : "\n") + ("EN " + line);
+        return {200, dr::Json{{"choices", {{{"message", {{"role", "assistant"}, {"content", "<think>\n\n</think>\n\n" + out}}}}}}}.dump()};
     };
-    dr::LocalTranslator translator(root / L"translations", fake);
-    translator.set_options({"http://127.0.0.1:11434/", dr::LocalTranslator::kDefaultModel});
-    CHECK(translator.options().endpoint == "http://127.0.0.1:11434");
-    auto status = translator.status();
-    CHECK(status["reachable"] == true && status["installed"] == true && status["version"] == "0.9.1");
-    auto out = translator.translate({"第一句", "", "第二句", "第一句"}, "zh", "en");
-    CHECK(out == std::vector<std::string>({"EN 第一句", "", "EN 第二句", "EN 第一句"}));
-    CHECK(generated == 1); // one chunk, repeated lines translated once
-    CHECK(translator.translate({"第二句"}, "zh", "en") == std::vector<std::string>({"EN 第二句"}) && generated == 1); // cached
-    dr::LocalTranslator reopened(root / L"translations", fake);
-    CHECK(reopened.translate({"第一句"}, "zh", "en") == std::vector<std::string>({"EN 第一句"}) && generated == 1); // cache survives a restart
-    generated = 0;
+    dr::IndexTranslate translator(root / L"translations-index", fake);
+    CHECK(translator.model() == "Index-Translate-2B"); // the default
+    CHECK(translator.translate({"第一句", "", "第二句", "第一句"}, "zh", "en") == std::vector<std::string>({"EN 第一句", "", "EN 第二句", "EN 第一句"}));
+    CHECK(requests == 1 && models.back() == "Index-Translate-2B"); // one request, repeated lines translated once
+    CHECK(translator.translate({"第二句"}, "zh", "en") == std::vector<std::string>({"EN 第二句"}) && requests == 1); // cached
+    dr::IndexTranslate reopened(root / L"translations-index", fake);
+    CHECK(reopened.translate({"第一句"}, "zh", "en") == std::vector<std::string>({"EN 第一句"}) && requests == 1); // the cache survives a restart
+    requests = 0;
     CHECK(translator.translate({"合并一", "合并二"}, "zh", "en") == std::vector<std::string>({"EN 合并一", "EN 合并二"}));
-    CHECK(generated == 3); // the merged chunk is retried line by line
-    std::vector<double> progress;
-    translator.pull([&](const dr::LocalTranslator::Progress &p) { progress.push_back(p.total ? p.completed / p.total : -1); });
-    CHECK(progress == std::vector<double>({-1, .5, -1}));
-    translator.set_options({"http://127.0.0.1:11434", "missing"});
-    CHECK(throws([&] { translator.pull({}); }));
-    CHECK(std::all_of(hosts.begin(), hosts.end(), [](const std::string &h) { return h == "127.0.0.1"; }));
-    // A .gguf downloaded in the browser: hashed, uploaded as a blob once, then a model is created from it.
-    const auto gguf = root / L"Hy-MT2-1.8B-Q4_K_M.gguf";
-    write(gguf, "hello");
-    CHECK(dr::sha256_file_hex(gguf) == "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
-    std::set<std::string> blobs; dr::Json created; std::vector<std::string> phases;
-    auto ollama = [&](const dr::HttpRequest &r) -> dr::HttpResponse {
-        const auto path = dr::parse_url(r.url)->path;
-        CHECK(dr::parse_url(r.url)->host == "127.0.0.1");
-        if (path.starts_with("/api/blobs/")) {
-            const auto digest = path.substr(11);
-            if (r.method == "HEAD") return {blobs.contains(digest) ? 200 : 404, {}};
-            CHECK(r.body_file == gguf && digest == "sha256:" + dr::sha256_file_hex(r.body_file));
-            if (r.on_sent) r.on_sent(5, 5);
-            blobs.insert(digest); return {201, {}};
-        }
-        if (path == "/api/create") { created = dr::Json::parse(r.body); r.on_data("{\"status\":\"parsing GGUF\"}\n{\"status\":\"success\"}\n"); return {200, {}}; }
-        return {404, {}};
-    };
-    dr::LocalTranslator importer(root / L"translations-import", ollama);
-    CHECK(importer.import_gguf(gguf, [&](const dr::LocalTranslator::Progress &p) { phases.push_back(p.status); }) == "hy-mt2-translate");
-    CHECK(created["model"] == "hy-mt2-translate" && created["files"]["Hy-MT2-1.8B-Q4_K_M.gguf"] == "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
-    CHECK(created["parameters"]["top_k"] == 20 && created["parameters"]["stop"].size() == 2);
-    CHECK(std::find(phases.begin(), phases.end(), "正在导入 Ollama") != phases.end());
-    phases.clear(); importer.import_gguf(gguf, [&](const dr::LocalTranslator::Progress &p) { phases.push_back(p.status); });
-    CHECK(std::find(phases.begin(), phases.end(), "正在导入 Ollama") == phases.end()); // blob already there: no second upload
-    CHECK(throws([&] { importer.import_gguf(root / L"missing.gguf", {}); }));
-    // The real client refuses anything but loopback before connecting.
-    auto real = dr::winhttp_fetch([](const std::string &host) { return dr::LocalTranslator::loopback(host); });
-    CHECK(throws([&] { real({"GET", "https://example.com/api/version"}); }));
-    // Closing the app cancels a request that the (local) server is still answering, instead of waiting for its timeout.
+    CHECK(requests == 3); // a merged answer is retried line by line
+    translator.set_model("Index-Translate-35B-A3B");
+    CHECK(translator.translate({"第一句"}, "zh", "en") == std::vector<std::string>({"EN 第一句"}) && models.back() == "Index-Translate-35B-A3B"); // each model has its own cache
+    translator.set_model("no-such-model");
+    CHECK(translator.model() == "Index-Translate-2B");
+    for (const auto *code : {"429", "500", "empty"}) {
+        fail = code;
+        try { translator.translate_text("你好", "zh", "en"); CHECK(false); }
+        catch (const std::exception &e) { CHECK(std::string(e.what()).find("哔哩哔哩翻译") != std::string::npos); if (fail == "500") CHECK(std::string(e.what()).find("model overloaded") != std::string::npos); }
+    }
+    // Translation settings from the local Ollama model become Index-Translate with its default model.
+    const auto data = root / L"translate-migration"; dr::fs::create_directory(data);
+    write(data / L"library.json", R"({"version":1,"tracks":[],"folders":[],"favorites":[],"playlists":[],"settings":{"translateProvider":"local","translateEndpoint":"http://127.0.0.1:11434","translateModel":"hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M"}})");
+    dr::Library migrated(data); migrated.load();
+    const auto settings = migrated.settings();
+    CHECK(settings["translateProvider"] == "bilibili" && settings["translateModel"] == "Index-Translate-2B" && !settings.contains("translateEndpoint"));
+    migrated.update({{"settings", {{"translateModel", "Index-Translate-9B"}, {"translateProvider", "niutrans"}}}});
+    CHECK(migrated.settings()["translateModel"] == "Index-Translate-9B" && migrated.settings()["translateProvider"] == "niutrans");
+    migrated.update({{"settings", {{"translateModel", "llama3"}, {"translateProvider", "local"}}}});
+    CHECK(migrated.settings()["translateModel"] == "Index-Translate-9B" && migrated.settings()["translateProvider"] == "niutrans"); // invalid values are ignored
+    // The real client refuses any other host before connecting.
+    auto real = dr::winhttp_fetch([](const std::string &host) { return host == dr::IndexTranslate::kHost; });
+    CHECK(throws([&] { real({"POST", "https://example.com/v1/chat/completions"}); }));
+    // Closing the app cancels a request the server is still answering, instead of waiting for its timeout.
     WSADATA wsa{}; CHECK(WSAStartup(MAKEWORD(2, 2), &wsa) == 0);
     SOCKET server = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     sockaddr_in address{}; address.sin_family = AF_INET; address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -500,8 +525,8 @@ void local_translator_test(const dr::fs::path &root) {
     CHECK(server != INVALID_SOCKET && bind(server, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0 && listen(server, 4) == 0
           && getsockname(server, reinterpret_cast<sockaddr *>(&address), &length) == 0); // accepted by the backlog, never answered
     auto cancel = std::make_shared<dr::HttpCancel>();
-    auto slow = dr::winhttp_fetch([](const std::string &host) { return dr::LocalTranslator::loopback(host); }, cancel);
-    dr::HttpRequest hanging{"POST", "http://127.0.0.1:" + std::to_string(ntohs(address.sin_port)) + "/api/generate"};
+    auto slow = dr::winhttp_fetch([](const std::string &host) { return host == "127.0.0.1"; }, cancel);
+    dr::HttpRequest hanging{"POST", "http://127.0.0.1:" + std::to_string(ntohs(address.sin_port)) + "/v1/chat/completions"};
     hanging.direct = true; hanging.timeout_ms = 3 * 60 * 1000;
     const auto started = std::chrono::steady_clock::now();
     auto pending = std::async(std::launch::async, [&] { return throws([&] { slow(hanging); }); });
@@ -511,6 +536,15 @@ void local_translator_test(const dr::fs::path &root) {
     CHECK(std::chrono::steady_clock::now() - started < std::chrono::seconds(5));
     CHECK(throws([&] { slow(hanging); })); // later requests fail at once
     closesocket(server); WSACleanup();
+    // Opt-in live check against the public API: DR_MUSIC_NETWORK_TEST=1.
+    char *network = nullptr;
+    if (_dupenv_s(&network, nullptr, "DR_MUSIC_NETWORK_TEST") == 0 && network && std::string(network) == "1") {
+        dr::IndexTranslate live(root / L"translations-index-live", real);
+        const auto out = live.translate({"故事的小黄花", "从出生那年就飘着"}, "zh", "en");
+        std::cout << "live index-translate: " << out[0] << " / " << out[1] << "\n";
+        CHECK(out.size() == 2 && !out[0].empty() && !out[1].empty());
+    }
+    free(network);
 }
 // 小牛翻译 v2: the documented authStr (MD5 of sorted key=value pairs incl. apikey), one JSON POST to
 // api.niutrans.com only, error codes surfaced, lines kept one per line and cached.
@@ -654,7 +688,7 @@ int main() {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     auto root = dr::fs::temp_directory_path() / ("dr-music-native-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(dr::timestamp()));
     dr::fs::create_directories(root); int code = 0;
-    try { media_test(root); fonts_test(); chinese_test(); rescan_test(root); lyric_crypto_test(); online_lyrics_test(root); library_test(root); deferred_metadata_test(root); bulk_remove_test(root); recovery_test(root); provider_upgrade_test(root); local_translator_test(root); niutrans_test(root); caption_test(); caption_leave_test(); webview_caption_test(); std::cout << "PASS: native metadata/library/persistence/lyrics, system fonts and lyric typography settings, OpenCC simplified/traditional folding, rescan pruning of moved/deleted files, online TTML matching, bounded media streaming, ranges, D2D caption hit tests, leave-message regression, WebView2 caption hit testing and switching\n"; }
+    try { media_test(root); fonts_test(); chinese_test(); rescan_test(root); lyric_crypto_test(); online_lyrics_test(root); library_test(root); deferred_metadata_test(root); bulk_remove_test(root); recovery_test(root); provider_upgrade_test(root); index_translate_test(root); cue_test(root); niutrans_test(root); caption_test(); caption_leave_test(); webview_caption_test(); std::cout << "PASS: native metadata/library/persistence/lyrics, system fonts and lyric typography settings, OpenCC simplified/traditional folding, rescan pruning of moved/deleted files, online TTML matching, bounded media streaming, ranges, D2D caption hit tests, leave-message regression, WebView2 caption hit testing and switching\n"; }
     catch (const std::exception &e) { std::cerr << e.what() << '\n'; code = 1; }
     dr::fs::remove_all(root); CoUninitialize(); return code;
 }

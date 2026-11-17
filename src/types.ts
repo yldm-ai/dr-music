@@ -1,6 +1,12 @@
 export interface Track {
   id: string; path: string; title: string; artist: string; album: string;
   duration: number; format: string; addedAt: number; cover?: string;
+  /** The file's last write time (ms): 修改日期 sorting. */
+  modifiedAt?: number;
+  /** The tags' title while 歌曲名称 shows file names (front-end only). */
+  tagTitle?: string;
+  /** A track of a whole-CD rip: its range of the file and the .cue it came from. */
+  cue?: { start: number; end: number; sheet: string };
   sampleRate?: number; bitrate?: number; size?: number;
   metadataPending?: boolean; metadataRevision?: number; metadataError?: string;
   albumArtist?: string; trackNumber?: number; discNumber?: number; year?: number;
@@ -11,7 +17,7 @@ export interface Track {
   lyricRuby?: '' | import('./lib/ruby').RubyChoice;
 }
 export interface Playlist { id: string; name: string; trackIds: string[] }
-export interface Settings { volume: number; repeat: 'off' | 'all' | 'one'; shuffle: boolean; lyricOffset: number; nowLayout?: 'default' | 'lyrics' | 'cover'; heroSheen?: boolean; startupTrack?: 'first' | 'random'; theme: 'dark' | 'light'; titleBar: 'direct2d' | 'system' | 'webview2'; lyricFont?: string; lyricWeight?: number; lyricScale?: number; chineseSearch?: boolean; lyricScript?: 'o' | 's' | 't'; lyricVariant?: 't' | 'tw' | 'twp' | 'hk'; lyricRuby?: '' | 'jyutping'; lyricRubyBelow?: boolean; lyricTranslate?: '' | 'zh' | 'en'; translateEndpoint?: string; translateModel?: string; translateProvider?: 'local' | 'niutrans'; onlineLyrics?: boolean; onlineTranslation?: boolean; onlineRomaji?: boolean; onlineJyutping?: boolean; lyricSource?: string; lyricProviders?: string[]; amllMirror?: string }
+export interface Settings { volume: number; repeat: 'off' | 'all' | 'one'; shuffle: boolean; lyricOffset: number; nowLayout?: 'default' | 'lyrics' | 'cover'; heroSheen?: boolean; startupTrack?: 'first' | 'random'; theme: 'dark' | 'light'; titleBar: 'direct2d' | 'system' | 'webview2'; lyricFont?: string; lyricWeight?: number; lyricScale?: number; chineseSearch?: boolean; lyricScript?: 'o' | 's' | 't'; lyricVariant?: 't' | 'tw' | 'twp' | 'hk'; lyricRuby?: '' | 'jyutping'; lyricRubyBelow?: boolean; lyricTranslate?: '' | 'zh' | 'en'; translateModel?: string; translateProvider?: 'bilibili' | 'niutrans'; onlineLyrics?: boolean; onlineTranslation?: boolean; onlineRomaji?: boolean; onlineJyutping?: boolean; lyricSource?: string; lyricProviders?: string[]; lyricProviderOrder?: string[]; amllMirror?: string; librarySort?: import('./lib/library').TrackSort; titleSource?: 'tag' | 'file' }
 export interface FontFamily { family: string; name: string }
 export interface Library { version: number; tracks: Track[]; folders: string[]; favorites: string[]; playlists: Playlist[]; settings: Settings; notice?: string }
 /** roman / translation (+ format): the provider's own romanization (NetEase romalrc, QQ contentroma) and translation (NetEase tlyric, QQ contentts). */
@@ -47,15 +53,12 @@ declare global {
       fonts(): Promise<FontFamily[]>;
       chineseStatus(): Promise<{ available: boolean }>;
       chineseConvert(text: string, script: 's' | 't', variant: string): Promise<string>;
-      translateStatus(local?: boolean): Promise<import('./lib/translate').TranslatorStatus>;
-      translatePull(): Promise<import('./lib/translate').LocalStatus>;
+      translateStatus(): Promise<import('./lib/translate').TranslatorStatus>;
       translateTest(): Promise<string[]>;
-      translateImport(): Promise<{ model: string } | null>;
-      openPage(page: 'hy-mt2' | 'hy-mt2-mirror' | 'ollama' | 'niutrans'): Promise<void>;
+      openPage(page: 'niutrans' | 'index-translate'): Promise<void>;
       onTranslateChanged(listener: () => void): () => void;
       setNiutransKey(appId: string, apikey: string): Promise<{ configured: boolean; appId: string }>;
       translateLines(lines: string[], source: string, target: string): Promise<string[]>;
-      onTranslateProgress(listener: (progress: import('./lib/translate').PullProgress) => void): () => void;
       simplify(texts: string[]): Promise<string[]>;
       chineseQuery(query: string): Promise<string[]>;
       captionLayout(data: { caption: CaptionRect; minimize: CaptionRect; maximize: CaptionRect; close: CaptionRect; dpr: number }): Promise<void>;

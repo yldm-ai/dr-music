@@ -17,7 +17,7 @@ suxiaofan 的个人音乐播放器。**C++20 / Win32 原生宿主 + WebView2 + D
 
 与 `../dr-dict/scripts/build.ps1` 一样，支持 `-Generator 'Visual Studio 18 2026'`。默认由 CMake 选择本机 Visual Studio，目标架构为 x64。脚本可从任意目录调用；失败立即停止，不启动旧产物。Node.js 与 npm 只负责前端构建和测试，音乐库与资源服务均由 C++ 实现。
 
-编译输出：`build/bin/Release/dr-music.exe`。请保留旁边的 `web/`、`licenses/`、`LICENSE` 与声明文件。打包输出：`release/DR-Music-0.2.0-Windows-x64.zip`，解压后运行 `dr-music.exe`。
+编译输出：`build/bin/Release/dr-music.exe`。请保留旁边的 `web/`、`licenses/`、`LICENSE` 与声明文件。打包输出：`release/DR-Music-0.3.0-Windows-x64.zip`，解压后运行 `dr-music.exe`。
 
 首次构建需要下载 npm 依赖及固定版本的 C++ 依赖（nlohmann/json 3.12.0、TagLib 2.3.2、zlib 1.4、miniaudio 0.11.26、精简 FFmpeg 8.1.2、WebView2 SDK 1.0.2903.40）。构建好的应用不需要联网；系统 WebView2 Runtime 的安装与维护由 Windows/Edge 管理。
 
@@ -25,13 +25,14 @@ suxiaofan 的个人音乐播放器。**C++20 / Win32 原生宿主 + WebView2 + D
 
 - 文件夹递归扫描与音频导入：先按文件名加入歌曲并允许播放，C++ / TagLib 在后台分批补齐标签、时长、音质、封面和内嵌歌词。后台读取期间仍可移除目录或修改设置，中断后下次启动会继续补齐。
 - 元数据支持压缩 ID3 标签、多艺术家、专辑艺术家及曲目/碟片序号。封面优先读取有效的内嵌正面图片，再尝试歌曲同目录的同名图片、cover、folder、front、album 图片；由 C++ 识别内容并生成最长边 1024 的 PNG 缓存（系统缺少 WebP 解码器时保留通过容器检查的 WebP）。旧音乐库在升级后后台重新解析一次，无需重新导入。
-- 搜索、排序、专辑与艺术家浏览、收藏、新建 / 重命名 / 删除歌单；可选「简繁通搜」（OpenCC），简体与繁体互相匹配。
+- 搜索、排序（最近添加、修改日期（新下载的在最前）、歌曲名称、艺术家、专辑、文件名、时长，选择会保存；播放顺序与列表一致）、专辑与艺术家浏览、收藏、新建 / 重命名 / 删除歌单；可选「简繁通搜」（OpenCC），简体与繁体互相匹配。「设置 → 音乐库 → 歌曲名称」可改为直接显示文件名。
+- 整轨 CD（音频文件 + .cue）：导入时按 CUE 拆成单曲，曲名、艺术家、专辑来自 CUE（UTF-8、GBK、Shift-JIS 均可），每首只播放自己的区间；CUE 里写的文件名扩展名不符时（如写 .wav 实为 .flac）自动匹配同名音频。支持 FLAC、WAV、MP3、M4A 等应用可解码的格式。
 - 侧边栏「文件夹」按目录整理已添加文件夹中的歌曲；歌曲列表支持多选与批量操作。
 - 播放 / 暂停、切歌、音量、进度定位、随机与循环、播放队列、下一首播放。
 - AMLL 歌词滚动与逐字高亮，点击歌词跳转、歌词文件关联与全局时间偏移。
-- 歌词翻译：播放页右上角「译」把歌词逐行译成中文或英文，显示在每行下方；歌词自带译文时（网易云、QQ 音乐、酷狗、TTML 或带双语行的 LRC）也可选「在线译文」/「歌词自带译文」直接显示。自带译文默认不显示，只对当前歌曲生效。在「设置 → 工具」中选择翻译服务：小牛翻译（填写自己在 niutrans.com 控制台获得的 App ID 与 API Key，加密保存在本机）或腾讯混元 Hy-MT2 本地模型（由本机 Ollama 运行，可用 `irm https://ollama.com/install.ps1 | iex` 安装 Ollama 后在设置中一键下载模型，仅访问 127.0.0.1 / localhost）。译文缓存在数据目录。
+- 歌词翻译：播放页右上角「译」把歌词逐行译成中文或英文，显示在每行下方；歌词自带译文时（网易云、QQ 音乐、酷狗、TTML 或带双语行的 LRC）也可选「在线译文」/「歌词自带译文」直接显示。自带译文默认不显示，只对当前歌曲生效。在「设置 → 工具」中选择翻译服务：默认为哔哩哔哩 Index-Translate（免费公开接口，无需注册或密钥，可在下拉框中选择 2B / 9B / 35B-A3B 模型，默认 2B），备选小牛翻译（填写自己在 niutrans.com 控制台获得的 App ID 与 API Key，加密保存在本机）。译文缓存在数据目录。
 - 歌词注音：播放页右上角「音」可为中文歌词标注粤语粤拼（ToJyutping，按词组判断多音字），为日文歌词标注罗马音或假名（kuromoji 本地分词，词典随应用提供，不联网）；在线歌词自带罗马音时（网易云、QQ 音乐、酷狗、TTML）可在「罗马音」下选择「在线」或「本地」。注音只对当前歌曲生效，可在设置中改为整行下方显示；歌词也可在「原 / 简 / 繁」间切换。
-- 可选「在线歌词」（移植自 BetterLyrics / Lyricify）：歌曲没有歌词时同时查询 AMLL TTML DB、lrc.red（原 BiniLyrics，Better Lyrics 扩展所用的社区 TTML 歌词库）、QQ 音乐、网易云音乐、酷狗音乐、LRCLIB 与 Apple Music（需自己的 media-user-token），按标题 / 歌手 / 专辑 / 时长匹配度选用最佳结果并缓存；播放页右下角可在所有来源间切换，选择按歌曲保存。
+- 可选「在线歌词」（移植自 BetterLyrics / Lyricify）：歌曲没有歌词时同时查询 AMLL TTML DB、lrc.red（原 BiniLyrics，Better Lyrics 扩展所用的社区 TTML 歌词库）、QQ 音乐、网易云音乐、酷狗音乐、LRCLIB 与 Apple Music（需自己的 media-user-token），按标题 / 歌手 / 专辑 / 时长匹配度选用最佳结果并缓存；播放页右下角可在所有来源间切换，选择按歌曲保存。 歌词源可在设置中调整顺序，「默认歌词来源」选「按歌词源顺序」即按此优先；每首歌也可在播放页右下角单独选择来源。
 - 深浅色主题。默认 Direct2D 原生自绘标题栏，可在「设置与关于 → 外观 → 原生标题栏」切换 WebView2 沉浸式标题栏或 Windows 系统标题栏，选择会保存。
 - 网页界面与 D2D 标题栏统一首选 Noto Sans SC，依次回退至 Noto Sans CJK SC、微软雅黑、微软雅黑 UI 和 Segoe UI；使用本机已安装的字体。
 - 原生标题栏支持拖动、双击最大化、最小化 / 最大化 / 还原 / 关闭、边缘缩放、DPI 变化。Direct2D 模式的最大化按钮保留 `HTMAXBUTTON` 命中语义，供系统 Snap Layouts 使用。
@@ -39,7 +40,7 @@ suxiaofan 的个人音乐播放器。**C++20 / Win32 原生宿主 + WebView2 + D
 - 页面、列表、歌曲切换、播放状态、菜单、队列与弹窗使用 Motion 弹簧和进出场动画，并遵循系统的减少动态效果设置；强调色采用网易云音乐风格红色。
 - 磁盘文件选择、文件定位、数据目录、索引保存均由 C++ 调用 Windows API。移除文件夹后界面立即清理该目录及子目录的歌曲、收藏/歌单引用、队列和受影响的播放/歌词；保存失败时恢复音乐库。只删除索引与缓存封面，不删除音频。损坏索引会先备份。
 
-应用不包含账号、Spotify API/DRM、在线曲库、遥测或自动更新。选用小牛翻译时，歌词会发送到 api.niutrans.com 翻译；除此之外，唯一的联网功能是可在设置中关闭（也可逐个关闭歌词源）的「在线歌词」：由 C++ 宿主只访问各歌词源的接口地址（raw.githubusercontent.com 或自定义的 AMLL TTML DB 镜像、lrc.red、QQ 音乐、网易云音乐、酷狗音乐、lrclib.net、Apple Music），不跟随重定向，结果缓存在数据目录；页面本身仍不能联网。Apple Music 令牌用 Windows 数据保护（DPAPI）加密保存在本机。前端 CSP 和宿主资源过滤只允许打包页面与本地媒体虚拟主机；主机名是 WebView2 本地映射，不是远程服务。
+应用不包含账号、Spotify API/DRM、在线曲库、遥测或自动更新。使用「译」时，歌词会发送到所选翻译服务（index-translate.bilibili.com 或 api.niutrans.com）翻译；除此之外，唯一的联网功能是可在设置中关闭（也可逐个关闭歌词源）的「在线歌词」：由 C++ 宿主只访问各歌词源的接口地址（raw.githubusercontent.com 或自定义的 AMLL TTML DB 镜像、lrc.red、QQ 音乐、网易云音乐、酷狗音乐、lrclib.net、Apple Music），不跟随重定向，结果缓存在数据目录；页面本身仍不能联网。Apple Music 令牌用 Windows 数据保护（DPAPI）加密保存在本机。前端 CSP 和宿主资源过滤只允许打包页面与本地媒体虚拟主机；主机名是 WebView2 本地映射，不是远程服务。
 
 ## 音频与歌词
 

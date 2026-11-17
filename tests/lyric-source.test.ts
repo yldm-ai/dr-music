@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chooseLyric, providerName } from '../src/lib/lyricSource';
+import { chooseLyric, orderedProviders, providerName } from '../src/lib/lyricSource';
 import type { OnlineLyricResult } from '../src/types';
 
 const local = { text: '[00:01.00]本地', format: 'lrc', source: '歌曲.lrc' };
@@ -24,4 +24,13 @@ test('a saved preference picks that provider while it still has lyrics', () => {
   assert.equal(chooseLyric(empty, [amll, qq], 'local').source, 'amll'); // nothing local to show
   assert.equal(chooseLyric(local, [amll, qq], 'online').source, 'amll'); // legacy preference
   assert.equal(providerName('netease'), '网易云音乐');
+});
+test('按歌词源顺序 picks the first provider in the chosen order that found a lyric', () => {
+  const netease = online('netease', 60);
+  assert.equal(chooseLyric(local, [amll, qq, netease], 'ordered', ['netease', 'qq', 'amll']).source, 'netease');
+  assert.equal(chooseLyric(local, [amll, qq], 'ordered', ['netease', 'qq', 'amll']).source, 'qq');
+  assert.equal(chooseLyric(local, [], 'ordered', ['qq']).source, 'local');
+  assert.equal(chooseLyric(local, [amll, qq], 'ordered').source, 'amll'); // the default order
+  assert.deepEqual(orderedProviders(['qq', 'bogus', 'qq', 'amll']).map(p => p.id).slice(0, 3), ['qq', 'amll', 'lrcred']);
+  assert.equal(orderedProviders(['qq']).length, orderedProviders().length); // every provider listed once
 });

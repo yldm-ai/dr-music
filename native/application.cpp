@@ -1,7 +1,6 @@
 #include "application.h"
 #include "fonts.h"
 #include <wincrypt.h>
-#include <winhttp.h>
 #include <cmath>
 #include <map>
 #include <set>
@@ -10,12 +9,17 @@
 #include <shellapi.h>
 namespace dr {
 using Microsoft::WRL::ComPtr;
-Application::Application(fs::path data, fs::path assets, unsigned debug_port, std::vector<fs::path> imports, const std::string &shell, fs::path online_lyrics_fixture)
+namespace {
+// The 哔哩哔哩 translation API root: the public service, or (tests only, --translate-api) a loopback stand-in.
+std::string translate_api_root(const std::string &override_root) { return override_root.empty() ? IndexTranslate::kDefaultBase : override_root; }
+std::string translate_api_host(const std::string &override_root) { const auto url = parse_url(translate_api_root(override_root)); return url ? url->host : std::string(); }
+}
+Application::Application(fs::path data, fs::path assets, unsigned debug_port, std::vector<fs::path> imports, const std::string &shell, fs::path online_lyrics_fixture, std::string translate_api)
     : library_(std::move(data)), assets_(std::move(assets)), chinese_(assets_.parent_path() / L"opencc"),
       online_lyrics_(library_.directory() / L"online-lyrics",
           online_lyrics_fixture.empty() ? winhttp_fetch([this](const std::string &host) { return online_lyrics_.allowed_host(host); }, http_cancel_) : fixture_fetch(online_lyrics_fixture),
           [this](const std::string &text) { return chinese_.simplify(text); }),
-      translator_(library_.directory() / L"translations", winhttp_fetch([](const std::string &host) { return LocalTranslator::loopback(host); }, http_cancel_)),
+      bilibili_(library_.directory() / L"translations", winhttp_fetch([host = translate_api_host(translate_api)](const std::string &h) { return h == host; }, http_cancel_), translate_api_root(translate_api)),
       niutrans_(library_.directory() / L"translations", winhttp_fetch([](const std::string &host) { return host == NiuTrans::kHost; }, http_cancel_)),
       debug_port_(debug_port), imports_(std::move(imports)), shell_(shell) {
     library_.load();
@@ -92,8 +96,10 @@ void Application::apply_lyric_options() {
 }
 void Application::apply_translate_options() {
     const auto settings = library_.settings();
-    translator_.set_options({settings.value("translateEndpoint", std::string(LocalTranslator::kDefaultEndpoint)), settings.value("translateModel", std::string(LocalTranslator::kDefaultModel))});
+    bilibili_.set_model(settings.value("translateModel", std::string(IndexTranslate::kDefaultModel)));
 }
+// 哔哩哔哩 Index-Translate unless 小牛翻译 is chosen.
+static std::string translate_provider(const Json &settings) { return settings.value("translateProvider", "bilibili") == "niutrans" ? "niutrans" : "bilibili"; }
 void Application::enqueue_translate(std::function<void()> task) {
     { std::lock_guard lock(translate_mutex_); translate_jobs_.push_back(std::move(task)); } translate_ready_.notify_one();
 }
@@ -126,7 +132,7 @@ void Application::load_niutrans_key() {
     niutrans_.set_credentials(json.is_object() ? json.value("appId", "") : "", json.is_object() ? json.value("apikey", "") : "");
 }
 std::vector<std::string> Application::translate_lines(const std::vector<std::string> &lines, const std::string &source, const std::string &target) {
-    return library_.settings().value("translateProvider", "local") == "niutrans" ? niutrans_.translate(lines, source, target) : translator_.translate(lines, source, target);
+    return translate_provider(library_.settings()) == "niutrans" ? niutrans_.translate(lines, source, target) : bilibili_.translate(lines, source, target);
 }
 void Application::enqueue_network(std::function<void()> task) {
     { std::lock_guard lock(network_mutex_); network_jobs_.push_back(std::move(task)); } network_ready_.notify_one();
@@ -179,11 +185,9 @@ std::vector<fs::path> Application::choose_files(const std::string &kind) {
     dialog->SetOptions(flags);
     const COMDLG_FILTERSPEC audio[]{{L"音频文件", L"*.mp3;*.flac;*.wav;*.m4a;*.aac;*.ogg;*.opus;*.webm;*.mp4"}};
     const COMDLG_FILTERSPEC lyrics[]{{L"歌词文件", L"*.ttml;*.yrc;*.lrc;*.txt"}};
-    const COMDLG_FILTERSPEC model[]{{L"GGUF 模型文件", L"*.gguf"}};
     if (kind == "files") dialog->SetFileTypes(1, audio);
     if (kind == "lyrics") dialog->SetFileTypes(1, lyrics);
-    if (kind == "model") { dialog->SetFileTypes(1, model); dialog->SetOptions(flags & ~FOS_ALLOWMULTISELECT); }
-    dialog->SetTitle(kind == "folder" ? L"选择音乐文件夹" : kind == "lyrics" ? L"选择歌词文件" : kind == "model" ? L"选择下载好的 Hy-MT2 模型文件（.gguf）" : L"选择音乐文件");
+    dialog->SetTitle(kind == "folder" ? L"选择音乐文件夹" : kind == "lyrics" ? L"选择歌词文件" : L"选择音乐文件");
     auto hr = dialog->Show(window_.handle());
     if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED)) return {};
     if (FAILED(hr)) throw std::runtime_error("文件选择器打开失败");
@@ -200,9 +204,14 @@ void Application::receive(const Json &request) {
             if (!params.is_object() || !params.contains("request") || !params["request"].is_number_unsigned()) throw std::runtime_error("无效的播放请求");
             enqueue_transport([this, id, params] {
                 try {
-                    fs::path file;
-                    if (params.at("action") == "play") file = library_.audio_path(params.at("id").get<std::string>());
-                    reply(id, playback_.command(params, file));
+                    fs::path file; double start = 0, end = 0;
+                    if (params.at("action") == "play") {
+                        const auto track = params.at("id").get<std::string>();
+                        file = library_.audio_path(track);
+                        // A CUE track plays its range of the shared file (from the library, never from the page).
+                        if (const auto cue = library_.track(track).value("cue", Json()); cue.is_object()) { start = cue.value("start", 0.0); end = cue.value("end", 0.0); }
+                    }
+                    reply(id, playback_.command(params, file, start, end));
                 } catch (const std::exception &e) { reject(id, e.what()); }
             });
             return;
@@ -293,58 +302,19 @@ void Application::receive(const Json &request) {
             reply(id, {{"appleToken", !token.empty()}}); return;
         }
         if (method == "lyrics:status") { reply(id, {{"appleToken", !load_apple_token().empty()}, {"providers", OnlineLyrics::provider_ids()}, {"amllDefault", OnlineLyrics::kAmllDefaultBase}}); return; }
-        // 译: Hunyuan Hy-MT2 through a local Ollama (loopback only, see local_translator.h).
+        // 译: 哔哩哔哩 Index-Translate (the default, free, no key) or 小牛翻译 (the user's own key).
         if (method == "translate:status") {
-            // The Windows proxy (e.g. Clash on 127.0.0.1:7890) is read so settings can tell the user how to
-            // let Ollama use it: the Ollama service ignores it and only follows HTTPS_PROXY.
-            std::string system_proxy;
-            if (WINHTTP_CURRENT_USER_IE_PROXY_CONFIG ie{}; WinHttpGetIEProxyConfigForCurrentUser(&ie)) {
-                if (ie.lpszProxy) {
-                    auto value = utf8(ie.lpszProxy);
-                    if (auto at = value.find("https="); at != std::string::npos) value = value.substr(at + 6);
-                    else if (auto http = value.find("http="); http != std::string::npos) value = value.substr(http + 5);
-                    value = value.substr(0, value.find_first_of("; "));
-                    if (!value.empty() && value.find("://") == std::string::npos) value = "http://" + value;
-                    system_proxy = value;
-                }
-                if (ie.lpszProxy) GlobalFree(ie.lpszProxy);
-                if (ie.lpszProxyBypass) GlobalFree(ie.lpszProxyBypass);
-                if (ie.lpszAutoConfigUrl) GlobalFree(ie.lpszAutoConfigUrl);
-            }
-            // The local model is only probed when asked (the settings page, or it is the chosen provider).
-            const bool local = params.value("local", false) || library_.settings().value("translateProvider", "local") == "local";
-            enqueue_translate([this, id, local, system_proxy] {
-                reply(id, {{"provider", library_.settings().value("translateProvider", "local")}, {"local", local ? translator_.status() : Json()}, {"systemProxy", system_proxy},
-                           {"niutrans", {{"configured", niutrans_.configured()}, {"appId", niutrans_.app_id()}}}});
-            });
-            return;
-        }
-        if (method == "translate:import") {
-            // A .gguf downloaded in the browser, imported into the local Ollama (see LocalTranslator::import_gguf).
-            auto files = choose_files("model");
-            if (files.empty()) { reply(id, nullptr); return; }
-            enqueue_translate([this, id, file = files.front()] {
-                try {
-                    auto last = std::chrono::steady_clock::now() - std::chrono::seconds(1);
-                    const auto model = translator_.import_gguf(file, [&](const LocalTranslator::Progress &p) {
-                        if (closing_) throw std::runtime_error("已取消");
-                        const auto now = std::chrono::steady_clock::now();
-                        if (now - last < std::chrono::milliseconds(200) && p.total > p.completed) return;
-                        last = now;
-                        window_.post([this, p] { if (!closing_) webview_.send({{"event", "translate:progress"}, {"data", {{"status", p.status}, {"completed", p.completed}, {"total", p.total}}}}); });
-                    });
-                    reply(id, {{"model", model}});
-                } catch (const std::exception &e) { reject(id, e.what()); }
-            });
+            Json models = Json::array();
+            for (const auto *m : IndexTranslate::kModels) models.push_back(m);
+            reply(id, {{"provider", translate_provider(library_.settings())}, {"bilibili", {{"model", bilibili_.model()}, {"models", models}}},
+                       {"niutrans", {{"configured", niutrans_.configured()}, {"appId", niutrans_.app_id()}}}});
             return;
         }
         if (method == "app:open-url") {
-            // Fixed pages only (the page names one, never a URL): model downloads and service consoles.
+            // Fixed pages only (the page names one, never a URL): service consoles.
             static const std::map<std::string, std::wstring> pages = {
-                {"hy-mt2", L"https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF/tree/main"},
-                {"hy-mt2-mirror", L"https://hf-mirror.com/tencent/Hy-MT2-1.8B-GGUF/tree/main"},
-                {"ollama", L"https://ollama.com/download/windows"},
                 {"niutrans", L"https://niutrans.com/cloud/api/list"},
+                {"index-translate", L"https://github.com/bilibili/Index-Translate"},
             };
             const auto page = pages.find(params.at("page").get<std::string>());
             if (page == pages.end()) throw std::runtime_error("未知的页面");
@@ -363,22 +333,6 @@ void Application::receive(const Json &request) {
             // A fixed sample through the chosen provider, so settings can confirm the key / model works.
             enqueue_translate([this, id] {
                 try { reply(id, translate_lines({"故事的小黄花", "从出生那年就飘着"}, "zh", "en")); } catch (const std::exception &e) { reject(id, e.what()); }
-            });
-            return;
-        }
-        if (method == "translate:pull") {
-            enqueue_translate([this, id] {
-                try {
-                    auto last = std::chrono::steady_clock::now() - std::chrono::seconds(1);
-                    translator_.pull([&](const LocalTranslator::Progress &p) {
-                        if (closing_) throw std::runtime_error("已取消");
-                        const auto now = std::chrono::steady_clock::now();
-                        if (now - last < std::chrono::milliseconds(200) && p.total > p.completed) return; // throttle progress events
-                        last = now;
-                        window_.post([this, p] { if (!closing_) webview_.send({{"event", "translate:progress"}, {"data", {{"status", p.status}, {"completed", p.completed}, {"total", p.total}}}}); });
-                    });
-                    reply(id, translator_.status());
-                } catch (const std::exception &e) { reject(id, e.what()); }
             });
             return;
         }
@@ -407,7 +361,7 @@ void Application::receive(const Json &request) {
                 else if (method == "library:update") {
                     auto updated = library_.update(params);
                     if (params.contains("settings") && (params["settings"].contains("lyricProviders") || params["settings"].contains("amllMirror"))) apply_lyric_options();
-                    if (params.contains("settings") && (params["settings"].contains("translateEndpoint") || params["settings"].contains("translateModel") || params["settings"].contains("translateProvider"))) {
+                    if (params.contains("settings") && (params["settings"].contains("translateModel") || params["settings"].contains("translateProvider"))) {
                         apply_translate_options();
                         // Settings re-check the provider only after the host uses the new values.
                         window_.post([this] { if (!closing_) webview_.send({{"event", "translate:changed"}}); });
@@ -466,7 +420,10 @@ int Application::run(HINSTANCE instance) {
             if (!id.empty() && (media_track_.is_null() || media_track_.value("id", "") != id)) {
                 try { media_track_ = library_.track(id); } catch (const std::exception &) { media_track_ = Json::object(); }
             }
-            system_media_.update(state, media_track_.is_null() ? Json::object() : media_track_);
+            auto shown = media_track_.is_null() ? Json::object() : media_track_;
+            // 歌曲名称 → 文件名: the system media controls show the same name as the app.
+            if (shown.contains("path") && library_.settings().value("titleSource", "tag") == "file") shown["title"] = path_text(from_text(shown["path"].get<std::string>()).stem());
+            system_media_.update(state, shown);
             webview_.send({{"event", "playback:state"}, {"data", state}});
         });
     });

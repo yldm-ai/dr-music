@@ -11,7 +11,8 @@ public:
     ~Playback();
     Playback(const Playback &) = delete;
     Playback &operator=(const Playback &) = delete;
-    Json command(const Json &request, const fs::path &file = {});
+    /** For "play": a CUE track's range of the file in seconds (end 0 = to the end of the file). */
+    Json command(const Json &request, const fs::path &file = {}, double start = 0, double end = 0);
     void set_listener(std::function<void(Json)> listener);
 private:
     struct Impl;

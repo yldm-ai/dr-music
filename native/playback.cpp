@@ -103,7 +103,7 @@ struct Playback::Impl {
         write_position.store(write + got, std::memory_order_release);
         if (!got) eof = true;
     }
-    Json execute(const Json &message, const fs::path &file) {
+    Json execute(const Json &message, const fs::path &file, double range_start, double range_end) {
         const auto action = message.at("action").get<std::string>();
         const auto token = message.at("request").get<uint64_t>();
         const auto client = message.value("session", session);
@@ -112,7 +112,7 @@ struct Playback::Impl {
         request = token; error.clear();
         if (action == "play") {
             const auto next = message.at("id").get<std::string>();
-            if (next != id || !decoder) { reset(); decoder = std::make_unique<AudioDecoder>(file); id = next; duration = decoder->duration(); }
+            if (next != id || !decoder) { reset(); decoder = std::make_unique<AudioDecoder>(file); if (range_start > 0 || range_end > 0) decoder->set_range(range_start, range_end); id = next; duration = decoder->duration(); }
             else if (ended) { pause(); decoder->seek(0); read_position = 0; write_position = 0; base = 0; eof = ended = false; }
             device_init(); fill(); recoveries = 0;
             start();
@@ -161,10 +161,10 @@ struct Playback::Impl {
 Playback::Playback(bool null_device) : impl_(std::make_unique<Impl>(null_device)) {}
 Playback::~Playback() = default;
 void Playback::set_listener(std::function<void(Json)> listener) { std::lock_guard lock(impl_->mutex); impl_->listener = std::move(listener); }
-Json Playback::command(const Json &request, const fs::path &file) {
+Json Playback::command(const Json &request, const fs::path &file, double start, double end) {
     auto promise = std::make_shared<std::promise<Json>>(); auto future = promise->get_future();
-    { std::lock_guard lock(impl_->mutex); impl_->commands.push_back([this, request, file, promise] {
-        try { promise->set_value(impl_->execute(request, file)); }
+    { std::lock_guard lock(impl_->mutex); impl_->commands.push_back([this, request, file, start, end, promise] {
+        try { promise->set_value(impl_->execute(request, file, start, end)); }
         catch (const std::exception &e) { impl_->pause(); impl_->error = e.what(); impl_->publish(); promise->set_exception(std::current_exception()); }
     }); }
     impl_->ready.notify_one(); return future.get();

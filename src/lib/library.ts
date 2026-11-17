@@ -64,3 +64,54 @@ export function musicFolders(library: Library): MusicFolder[] {
     .sort((a, b) => a.rootIndex - b.rootIndex || byName(a.relative, b.relative))
     .map(({ entry }) => entry);
 }
+/** 歌曲排序 choices; the list and the play queue follow the same order. */
+export type TrackSort = 'added' | 'modified' | 'title' | 'artist' | 'album' | 'file' | 'duration';
+export const TRACK_SORTS: { value: TrackSort; label: string }[] = [
+  { value: 'added', label: '最近添加' },
+  { value: 'modified', label: '修改日期（最新在前）' },
+  { value: 'title', label: '歌曲名称' },
+  { value: 'artist', label: '艺术家' },
+  { value: 'album', label: '专辑' },
+  { value: 'file', label: '文件名' },
+  { value: 'duration', label: '时长' },
+];
+export const asSort = (value?: string): TrackSort => TRACK_SORTS.some(s => s.value === value) ? value as TrackSort : 'added';
+
+/** The file name without its extension (歌曲名称 → 文件名). */
+export const fileTitle = (path: string) => baseName(path).replace(/\.[^.]+$/, '') || baseName(path);
+
+/**
+ * Sorts songs. Ties (songs imported together share one 添加 time) fall back to the path, so the order
+ * is stable and "next song" never jumps around. `keepOrder` keeps a playlist / folder's own order for 最近添加.
+ */
+export function sortTracks(tracks: Track[], sort: TrackSort, keepOrder = false): Track[] {
+  // Tracks of one CUE sheet share their file: they follow the sheet's order.
+  const byPath = (a: Track, b: Track) => byName(a.path, b.path) || (a.cue ? (a.trackNumber || 0) - (b.trackNumber || 0) : 0);
+  const compare: Record<TrackSort, (a: Track, b: Track) => number> = {
+    added: (a, b) => keepOrder ? 0 : b.addedAt - a.addedAt || byPath(a, b),
+    modified: (a, b) => (b.modifiedAt || 0) - (a.modifiedAt || 0) || byPath(a, b),
+    title: (a, b) => byName(a.title, b.title) || byPath(a, b),
+    artist: (a, b) => byName(a.artist, b.artist) || byName(a.title, b.title) || byPath(a, b),
+    album: (a, b) => byName(a.album, b.album) || (a.discNumber || 0) - (b.discNumber || 0) || (a.trackNumber || 0) - (b.trackNumber || 0) || byPath(a, b),
+    file: (a, b) => byName(baseName(a.path), baseName(b.path)) || byPath(a, b),
+    duration: (a, b) => a.duration - b.duration || byPath(a, b),
+  };
+  return [...tracks].sort(compare[sort]);
+}
+
+/** Applies 歌曲名称 (tag title or file name) to every song; the tag title is kept to switch back. */
+export function withDisplayTitles(library: Library): Library {
+  const fromFile = library.settings.titleSource === 'file';
+  if (!fromFile && !library.tracks.some(t => t.tagTitle !== undefined)) return library;
+  return {
+    ...library,
+    tracks: library.tracks.map(track => {
+      const tag = track.tagTitle ?? track.title;
+      // A CUE track's file is the whole disc: it keeps the sheet's title.
+      if (fromFile && !track.cue) { const title = fileTitle(track.path); return track.title === title && track.tagTitle === tag ? track : { ...track, title, tagTitle: tag }; }
+      if (track.tagTitle === undefined || track.cue) return track;
+      const { tagTitle: _, ...rest } = track;
+      return { ...rest, title: tag };
+    }),
+  };
+}

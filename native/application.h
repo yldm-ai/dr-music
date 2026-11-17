@@ -2,7 +2,7 @@
 #include "library.h"
 #include "chinese.h"
 #include "online_lyrics.h"
-#include "local_translator.h"
+#include "index_translate.h"
 #include "niutrans.h"
 #include "window.h"
 #include "webview.h"
@@ -16,7 +16,7 @@
 namespace dr {
 class Application {
 public:
-    Application(fs::path data_root, fs::path assets, unsigned debug_port, std::vector<fs::path> imports, const std::string &shell, fs::path online_lyrics_fixture = {});
+    Application(fs::path data_root, fs::path assets, unsigned debug_port, std::vector<fs::path> imports, const std::string &shell, fs::path online_lyrics_fixture = {}, std::string translate_api = {});
     ~Application();
     int run(HINSTANCE instance);
 private:
@@ -50,7 +50,7 @@ private:
     // Cancelled on close so the workers joined on exit (and the library lock) are released at once.
     std::shared_ptr<HttpCancel> http_cancel_ = std::make_shared<HttpCancel>();
     OnlineLyrics online_lyrics_;
-    LocalTranslator translator_;
+    IndexTranslate bilibili_;
     NiuTrans niutrans_;
     unsigned debug_port_;
     std::vector<fs::path> imports_;
@@ -72,8 +72,7 @@ private:
     std::condition_variable_any network_ready_;
     std::deque<std::function<void()>> network_jobs_;
     std::jthread network_worker_;
-    // Local-model translation (Ollama on loopback) has its own queue: a model download or a long
-    // lyric must not delay online lyric lookups.
+    // Lyric translation has its own queue: a long lyric must not delay online lyric lookups.
     std::mutex translate_mutex_;
     std::condition_variable_any translate_ready_;
     std::deque<std::function<void()>> translate_jobs_;

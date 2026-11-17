@@ -92,25 +92,8 @@ HttpFetch winhttp_fetch(std::function<bool(const std::string &host)> allowed, st
         WinHttpSetOption(handle.value, WINHTTP_OPTION_DECOMPRESSION, &decompression, sizeof(decompression));
         std::wstring headers;
         for (const auto &[name, value] : request.headers) headers += wide(name) + L": " + wide(value) + L"\r\n";
-        BOOL sent = FALSE;
-        if (!request.body_file.empty()) {
-            // Large uploads (a model file) go out in chunks instead of being held in memory.
-            std::ifstream in(request.body_file, std::ios::binary);
-            if (!in) throw std::runtime_error("无法读取文件：" + path_text(request.body_file));
-            const auto total = fs::file_size(request.body_file);
-            if (total > 0xFFFFFFFFull) throw std::runtime_error("文件过大");
-            sent = WinHttpSendRequest(handle.value, headers.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : headers.c_str(), headers.empty() ? 0 : static_cast<DWORD>(-1L), WINHTTP_NO_REQUEST_DATA, 0, static_cast<DWORD>(total), 0);
-            std::string chunk(1 << 20, '\0'); uint64_t done = 0;
-            while (sent && done < total) {
-                in.read(chunk.data(), static_cast<std::streamsize>(std::min<uint64_t>(chunk.size(), total - done)));
-                const auto count = static_cast<DWORD>(in.gcount()); DWORD written = 0;
-                if (!count || !WinHttpWriteData(handle.value, chunk.data(), count, &written)) throw std::runtime_error("上传失败：" + url->host);
-                done += written;
-                if (request.on_sent) request.on_sent(done, total);
-            }
-        } else
-            sent = WinHttpSendRequest(handle.value, headers.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : headers.c_str(), headers.empty() ? 0 : static_cast<DWORD>(-1L),
-                request.body.empty() ? WINHTTP_NO_REQUEST_DATA : const_cast<char *>(request.body.data()), static_cast<DWORD>(request.body.size()), static_cast<DWORD>(request.body.size()), 0);
+        const BOOL sent = WinHttpSendRequest(handle.value, headers.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : headers.c_str(), headers.empty() ? 0 : static_cast<DWORD>(-1L),
+            request.body.empty() ? WINHTTP_NO_REQUEST_DATA : const_cast<char *>(request.body.data()), static_cast<DWORD>(request.body.size()), static_cast<DWORD>(request.body.size()), 0);
         if (!sent || !WinHttpReceiveResponse(handle.value, nullptr)) throw std::runtime_error("无法连接 " + url->host);
         DWORD status = 0, size = sizeof(status);
         WinHttpQueryHeaders(handle.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX);

@@ -31,6 +31,9 @@ struct AudioDecoder::Impl {
     bool input_end = false, decoder_end = false;
     int damaged = 0; // consecutive undecodable packets / frames
     double length = 0, discard_until = -1;
+    // A CUE track: [range_start, range_end) of the file (range_end 0 = to the end); mitted frames of it read so far.
+    double range_start = 0, range_end = 0;
+    uint64_t emitted = 0;
     std::vector<float> samples;
     size_t offset = 0;
     ~Impl() {
@@ -126,19 +129,34 @@ AudioDecoder::AudioDecoder(const fs::path &file) : impl_(std::make_unique<Impl>(
     else if (p.format->duration != AV_NOPTS_VALUE) p.length = static_cast<double>(p.format->duration) / AV_TIME_BASE;
 }
 AudioDecoder::~AudioDecoder() = default;
-double AudioDecoder::duration() const { return impl_->length; }
+double AudioDecoder::duration() const {
+    const auto &p = *impl_;
+    return p.range_end > 0 ? p.range_end - p.range_start : std::max(0.0, p.length - p.range_start);
+}
 size_t AudioDecoder::read(float *output, size_t frames) {
     auto &p = *impl_; size_t copied = 0;
+    if (p.range_end > 0) {
+        const auto limit = static_cast<uint64_t>(std::llround((p.range_end - p.range_start) * rate));
+        frames = static_cast<size_t>(std::min<uint64_t>(frames, limit > p.emitted ? limit - p.emitted : 0));
+    }
     while (copied < frames * channels) {
         if (p.offset == p.samples.size() && !p.next()) break;
         const auto count = std::min(frames * channels - copied, p.samples.size() - p.offset);
         std::memcpy(output + copied, p.samples.data() + p.offset, count * sizeof(float)); p.offset += count; copied += count;
     }
+    p.emitted += copied / channels;
     return copied / channels;
 }
-void AudioDecoder::seek(double seconds) {
-    if (!std::isfinite(seconds) || seconds < 0 || seconds > 7 * 24 * 3600) throw std::runtime_error("无效的音频定位");
+void AudioDecoder::set_range(double start, double end) {
+    if (!std::isfinite(start) || !std::isfinite(end) || start < 0 || end < 0 || (end > 0 && end <= start)) throw std::runtime_error("无效的播放区间");
+    impl_->range_start = start; impl_->range_end = end;
+    seek(0);
+}
+void AudioDecoder::seek(double relative) {
+    if (!std::isfinite(relative) || relative < 0 || relative > 7 * 24 * 3600) throw std::runtime_error("无效的音频定位");
     auto &p = *impl_; auto stream = p.format->streams[p.stream];
+    p.emitted = static_cast<uint64_t>(std::llround(relative * rate));
+    const auto seconds = p.range_start + relative;
     const auto start = stream->start_time == AV_NOPTS_VALUE ? 0 : stream->start_time;
     const auto target = static_cast<int64_t>(seconds / av_q2d(stream->time_base)) + start;
     checked(avformat_seek_file(p.format, p.stream, INT64_MIN, target, target, AVSEEK_FLAG_BACKWARD), "无法定位音频");

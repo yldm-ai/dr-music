@@ -2,8 +2,8 @@
 101 ICON "../assets/icon.ico"
 1 RT_MANIFEST "app.manifest"
 1 VERSIONINFO
-FILEVERSION 0,2,0,0
-PRODUCTVERSION 0,2,0,0
+FILEVERSION 0,3,0,0
+PRODUCTVERSION 0,3,0,0
 FILETYPE VFT_APP
 BEGIN
   BLOCK "StringFileInfo"
@@ -12,9 +12,9 @@ BEGIN
     BEGIN
       VALUE "CompanyName", "suxiaofan\0"
       VALUE "FileDescription", "DR Music - C++ / WebView2 music player\0"
-      VALUE "FileVersion", "0.2.0\0"
+      VALUE "FileVersion", "0.3.0\0"
       VALUE "ProductName", "DR Music\0"
-      VALUE "ProductVersion", "0.2.0\0"
+      VALUE "ProductVersion", "0.3.0\0"
       VALUE "OriginalFilename", "dr-music.exe\0"
     END
   END

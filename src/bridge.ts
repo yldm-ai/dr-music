@@ -22,7 +22,6 @@ const captionListeners = new Set<(tip: CaptionTooltip) => void>();
 const captionButtonListeners = new Set<(event: CaptionButtonEvent) => void>();
 const windowListeners = new Set<(maximized: boolean) => void>();
 const translateChangedListeners = new Set<() => void>();
-const translateProgressListeners = new Set<(progress: { status: string; completed: number; total: number }) => void>();
 export function onWindowState(listener: (maximized: boolean) => void) { windowListeners.add(listener); return () => { windowListeners.delete(listener); }; }
 export function onCaptionTooltip(listener: (tip: CaptionTooltip) => void) { captionListeners.add(listener); return () => { captionListeners.delete(listener); }; }
 const pointerListeners = new Set<(inside: boolean) => void>();
@@ -33,7 +32,6 @@ host?.addEventListener('message', ({ data }) => {
   if (data?.event === 'playback:action') { for (const listener of playbackActions) listener(data.data); return; }
   if (data?.event === 'playback:state') { if (data.data?.session === playbackSession) for (const listener of playbackListeners) listener(data.data); return; }
   if (data?.event === 'translate:changed') { for (const listener of translateChangedListeners) listener(); return; }
-  if (data?.event === 'translate:progress') { for (const listener of translateProgressListeners) listener(data.data); return; }
   if (data?.event === 'window-pointer') { for (const listener of pointerListeners) listener(!!data.data?.inside); return; }
   if (data?.event === 'window-state') { for (const listener of windowListeners) listener(!!data.data?.maximized); return; }
   if (data?.event === 'library:progress') { for (const listener of progressListeners) listener(data.data); return; }
@@ -82,15 +80,12 @@ window.music = Object.freeze({
   simplify: (texts: string[]) => call('chinese:simplify', { texts }),
   chineseQuery: (query: string) => call('chinese:query', { query }),
   chineseConvert: (text: string, script: 's' | 't', variant: string) => call('chinese:convert', { text, script, variant }),
-  translateStatus: (local?: boolean) => call('translate:status', { local: !!local }),
+  translateStatus: () => call('translate:status'),
   translateTest: () => call('translate:test'),
-  translateImport: () => call('translate:import'),
-  openPage: (page: 'hy-mt2' | 'hy-mt2-mirror' | 'ollama' | 'niutrans') => call('app:open-url', { page }),
+  openPage: (page: 'niutrans' | 'index-translate') => call('app:open-url', { page }),
   onTranslateChanged: (listener: () => void) => { translateChangedListeners.add(listener); return () => { translateChangedListeners.delete(listener); }; },
   setNiutransKey: (appId: string, apikey: string) => call('translate:niutrans-key', { appId, apikey }),
-  translatePull: () => call('translate:pull'),
   translateLines: (lines: string[], source: string, target: string) => call('translate:lines', { lines, source, target }),
-  onTranslateProgress: (listener: (progress: { status: string; completed: number; total: number }) => void) => { translateProgressListeners.add(listener); return () => { translateProgressListeners.delete(listener); }; },
   captionLayout: (data: CaptionLayout) => call('window:caption-layout', data),
   windowCommand: (command: 'minimize' | 'maximize' | 'close') => call('window:command', { command }),
   appearance: (data: { theme: string; dimmed: boolean }) => call('window:appearance', data),

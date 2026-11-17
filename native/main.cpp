@@ -11,7 +11,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
         auto data = dr::fs::path(dr::take(roaming)) / L"DR Music";
         std::wstring executable(32768, L'\0'); executable.resize(GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size())));
         int argc = 0; auto argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-        std::vector<dr::fs::path> imports; unsigned port = 0; std::string shell; dr::fs::path online_lyrics_fixture;
+        std::vector<dr::fs::path> imports; unsigned port = 0; std::string shell, translate_api; dr::fs::path online_lyrics_fixture;
         try {
             for (int i = 1; i < argc; ++i) {
                 std::wstring arg = argv[i];
@@ -21,6 +21,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
                 else if (arg == L"--shell" && i + 1 < argc) { shell = dr::utf8(argv[++i]); if (shell != "direct2d" && shell != "system" && shell != "webview2") throw std::runtime_error("--shell 仅支持 direct2d、webview2 或 system"); }
                 // Tests serve the AMLL TTML DB layout from a local folder instead of the network.
                 else if (arg == L"--online-lyrics-root" && i + 1 < argc) online_lyrics_fixture = dr::fs::absolute(argv[++i]);
+                // Tests answer lyric translation from a stand-in on this computer, never the public API.
+                else if (arg == L"--translate-api" && i + 1 < argc) {
+                    translate_api = dr::utf8(argv[++i]);
+                    const auto url = dr::parse_url(translate_api);
+                    if (!url || url->https || url->host != "127.0.0.1") throw std::runtime_error("--translate-api 仅支持 http://127.0.0.1 上的测试服务");
+                }
                 else throw std::runtime_error("未知或不完整的命令行参数");
             }
         } catch (...) { LocalFree(argv); throw; }
@@ -43,7 +49,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
             if (attempt >= 50) throw std::runtime_error("此音乐库已由另一个 DR Music 实例打开（它可能仍在退出），请稍后再试");
             Sleep(200);
         }
-        try { dr::Application application(data, assets, port, std::move(imports), shell, online_lyrics_fixture); result = application.run(instance); }
+        try { dr::Application application(data, assets, port, std::move(imports), shell, online_lyrics_fixture, translate_api); result = application.run(instance); }
         catch (...) { CloseHandle(lock); throw; }
         CloseHandle(lock);
     } catch (const std::exception &e) { MessageBoxW(nullptr, dr::wide(e.what()).c_str(), L"DR Music", MB_OK | MB_ICONERROR); }

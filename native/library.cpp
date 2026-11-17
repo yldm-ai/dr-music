@@ -2,7 +2,8 @@
 #include "cover.h"
 #include "fonts.h"
 #include "online_lyrics.h"
-#include "local_translator.h"
+#include "index_translate.h"
+#include "cue.h"
 #include <fileref.h>
 #include <tag.h>
 #include <tpropertymap.h>
@@ -15,6 +16,7 @@
 #include <unordered_set>
 #include <chrono>
 #include <charconv>
+#include <cstdio>
 namespace dr {
 namespace {
 const std::set<std::string> audio_extensions{ ".mp3", ".flac", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".webm", ".mp4" };
@@ -45,6 +47,22 @@ Json filtered_ids(const Json &values, const std::set<std::string> &valid) {
     }
     return out;
 }
+/** The file's last write time in Unix milliseconds (0 when it cannot be read): 修改日期 sorting. */
+long long modified_ms(const fs::path &file) {
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    if (!GetFileAttributesExW(file.c_str(), GetFileExInfoStandard, &data)) return 0;
+    const auto ticks = (static_cast<unsigned long long>(data.ftLastWriteTime.dwHighDateTime) << 32) | data.ftLastWriteTime.dwLowDateTime;
+    return ticks < 116444736000000000ULL ? 0 : static_cast<long long>((ticks - 116444736000000000ULL) / 10000);
+}
+/** Every known lyric provider once: the saved order first (unknown ids dropped), providers added later after it. */
+Json provider_order(const Json &saved) {
+    const auto &known = OnlineLyrics::provider_ids();
+    Json order = Json::array();
+    if (saved.is_array()) for (const auto &id : saved)
+        if (id.is_string() && std::find(known.begin(), known.end(), id.get<std::string>()) != known.end() && std::find(order.begin(), order.end(), id) == order.end()) order.push_back(id);
+    for (const auto &id : known) if (std::find(order.begin(), order.end(), Json(id)) == order.end()) order.push_back(id);
+    return order;
+}
 /**
  * Providers added after the user last saved their selection start enabled (as in BetterLyrics'
  * mergePreferredProviders); ones they switched off stay off. Libraries from before
@@ -61,10 +79,19 @@ void enable_new_providers(Json &settings, const Json &saved) {
     settings["lyricProviders"] = providers;
     settings["lyricProvidersSeen"] = known;
 }
+/**
+ * Translation settings from before 哔哩哔哩 Index-Translate replaced the local Ollama model: the local
+ * provider becomes Index-Translate, an Ollama model name its default model, the Ollama address goes.
+ */
+void migrate_translation(Json &settings) {
+    if (settings.value("translateProvider", "") != "niutrans") settings["translateProvider"] = "bilibili";
+    if (!settings.contains("translateModel") || !settings["translateModel"].is_string() || !IndexTranslate::valid_model(settings["translateModel"].get<std::string>())) settings["translateModel"] = IndexTranslate::kDefaultModel;
+    settings.erase("translateEndpoint");
+}
 }
 Json Library::defaults() {
     return {{"version", 1}, {"tracks", Json::array()}, {"folders", Json::array()}, {"favorites", Json::array()}, {"playlists", Json::array()},
-        {"settings", {{"volume", 0.7}, {"repeat", "off"}, {"shuffle", false}, {"lyricOffset", 0}, {"theme", "dark"}, {"titleBar", "direct2d"}, {"lyricFont", ""}, {"lyricWeight", 0}, {"lyricScale", 1}, {"chineseSearch", false}, {"lyricScript", "o"}, {"lyricVariant", "t"}, {"lyricRuby", ""}, {"lyricRubyBelow", false}, {"lyricTranslate", ""}, {"translateProvider", "local"}, {"translateEndpoint", LocalTranslator::kDefaultEndpoint}, {"translateModel", LocalTranslator::kDefaultModel}, {"onlineLyrics", true}, {"onlineTranslation", true}, {"onlineRomaji", true}, {"onlineJyutping", true}, {"lyricSource", "local"}, {"lyricProviders", OnlineLyrics::provider_ids()}, {"lyricProvidersSeen", OnlineLyrics::provider_ids()}, {"amllMirror", ""}}}};
+        {"settings", {{"volume", 0.7}, {"repeat", "off"}, {"shuffle", false}, {"lyricOffset", 0}, {"theme", "dark"}, {"titleBar", "direct2d"}, {"lyricFont", ""}, {"lyricWeight", 0}, {"lyricScale", 1}, {"chineseSearch", false}, {"lyricScript", "o"}, {"lyricVariant", "t"}, {"lyricRuby", ""}, {"lyricRubyBelow", false}, {"lyricTranslate", ""}, {"translateProvider", "bilibili"}, {"translateModel", IndexTranslate::kDefaultModel}, {"onlineLyrics", true}, {"onlineTranslation", true}, {"onlineRomaji", true}, {"onlineJyutping", true}, {"lyricSource", "local"}, {"lyricProviders", OnlineLyrics::provider_ids()}, {"lyricProvidersSeen", OnlineLyrics::provider_ids()}, {"lyricProviderOrder", OnlineLyrics::provider_ids()}, {"amllMirror", ""}, {"librarySort", "added"}, {"titleSource", "tag"}}}};
 }
 Library::Library(fs::path directory) : directory_(std::move(directory)), state_(defaults()) {}
 Json Library::load() {
@@ -81,6 +108,11 @@ Json Library::load() {
         if (!saved.contains("settings") || !saved["settings"].is_object()) throw std::runtime_error("音乐库设置无效");
         auto settings = defaults()["settings"]; settings.update(saved["settings"]);
         enable_new_providers(settings, saved["settings"]);
+        migrate_translation(settings);
+        settings["lyricProviderOrder"] = provider_order(settings.value("lyricProviderOrder", Json::array()));
+        // Libraries from before 修改日期 sorting: read each file's time once (saved with the next write).
+        for (auto &track : saved["tracks"])
+            if (!track.contains("modifiedAt")) if (const auto modified = modified_ms(from_text(track["path"].get<std::string>()))) track["modifiedAt"] = modified;
         saved["settings"] = settings; state_ = std::move(saved);
     } catch (const std::exception &) {
         auto name = "library.corrupt-" + std::to_string(timestamp()) + ".json";
@@ -154,6 +186,7 @@ Json Library::import_paths(const std::vector<fs::path> &inputs, std::function<vo
     for (const auto &root : before["folders"]) roots.insert(root.get<std::string>());
     Json warnings = Json::array();
     size_t discovered = 0;
+    std::vector<fs::path> cues;
     auto last_progress = std::chrono::steady_clock::now();
     // Resolve selected roots once. Entries below them already have absolute,
     // canonical parents; do not reopen every path component for every file.
@@ -173,7 +206,7 @@ Json Library::import_paths(const std::vector<fs::path> &inputs, std::function<vo
                 if (progress && now - last_progress >= std::chrono::milliseconds(100)) {
                     progress({{"done", discovered}, {"total", 0}, {"name", path_text(input.filename())}}); last_progress = now;
                 }
-            }
+            } else if (lower(path_text(input.extension())) == ".cue") cues.push_back(input);
         } catch (const fs::filesystem_error &) { warnings.push_back("无法访问：" + path_text(input)); unreadable.push_back(stored_path_key(input)); }
     };
     for (const auto &input : inputs) {
@@ -185,38 +218,96 @@ Json Library::import_paths(const std::vector<fs::path> &inputs, std::function<vo
             walk(real, attributes);
         } catch (const fs::filesystem_error &) { warnings.push_back("无法访问：" + path_text(input)); }
     }
+    // Whole-CD rips: a .cue whose audio file was found splits that file into its tracks. The file
+    // itself is then not a song of its own (formats the decoder cannot play are never found).
+    struct CueEntry { std::string id; fs::path audio, sheet; CueSheet info; CueTrack track; };
+    std::vector<CueEntry> cue_entries;
+    std::set<std::string> cue_audio;
+    for (const auto &sheet_path : cues) {
+        if (stop.stop_requested()) throw std::runtime_error("扫描已取消");
+        CueSheet sheet;
+        try { sheet = read_cue(sheet_path); } catch (const std::exception &) { warnings.push_back("无法读取 CUE：" + path_text(sheet_path)); continue; }
+        for (const auto &file : sheet.files) {
+            // The sheet often names the rip's original file (e.g. a .wav later converted to .flac): try the same name with each audio extension.
+            std::string key = stored_path_key(file.audio);
+            if (!files.contains(key)) {
+                key.clear();
+                for (const auto &extension : audio_extensions) { auto candidate = file.audio; candidate.replace_extension(from_text(extension)); if (files.contains(stored_path_key(candidate))) { key = stored_path_key(candidate); break; } }
+                if (key.empty() && sheet.files.size() == 1)
+                    for (const auto &extension : audio_extensions) { auto candidate = sheet_path; candidate.replace_extension(from_text(extension)); if (files.contains(stored_path_key(candidate))) { key = stored_path_key(candidate); break; } }
+            }
+            if (key.empty() || cue_audio.contains(key)) continue;
+            cue_audio.insert(key);
+            const auto audio = files.at(key);
+            for (const auto &track : file.tracks) {
+                char number[8]; std::snprintf(number, sizeof(number), "%02d", track.number);
+                cue_entries.push_back({track_id(audio) + "-" + number, audio, sheet_path, sheet, track});
+            }
+        }
+    }
+    for (const auto &key : cue_audio) files.erase(key);
     std::map<std::string, Json> tracks;
     std::map<std::string, std::string> previous_ids;
+    std::unordered_set<std::string> removed;
     for (const auto &t : before["tracks"]) {
-        const auto id = t["id"].get<std::string>(); tracks[id] = t;
-        previous_ids[stored_path_key(from_text(t["path"]))] = id;
+        const auto id = t["id"].get<std::string>(); const auto key = stored_path_key(from_text(t["path"]));
+        // A file now split by its .cue is replaced by the sheet's tracks.
+        if (!t.contains("cue") && cue_audio.contains(key)) { removed.insert(id); continue; }
+        tracks[id] = t;
+        if (!t.contains("cue")) previous_ids[key] = id;
     }
     Json pending = Json::array();
+    // One time for the whole import: songs added together tie, and the list orders them by path.
+    const auto added = timestamp();
+    auto format_of = [](const fs::path &file) {
+        auto format = path_text(file.extension()).substr(1);
+        std::transform(format.begin(), format.end(), format.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        return format;
+    };
+    auto queue = [&](Json t, const fs::path &file) {
+        if (const auto modified = modified_ms(file)) t["modifiedAt"] = modified;
+        t["metadataPending"] = true; t["metadataRevision"] = ++metadata_revision_;
+        pending.push_back({{"id", t["id"]}, {"revision", metadata_revision_}});
+        const auto id = t["id"].get<std::string>(); // read before the move: json's operator= takes its argument by value
+        tracks[id] = std::move(t);
+    };
     for (const auto &[key, file] : files) {
         if (stop.stop_requested()) throw std::runtime_error("扫描已取消");
         const auto id = previous_ids.contains(key) ? previous_ids[key] : track_id(file);
         Json t;
         if (tracks.contains(id)) t = tracks[id];
-        else {
-            auto format = path_text(file.extension()).substr(1);
-            std::transform(format.begin(), format.end(), format.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-            t = {{"id", id}, {"path", path_text(file)}, {"title", path_text(file.stem())}, {"artist", "未知艺术家"}, {"album", "未知专辑"},
-                {"duration", 0}, {"format", format}, {"addedAt", timestamp()}};
-        }
-        t["metadataPending"] = true; t["metadataRevision"] = ++metadata_revision_;
-        pending.push_back({{"id", id}, {"revision", metadata_revision_}});
-        tracks[id] = std::move(t);
+        else t = {{"id", id}, {"path", path_text(file)}, {"title", path_text(file.stem())}, {"artist", "未知艺术家"}, {"album", "未知专辑"},
+                  {"duration", 0}, {"format", format_of(file)}, {"addedAt", added}};
+        queue(std::move(t), file);
+    }
+    std::set<std::string> cue_ids;
+    for (const auto &entry : cue_entries) {
+        if (!cue_ids.insert(entry.id).second) continue;
+        Json t = tracks.contains(entry.id) ? tracks[entry.id] : Json{{"id", entry.id}, {"addedAt", added}};
+        // The sheet is the song's tags: re-read on every scan so edits to the .cue show up.
+        const auto &track = entry.track; const auto &sheet = entry.info;
+        t["path"] = path_text(entry.audio); t["format"] = format_of(entry.audio);
+        t["title"] = track.title.empty() ? "Track " + std::to_string(track.number) : track.title;
+        t["artist"] = !track.performer.empty() ? track.performer : !sheet.performer.empty() ? sheet.performer : "未知艺术家";
+        t["album"] = sheet.title.empty() ? path_text(entry.sheet.stem()) : sheet.title;
+        if (!sheet.performer.empty()) t["albumArtist"] = sheet.performer; else t.erase("albumArtist");
+        t["trackNumber"] = track.number;
+        if (sheet.disc) t["discNumber"] = sheet.disc; else t.erase("discNumber");
+        if (sheet.year) t["year"] = sheet.year; else t.erase("year");
+        t["duration"] = track.end > 0 ? track.end - track.start : t.value("duration", 0.0);
+        t["cue"] = {{"start", track.start}, {"end", track.end}, {"sheet", path_text(entry.sheet)}};
+        queue(std::move(t), entry.audio);
     }
     // Rescan drops tracks whose files moved or were deleted, but only below folders that were read in
     // full: an unplugged drive or an unreadable subfolder must not empty the library.
     auto under = [](const std::string &key, const std::vector<std::string> &prefixes) {
         return std::any_of(prefixes.begin(), prefixes.end(), [&](const std::string &p) { return key == p || key.starts_with(p.ends_with('\\') ? p : p + '\\'); });
     };
-    std::unordered_set<std::string> removed;
     if (prune_missing) {
         for (auto it = tracks.begin(); it != tracks.end();) {
             const auto key = stored_path_key(from_text(it->second["path"]));
-            if (!files.contains(key) && under(key, walked) && !under(key, unreadable)) { removed.insert(it->first); it = tracks.erase(it); }
+            const bool present = it->second.contains("cue") ? cue_ids.contains(it->first) : files.contains(key);
+            if (!present && under(key, walked) && !under(key, unreadable)) { removed.insert(it->first); it = tracks.erase(it); }
             else ++it;
         }
     }
@@ -234,7 +325,7 @@ Json Library::import_paths(const std::vector<fs::path> &inputs, std::function<vo
         state_ = std::move(next); rebuild_index_locked();
     }
     if (!removed.empty()) { cover_cache_.clear(); std::error_code error; for (const auto &id : removed) fs::remove(directory_ / (id + ".cover"), error); }
-    return {{"library", snapshot()}, {"imported", files.size()}, {"removed", removed.size()}, {"warnings", warnings}, {"pending", pending}};
+    return {{"library", snapshot()}, {"imported", files.size() + cue_ids.size()}, {"removed", removed.size()}, {"warnings", warnings}, {"pending", pending}};
 }
 Json Library::pending_metadata() const {
     std::lock_guard lock(mutex_); Json pending = Json::array();
@@ -273,10 +364,21 @@ Json Library::enrich_metadata(const Json &candidate) {
     t.erase("metadataError");
     try {
         t["size"] = fs::file_size(file);
+        if (const auto modified = modified_ms(file)) t["modifiedAt"] = modified;
         // Fast duration estimates avoid a full audio scan. Playback obtains
         // the exact duration from the media element when the track is opened.
         ref = TagLib::FileRef(file.c_str(), true, TagLib::AudioProperties::Fast);
         if (ref.isNull()) throw std::runtime_error("无法读取音频标签");
+        // A CUE track's tags come from its sheet; the shared file gives only the audio properties and length.
+        const auto cue = t.value("cue", Json());
+        if (cue.is_object()) {
+            if (auto p = ref.audioProperties()) {
+                const double end = cue.value("end", 0.0), start = cue.value("start", 0.0);
+                t["duration"] = end > 0 ? end - start : std::max(0.0, p->lengthInMilliseconds() / 1000.0 - start);
+                t["sampleRate"] = p->sampleRate(); t["bitrate"] = p->bitrate() * 1000;
+            }
+            t.erase("embedded");
+        } else {
         if (auto tag = ref.tag()) {
             t["title"] = string_or(tag->title(), path_text(file.stem()));
             t["artist"] = string_or(tag->artist(), "未知艺术家"); t["album"] = string_or(tag->album(), "未知专辑");
@@ -295,6 +397,7 @@ Json Library::enrich_metadata(const Json &candidate) {
         }
         t.erase("embedded");
         if (properties.contains("LYRICS")) t["embedded"] = properties["LYRICS"].toString("\n").to8Bit(true);
+        }
     } catch (const std::exception &error) { t["metadataError"] = "无法读取标签，已保留已有信息：" + std::string(error.what()); }
     // A tag failure must not prevent finding a local external cover.
     const auto cover = cover_cache_.find(inputs, ref.isNull() ? nullptr : &ref);
@@ -364,14 +467,16 @@ Json Library::update(const Json &patch) {
         // 注音: none or Cantonese Jyutping, above each character or on a line of its own.
         if (s.contains("lyricRuby") && s["lyricRuby"].is_string()) { const auto v = s["lyricRuby"].get<std::string>(); if (v.empty() || v == "jyutping") target["lyricRuby"] = v; }
         if (s.contains("lyricRubyBelow") && s["lyricRubyBelow"].is_boolean()) target["lyricRubyBelow"] = s["lyricRubyBelow"];
-        // 译: none, or the local Hunyuan model's translation into Chinese / English (Ollama on loopback only).
-        if (s.contains("translateEndpoint") && s["translateEndpoint"].is_string() && LocalTranslator::valid_endpoint(s["translateEndpoint"].get<std::string>())) target["translateEndpoint"] = s["translateEndpoint"];
-        if (s.contains("translateProvider") && s["translateProvider"].is_string()) { const auto v = s["translateProvider"].get<std::string>(); if (v == "local" || v == "niutrans") target["translateProvider"] = v; }
-        if (s.contains("translateModel") && s["translateModel"].is_string() && LocalTranslator::valid_model(s["translateModel"].get<std::string>())) target["translateModel"] = s["translateModel"];
+        // 译: 哔哩哔哩 Index-Translate (one of its models) or 小牛翻译, into Chinese / English.
+        if (s.contains("translateProvider") && s["translateProvider"].is_string()) { const auto v = s["translateProvider"].get<std::string>(); if (v == "bilibili" || v == "niutrans") target["translateProvider"] = v; }
+        if (s.contains("translateModel") && s["translateModel"].is_string() && IndexTranslate::valid_model(s["translateModel"].get<std::string>())) target["translateModel"] = s["translateModel"];
         if (s.contains("lyricTranslate") && s["lyricTranslate"].is_string()) { const auto v = s["lyricTranslate"].get<std::string>(); if (v.empty() || v == "zh" || v == "en") target["lyricTranslate"] = v; }
         // The song the player bar has ready at startup: the library's first (as listed) or a random one.
         if (s.contains("startupTrack") && s["startupTrack"].is_string()) { const auto v = s["startupTrack"].get<std::string>(); if (v == "first" || v == "random") target["startupTrack"] = v; }
-        // The library hero's sheen on hover (off unless switched on).
+        // 歌曲排序 in song lists, kept across launches.
+        if (s.contains("librarySort") && s["librarySort"].is_string()) { static const std::set<std::string> sorts{"added", "modified", "title", "artist", "album", "file", "duration"}; if (const auto v = s["librarySort"].get<std::string>(); sorts.contains(v)) target["librarySort"] = v; }
+        // Song names from the tags' title or from the file name.
+        if (s.contains("titleSource") && s["titleSource"].is_string()) { const auto v = s["titleSource"].get<std::string>(); if (v == "tag" || v == "file") target["titleSource"] = v; }        // The library hero's sheen on hover (off unless switched on).
         if (s.contains("heroSheen") && s["heroSheen"].is_boolean()) target["heroSheen"] = s["heroSheen"];
         // Player page layout: cover and lyrics, lyrics only, or cover only.
         if (s.contains("nowLayout") && s["nowLayout"].is_string()) { const auto v = s["nowLayout"].get<std::string>(); if (v == "default" || v == "lyrics" || v == "cover") target["nowLayout"] = v; }
@@ -389,11 +494,14 @@ Json Library::update(const Json &patch) {
             for (const auto &id : known) if (std::any_of(s["lyricProviders"].begin(), s["lyricProviders"].end(), [&](const Json &p) { return p == id; })) providers.push_back(id);
             target["lyricProviders"] = providers; // known ids only, in a fixed order
         }
+        // The providers' priority (歌词源顺序): every known id once, in the user's order.
+        if (s.contains("lyricProviderOrder") && s["lyricProviderOrder"].is_array()) target["lyricProviderOrder"] = provider_order(s["lyricProviderOrder"]);
         // Default lyric source for songs without their own pick: the song's lyric file ("local"), the best
-        // online match ("online"), or one provider (falling back to the others when it has nothing).
+        // online match ("online"), the first provider in 歌词源顺序 that has one ("ordered"), or one provider
+        // (falling back to the others when it has nothing).
         if (s.contains("lyricSource") && s["lyricSource"].is_string()) {
             const auto v = s["lyricSource"].get<std::string>(); const auto &known = OnlineLyrics::provider_ids();
-            if (v == "local" || v == "online" || std::find(known.begin(), known.end(), v) != known.end()) target["lyricSource"] = v;
+            if (v == "local" || v == "online" || v == "ordered" || std::find(known.begin(), known.end(), v) != known.end()) target["lyricSource"] = v;
         }
         if (s.contains("amllMirror") && s["amllMirror"].is_string()) { const auto url = s["amllMirror"].get<std::string>(); if (url.empty() || OnlineLyrics::valid_base(url)) target["amllMirror"] = url; }
         // Lyric typography: "" / 0 mean "follow the app default".
@@ -491,7 +599,15 @@ Json Library::lyrics(const std::string &id) const {
     auto t = track(id); auto audio = from_text(t["path"]); auto stem = audio; stem.replace_extension();
     std::vector<fs::path> candidates;
     if (t.contains("lyricPath") && t["lyricPath"].is_string()) candidates.push_back(from_text(t["lyricPath"]));
-    else for (auto ext : {L".ttml", L".yrc", L".lrc", L".txt"}) { auto p = stem; p += ext; candidates.push_back(p); }
+    else {
+        // A CUE track shares its audio file with the whole disc: its lyric file is named after the song.
+        if (t.contains("cue")) {
+            const auto title = t.value("title", "");
+            stem.clear();
+            if (!title.empty() && title.find_first_of("\\/:*?\"<>|") == std::string::npos) try { stem = audio.parent_path() / from_text(title); } catch (const std::exception &) {}
+        }
+        if (!stem.empty()) for (auto ext : {L".ttml", L".yrc", L".lrc", L".txt"}) { auto p = stem; p += ext; candidates.push_back(p); }
+    }
     for (const auto &p : candidates) if (const auto stamp = file_stamp(p)) {
         const auto signature = stored_path_key(p) + ":" + *stamp;
         if (const auto cached = lyric_cache_.get(id); cached && cached->signature == signature) return cached->result;

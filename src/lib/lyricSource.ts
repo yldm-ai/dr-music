@@ -12,17 +12,26 @@ export const LYRIC_PROVIDERS = [
 ] as const;
 export const providerName = (id: string) => LYRIC_PROVIDERS.find(p => p.id === id)?.name ?? id;
 
-export type LyricSource = 'local' | string;
+/** The providers in the user's 歌词源顺序 (settings → 音乐库 → 歌词); ones it does not name follow in the default order. */
+export function orderedProviders(order?: readonly string[]) {
+  const known = LYRIC_PROVIDERS.map(p => p.id) as string[];
+  const ids = [...(order ?? []).filter((id, i, all) => known.includes(id) && all.indexOf(id) === i), ...known.filter(id => !order?.includes(id))];
+  return ids.map(id => LYRIC_PROVIDERS.find(p => p.id === id)!);
+}export type LyricSource = 'local' | string;
 
 /**
  * Which lyric the player shows. A song's own lyric wins unless the user picked an online source;
  * a song without lyrics falls back to the best online match. Any two sources make it switchable.
  * The legacy preference "online" means "the best online match".
  */
-export function chooseLyric(local: LyricFile | undefined, online: OnlineLyricResult[] | null | undefined, preference?: string) {
+export function chooseLyric(local: LyricFile | undefined, online: OnlineLyricResult[] | null | undefined, preference?: string, order?: readonly string[]) {
   const hasLocal = !!local?.text;
   const results = (online || []).filter(r => r.text);
-  const picked = preference === 'online' ? results[0] : results.find(r => r.provider === preference);
+  // "ordered": the first provider in 歌词源顺序 that found one.
+  const rank = (provider: string) => { const at = (order ?? LYRIC_PROVIDERS.map(p => p.id)).indexOf(provider); return at < 0 ? Infinity : at; };
+  const picked = preference === 'online' ? results[0]
+    : preference === 'ordered' ? [...results].sort((a, b) => rank(a.provider) - rank(b.provider))[0]
+    : results.find(r => r.provider === preference);
   const file: LyricFile | undefined = preference !== 'local' && picked ? picked : hasLocal ? local : results[0];
   const source: LyricSource | undefined = !file ? undefined : file === local ? 'local' : (file as OnlineLyricResult).provider;
   return { source, file, switchable: (hasLocal ? 1 : 0) + results.length >= 2, results };

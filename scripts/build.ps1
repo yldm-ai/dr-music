@@ -51,7 +51,7 @@ try {
         $packageDirectory = Join-Path $projectRoot 'release/DR-Music-native'
         & cmake --install $buildDirectory --config Release --component Runtime --prefix $packageDirectory
         if ($LASTEXITCODE) { throw 'Packaging failed' }
-        Compress-Archive -Path (Join-Path $packageDirectory '*') -DestinationPath (Join-Path $projectRoot 'release/DR-Music-0.2.0-Windows-x64.zip') -Force
+        Compress-Archive -Path (Join-Path $packageDirectory '*') -DestinationPath (Join-Path $projectRoot 'release/DR-Music-0.3.0-Windows-x64.zip') -Force
     }
     if ($Run) {
         Start-Process -FilePath $executable -WorkingDirectory (Split-Path $executable -Parent) -WindowStyle Normal

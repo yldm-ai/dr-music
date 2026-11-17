@@ -35,13 +35,21 @@ function MenuPanel({ items, point, label, depth, onClose, onBack, onEnter, autoF
   const timer = useRef<number | undefined>(undefined);
 
   useLayoutEffect(() => {
-    const box = panel.current!.getBoundingClientRect();
-    let x = point.x, y = point.y;
-    // Submenus flip to the parent's left edge when they would leave the window.
-    if (x + box.width > innerWidth - EDGE) x = flipX !== undefined ? flipX - box.width : innerWidth - EDGE - box.width;
-    if (y + box.height > innerHeight - EDGE) y = depth ? innerHeight - EDGE - box.height : Math.max(EDGE, point.y - box.height);
-    setPosition({ x: Math.max(EDGE, x), y: Math.max(EDGE, y) });
-    if (autoFocus) panel.current!.focus({ preventScroll: true });
+    const element = panel.current!;
+    const place = () => {
+      const box = element.getBoundingClientRect();
+      let x = point.x, y = point.y;
+      // Submenus flip to the parent's left edge when they would leave the window.
+      if (x + box.width > innerWidth - EDGE) x = flipX !== undefined ? flipX - box.width : innerWidth - EDGE - box.width;
+      if (y + box.height > innerHeight - EDGE) y = depth ? innerHeight - EDGE - box.height : Math.max(EDGE, point.y - box.height);
+      setPosition(previous => { const next = { x: Math.max(EDGE, x), y: Math.max(EDGE, y) }; return previous.x === next.x && previous.y === next.y ? previous : next; });
+    };
+    place();
+    if (autoFocus) element.focus({ preventScroll: true });
+    // Items can change while open (the 译 menu fills in each provider's state), so the menu is kept inside the window as it grows.
+    const observer = new ResizeObserver(place);
+    observer.observe(element);
+    return () => observer.disconnect();
   }, [point.x, point.y, flipX, depth, autoFocus]);
   useEffect(() => () => clearTimeout(timer.current), []);
 
